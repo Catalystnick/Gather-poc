@@ -5,6 +5,7 @@ import LocalPlayer from './LocalPlayer'
 import RemotePlayer from './RemotePlayer'
 import ChatPanel from './ChatPanel'
 import VoiceControls from './VoiceControls'
+import VoiceConnectionsPanel from './VoiceConnectionsPanel'
 import CameraRig from './CameraRig'
 import { useSocket } from '../hooks/useSocket'
 import { useChat } from '../hooks/useChat'
@@ -33,6 +34,7 @@ export default function World({ player }: Props) {
     isLocalSpeaking,
     speakingPeers,
     connectedPeers,
+    peerConnectionStates,
     remoteGain,
     setRemoteGain,
   } = useProximityVoice(socket, localPositionRef, remotePlayers)
@@ -73,6 +75,15 @@ export default function World({ player }: Props) {
         onToggle={toggleMute}
         remoteGain={remoteGain}
         onGainChange={setRemoteGain}
+      />
+      <VoiceConnectionsPanel
+        rows={Array.from(remotePlayers.values()).map((player) => ({
+          id: player.id,
+          name: player.name,
+          connected: connectedPeers.has(player.id),
+          speaking: speakingPeers.has(player.id),
+          state: peerConnectionStates[player.id] ?? (connectedPeers.has(player.id) ? 'connected' : 'idle'),
+        }))}
       />
     </>
   )

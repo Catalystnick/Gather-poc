@@ -14,6 +14,8 @@ const MIN_PLAYBACK_VOLUME = 0.12;
 const MAX_ACTIVE_PEERS = 8; // admission control for dense crowds
 const TELEMETRY_EVERY_MS = 15000;
 const GAIN_STORAGE_KEY = "gather_poc_remote_gain";
+const DISCONNECTED_GRACE_MS = 5000;
+const PLAYBACK_RETRY_MS = 1500;
 const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
 ];
@@ -55,6 +57,9 @@ export function useProximityVoice(
   const [isLocalSpeaking, setIsLocalSpeaking] = useState(false);
   const [speakingPeers, setSpeakingPeers] = useState<Set<string>>(new Set());
   const [connectedPeers, setConnectedPeers] = useState<Set<string>>(new Set());
+  const [peerConnectionStates, setPeerConnectionStates] = useState<
+    Record<string, string>
+  >({});
   const [remoteGain, setRemoteGain] = useState(loadRemoteGain());
 
   const localStream = useRef<MediaStream | null>(null);
@@ -65,6 +70,7 @@ export function useProximityVoice(
   const connectingPeers = useRef<Set<string>>(new Set());
   const hangupSent = useRef<Set<string>>(new Set());
   const pendingAudioPlay = useRef<Map<string, HTMLAudioElement>>(new Map());
+  const disconnectTimers = useRef<Map<string, number>>(new Map());
   const telemetry = useRef<Telemetry>({
     negotiationAttempts: 0,
     negotiationFailures: 0,
@@ -133,6 +139,8 @@ export function useProximityVoice(
       peers.current.clear();
       connectingPeers.current.clear();
       pendingAudioPlay.current.clear();
+      disconnectTimers.current.forEach((timerId) => window.clearTimeout(timerId));
+      disconnectTimers.current.clear();
       localStream.current?.getTracks().forEach((track) => track.stop());
       void ctx.close();
     };
@@ -148,6 +156,16 @@ export function useProximityVoice(
         pendingAudioPlay: pendingAudioPlay.current.size,
       });
     }, TELEMETRY_EVERY_MS);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Keep retrying blocked audio playback for late-joining peers.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (pendingAudioPlay.current.size > 0) {
+        retryPendingAudioPlayback();
+      }
+    }, PLAYBACK_RETRY_MS);
     return () => clearInterval(interval);
   }, []);
 
@@ -188,6 +206,7 @@ export function useProximityVoice(
           console.warn(`[rtc] failed to apply answer from ${from}`, err);
           closePeer(from, {
             emitHangup: true,
+            socket,
             reason: "answer application failed",
           });
         }
@@ -268,6 +287,7 @@ export function useProximityVoice(
       // Disconnect stale peers no longer visible in room state.
       for (const peerId of peers.current.keys()) {
         if (!remote.has(peerId)) {
+          setPeerConnectionState(peerId, null);
           closePeer(peerId, { emitHangup: false, reason: "peer left room" });
         }
       }
@@ -292,12 +312,12 @@ export function useProximityVoice(
           }
         } else if (
           connected &&
-          (!preferred || dist > DISCONNECT_RANGE)
+          dist > DISCONNECT_RANGE
         ) {
           closePeer(id, {
             emitHangup: true,
             socket,
-            reason: "out of range or outside top-k",
+            reason: "out of range",
           });
         } else if (connected) {
           const entry = peers.current.get(id);
@@ -352,6 +372,7 @@ export function useProximityVoice(
     if (existing) return existing.connection;
 
     connectingPeers.current.add(peerId);
+    setPeerConnectionState(peerId, "connecting");
     telemetry.current.negotiationAttempts += 1;
     hangupSent.current.delete(peerId);
 
@@ -387,9 +408,34 @@ export function useProximityVoice(
 
       if (state === "connected") {
         connectingPeers.current.delete(peerId);
+        setPeerConnectionState(peerId, "connected");
+        const timer = disconnectTimers.current.get(peerId);
+        if (timer) {
+          window.clearTimeout(timer);
+          disconnectTimers.current.delete(peerId);
+        }
       }
 
-      if (state === "failed" || state === "disconnected" || state === "closed") {
+      if (state === "disconnected") {
+        setPeerConnectionState(peerId, "disconnected");
+        if (!disconnectTimers.current.has(peerId)) {
+          const timer = window.setTimeout(() => {
+            disconnectTimers.current.delete(peerId);
+            const currentState = peers.current.get(peerId)?.connection.connectionState;
+            if (currentState === "disconnected") {
+              closePeer(peerId, {
+                emitHangup: true,
+                socket: signalSocket,
+                reason: "disconnected timeout",
+              });
+            }
+          }, DISCONNECTED_GRACE_MS);
+          disconnectTimers.current.set(peerId, timer);
+        }
+      }
+
+      if (state === "failed" || state === "closed") {
+        setPeerConnectionState(peerId, state);
         closePeer(peerId, {
           emitHangup: state !== "closed",
           socket: signalSocket,
@@ -477,6 +523,11 @@ export function useProximityVoice(
     peers.current.delete(peerId);
     connectingPeers.current.delete(peerId);
     pendingAudioPlay.current.delete(peerId);
+    const timer = disconnectTimers.current.get(peerId);
+    if (timer) {
+      window.clearTimeout(timer);
+      disconnectTimers.current.delete(peerId);
+    }
 
     if (entry.analyserSource) {
       entry.analyserSource.disconnect();
@@ -491,6 +542,7 @@ export function useProximityVoice(
     }
     entry.audio.pause();
     entry.audio.srcObject = null;
+    setPeerConnectionState(peerId, "closed");
     telemetry.current.cleanupCount += 1;
 
     if (
@@ -578,12 +630,25 @@ export function useProximityVoice(
     localStorage.setItem(GAIN_STORAGE_KEY, String(next));
   }
 
+  function setPeerConnectionState(peerId: string, state: string | null) {
+    setPeerConnectionStates((prev) => {
+      const next = { ...prev };
+      if (state === null) {
+        delete next[peerId];
+      } else {
+        next[peerId] = state;
+      }
+      return next;
+    });
+  }
+
   return {
     muted,
     toggleMute,
     isLocalSpeaking,
     speakingPeers,
     connectedPeers,
+    peerConnectionStates,
     remoteGain,
     setRemoteGain: updateRemoteGain,
   };
