@@ -9,7 +9,7 @@ import VoiceConnectionsPanel from './VoiceConnectionsPanel'
 import CameraRig from './CameraRig'
 import { useSocket } from '../hooks/useSocket'
 import { useChat } from '../hooks/useChat'
-import { useProximityVoice } from '../hooks/useProximityVoice'
+import { useLiveKitVoice } from '../hooks/useLiveKitVoice'
 import type { Player } from '../types'
 
 const keyMap = [
@@ -53,7 +53,7 @@ export default function World({ player }: Props) {
     setGateThreshold,
     audioBlocked,
     audioInterrupted,
-  } = useProximityVoice(socket, localPositionRef, remotePlayers)
+  } = useLiveKitVoice(socket, player.name, localPositionRef, remotePlayers)
 
   return (
     <>

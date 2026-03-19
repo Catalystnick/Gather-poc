@@ -2,10 +2,45 @@ import express from 'express'
 import { createServer } from 'http'
 import { Server } from 'socket.io'
 import cors from 'cors'
+import { AccessToken } from 'livekit-server-sdk'
 
 const app = express()
 app.use(cors())
 app.use(express.json())
+
+// LiveKit token endpoint — requires LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET
+const LIVEKIT_URL = process.env.LIVEKIT_URL || 'ws://localhost:7880'
+const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || ''
+const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || ''
+
+app.post('/livekit/token', async (req, res) => {
+  const { roomName = 'gather-world', identity, name } = req.body || {}
+  if (!identity || typeof identity !== 'string') {
+    return res.status(400).json({ error: 'identity required' })
+  }
+  if (!LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
+    return res.status(500).json({ error: 'LiveKit not configured' })
+  }
+  try {
+    const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
+      identity,
+      ttl: '2h',
+      name: name || identity,
+    })
+    at.addGrant({
+      roomJoin: true,
+      room: roomName,
+      canPublish: true,
+      canSubscribe: true,
+      canUpdateOwnMetadata: true,
+    })
+    const token = await at.toJwt()
+    res.json({ token, url: LIVEKIT_URL })
+  } catch (err) {
+    console.error('[livekit] token error:', err)
+    res.status(500).json({ error: 'Failed to create token' })
+  }
+})
 
 const httpServer = createServer(app)
 const io = new Server(httpServer, {
@@ -70,30 +105,6 @@ io.on('connection', (socket) => {
       text: trimmed,
       timestamp: Date.now(),
     })
-  })
-
-  // --- Signaling relay (Phase 2 voice) ---
-  socket.on('rtc:offer', ({ to, offer }) => {
-    if (typeof to !== 'string' || !offer) return
-    console.log(`[rtc] offer ${socket.id} → ${to}`)
-    io.to(to).emit('rtc:offer', { from: socket.id, offer })
-  })
-
-  socket.on('rtc:answer', ({ to, answer }) => {
-    if (typeof to !== 'string' || !answer) return
-    console.log(`[rtc] answer ${socket.id} → ${to}`)
-    io.to(to).emit('rtc:answer', { from: socket.id, answer })
-  })
-
-  socket.on('rtc:ice-candidate', ({ to, candidate }) => {
-    if (typeof to !== 'string' || candidate == null) return
-    io.to(to).emit('rtc:ice-candidate', { from: socket.id, candidate })
-  })
-
-  socket.on('rtc:hangup', ({ to }) => {
-    if (typeof to !== 'string') return
-    console.log(`[rtc] hangup ${socket.id} → ${to}`)
-    io.to(to).emit('rtc:hangup', { from: socket.id })
   })
 
   socket.on('disconnect', () => {

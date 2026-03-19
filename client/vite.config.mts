@@ -83,6 +83,10 @@ export default defineConfig({
         ws: true,
         changeOrigin: true,
       },
+      '/livekit': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
     },
     // AudioWorklet scripts loaded via audioContext.audioWorklet.addModule()
     // require Cross-Origin isolation headers on some browsers. These are safe
