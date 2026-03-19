@@ -5,6 +5,11 @@
 import { useEffect, useRef, useState } from "react";
 import type { Socket } from "socket.io-client";
 import type { RemotePlayer } from "../types";
+// RNNoise WebAssembly noise suppression — processes the mic stream through a
+// deep-learning model before sending over WebRTC. The ?worker&url modifier is
+// Vite-specific and creates a bundled AudioWorklet script at build time.
+import NoiseSuppressorWorkletUrl from "@timephy/rnnoise-wasm/NoiseSuppressorWorklet?worker&url";
+import { NoiseSuppressorWorklet_Name } from "@timephy/rnnoise-wasm";
 
 const CONNECT_RANGE = 7;
 const DISCONNECT_RANGE = 9;
@@ -18,18 +23,32 @@ const DISCONNECTED_GRACE_MS = 5000;
 const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
 ];
-const ICE_SERVERS = resolveIceServers();
+// Resolved once at module load. Chrome/Safari use STUN (+ optional TURN).
+// Firefox always gets TURN if configured — see IS_FIREFOX usage below.
+const ICE_SERVERS_DEFAULT = resolveIceServers();
+const ICE_SERVERS_FIREFOX = resolveIceServersForFirefox();
 
-// iOS Safari requires autoGainControl for audible mic levels;
-// on desktop, AGC can amplify feedback so we leave it off.
 const IS_MOBILE = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+  typeof navigator !== "undefined" ? navigator.userAgent : "",
+);
+// Firefox uses a different ICE candidate strategy than Chromium-based browsers.
+// Chrome obfuscates LAN IPs with mDNS `.local` hostnames (privacy feature); Firefox
+// can't resolve those, so Chrome↔Firefox connections fail without a TURN relay.
+// We detect Firefox here so getOrCreatePeer can use a TURN-inclusive ICE config.
+const IS_FIREFOX = /Firefox\//i.test(
   typeof navigator !== "undefined" ? navigator.userAgent : "",
 );
 const AUDIO_CONSTRAINTS: MediaStreamConstraints = {
   audio: {
     echoCancellation: true,
-    noiseSuppression: true,
-    autoGainControl: IS_MOBILE,
+    // RNNoise handles noise suppression in the AudioWorklet pipeline below.
+    // Leaving the browser's native suppressor on alongside RNNoise causes
+    // double-processing artefacts (phase issues, speech colouration).
+    noiseSuppression: false,
+    // AGC is disabled on all platforms. On mobile it can cause pumping/clipping
+    // artifacts; on desktop it interferes with headset hardware gain staging.
+    // Users control loudness via the voice gain slider instead.
+    autoGainControl: false,
     // Chrome-only: cuts low-freq rumble that feeds back.
     ...(IS_MOBILE ? {} : { googHighpassFilter: true }),
   } as MediaTrackConstraints,
@@ -85,7 +104,8 @@ export function useProximityVoice(
   const [audioBlocked, setAudioBlocked] = useState(false);
   const [audioInterrupted, setAudioInterrupted] = useState(false);
 
-  const localStream = useRef<MediaStream | null>(null);
+  const localStream = useRef<MediaStream | null>(null); // RNNoise-processed stream → sent over WebRTC
+  const rawMicStream = useRef<MediaStream | null>(null); // raw getUserMedia stream → stop() on cleanup
   const audioCtx = useRef<AudioContext | null>(null);
   const localAnalyser = useRef<AnalyserNode | null>(null);
   const peers = useRef<Map<string, PeerEntry>>(new Map());
@@ -157,16 +177,26 @@ export function useProximityVoice(
     if (navigator.mediaDevices) {
       navigator.mediaDevices
         .getUserMedia(AUDIO_CONSTRAINTS)
-        .then((stream) => {
-          localStream.current = stream;
+        .then(async (rawStream) => {
+          // Keep the raw hardware stream separate so we can stop the mic
+          // tracks on cleanup regardless of whether RNNoise is active.
+          rawMicStream.current = rawStream;
+
+          // Apply RNNoise noise suppression. On failure the raw stream is
+          // returned as a transparent fallback so voice still works.
+          const processedStream = await applyNoiseSuppression(ctx, rawStream);
+          localStream.current = processedStream;
+
           setIsMicReady(true);
           // ctx.resume() here is outside a user-gesture on iOS and is silently
           // ignored; the gesture handlers above are the reliable resume path.
           void ctx.resume().catch(() => {/* will resume on next gesture */});
 
+          // Connect the processed stream to the speaking-detection analyser.
+          // Using the denoised signal reduces false-positives from background noise.
           const analyser = ctx.createAnalyser();
           analyser.fftSize = 256;
-          ctx.createMediaStreamSource(stream).connect(analyser);
+          ctx.createMediaStreamSource(processedStream).connect(analyser);
           localAnalyser.current = analyser;
 
           // Attach mic tracks to peers that were created while permission was
@@ -174,7 +204,7 @@ export function useProximityVoice(
           // socketRef.current — NOT the closure-captured `socket` — ensures we
           // always use the live socket even though this effect has [] deps.
           peers.current.forEach(({ connection }, peerId) => {
-            attachLocalTracks(connection, stream);
+            attachLocalTracks(connection, processedStream);
             const liveSocket = socketRef.current;
             if (liveSocket) {
               void renegotiatePeer(peerId, liveSocket);
@@ -205,7 +235,10 @@ export function useProximityVoice(
       connectingPeers.current.clear();
       disconnectTimers.current.forEach((timerId) => window.clearTimeout(timerId));
       disconnectTimers.current.clear();
-      localStream.current?.getTracks().forEach((track) => track.stop());
+      // Stop the raw hardware mic tracks (not the processed stream, which
+      // is a synthetic MediaStreamDestinationNode output with no hardware).
+      rawMicStream.current?.getTracks().forEach((track) => track.stop());
+      // Closing the AudioContext also destroys the RNNoise worklet and all nodes.
       void ctx.close();
     };
   }, []);
@@ -434,7 +467,10 @@ export function useProximityVoice(
     telemetry.current.negotiationAttempts += 1;
     hangupSent.current.delete(peerId);
 
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    // Firefox can't resolve Chrome's mDNS `.local` ICE candidates, so it needs
+    // a TURN relay even when Chrome (on the same LAN) doesn't.
+    const iceServers = IS_FIREFOX ? ICE_SERVERS_FIREFOX : ICE_SERVERS_DEFAULT;
+    const pc = new RTCPeerConnection({ iceServers });
     const ctx = audioCtx.current;
     if (!ctx) {
       throw new Error("Audio context is not ready");
@@ -734,6 +770,32 @@ export function useProximityVoice(
   };
 }
 
+// Loads the RNNoise AudioWorklet into the given AudioContext and routes the
+// raw mic stream through it, returning a new processed MediaStream.
+// Signal graph:
+//   raw mic source → NoiseSuppressorWorkletNode → MediaStreamDestinationNode
+//                                                         ↓
+//                                               processed .stream (→ WebRTC)
+// Falls back to the raw stream transparently if the worklet fails to load
+// (e.g. browser blocks WASM, or very old Safari).
+async function applyNoiseSuppression(
+  ctx: AudioContext,
+  rawStream: MediaStream,
+): Promise<MediaStream> {
+  try {
+    await ctx.audioWorklet.addModule(NoiseSuppressorWorkletUrl);
+    const source = ctx.createMediaStreamSource(rawStream);
+    const rnnoiseNode = new AudioWorkletNode(ctx, NoiseSuppressorWorklet_Name);
+    const destination = ctx.createMediaStreamDestination();
+    source.connect(rnnoiseNode).connect(destination);
+    console.log("[voice] RNNoise noise suppression active");
+    return destination.stream;
+  } catch (err) {
+    console.warn("[voice] RNNoise worklet failed — using raw mic stream:", err);
+    return rawStream;
+  }
+}
+
 function rmsOf(data: Uint8Array): number {
   return Math.sqrt(data.reduce((sum, value) => sum + value * value, 0) / data.length);
 }
@@ -769,7 +831,7 @@ function resolveIceServers(): RTCIceServer[] {
       if (Array.isArray(parsed) && parsed.length > 0) {
         return parsed as RTCIceServer[];
       }
-      console.warn("[voice] VITE_ICE_SERVERS_JSON is set but not a non-empty array");
+      console.warn("[voice] VITE_ICE_SERVERS_JSON is not a non-empty array — ignoring");
     } catch (err) {
       console.warn("[voice] failed to parse VITE_ICE_SERVERS_JSON", err);
     }
@@ -781,14 +843,55 @@ function resolveIceServers(): RTCIceServer[] {
   if (turnUrl && turnUsername && turnCredential) {
     return [
       ...DEFAULT_ICE_SERVERS,
-      {
-        urls: turnUrl,
-        username: turnUsername,
-        credential: turnCredential,
-      },
+      { urls: turnUrl, username: turnUsername, credential: turnCredential },
     ];
   }
 
+  return DEFAULT_ICE_SERVERS;
+}
+
+// Firefox cannot resolve Chrome's mDNS `.local` ICE candidates (privacy
+// obfuscation introduced in Chrome 75). Cross-browser LAN connections silently
+// fail with "ICE failed" unless a TURN relay is present. This config always
+// includes the TURN server when credentials are available, ensuring Firefox can
+// reach Chrome peers via relay even when direct candidates are unreachable.
+// If no TURN credentials are configured a console warning is emitted so it is
+// visible in dev tools on Firefox.
+function resolveIceServersForFirefox(): RTCIceServer[] {
+  const env = import.meta.env as Record<string, string | undefined>;
+
+  // If the caller supplied a full ICE server list, use it as-is — they are
+  // responsible for including a TURN entry.
+  const json = env.VITE_ICE_SERVERS_JSON;
+  if (json) {
+    try {
+      const parsed = JSON.parse(json);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed as RTCIceServer[];
+      }
+    } catch {
+      // fall through to individual env vars
+    }
+  }
+
+  const turnUrl = env.VITE_TURN_URL;
+  const turnUsername = env.VITE_TURN_USERNAME;
+  const turnCredential = env.VITE_TURN_CREDENTIAL;
+  if (turnUrl && turnUsername && turnCredential) {
+    return [
+      ...DEFAULT_ICE_SERVERS,
+      { urls: turnUrl, username: turnUsername, credential: turnCredential },
+    ];
+  }
+
+  // No TURN configured: Firefox will likely fail to connect to Chrome peers on
+  // the same LAN. Add VITE_TURN_URL / VITE_TURN_USERNAME / VITE_TURN_CREDENTIAL
+  // (or VITE_ICE_SERVERS_JSON) to fix this.
+  console.warn(
+    "[voice] Firefox detected but no TURN server is configured. " +
+    "Cross-browser connections on the same LAN may fail with 'ICE failed'. " +
+    "Set VITE_TURN_URL, VITE_TURN_USERNAME, and VITE_TURN_CREDENTIAL.",
+  );
   return DEFAULT_ICE_SERVERS;
 }
 

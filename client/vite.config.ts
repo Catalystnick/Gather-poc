@@ -15,5 +15,18 @@ export default defineConfig({
         changeOrigin: true,
       },
     },
+    // AudioWorklet scripts loaded via audioContext.audioWorklet.addModule()
+    // require Cross-Origin isolation headers on some browsers. These are safe
+    // to set for local dev; for production they are set at the CDN/server layer.
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+    },
+  },
+  // Ensure .wasm files bundled by @timephy/rnnoise-wasm are included as assets.
+  assetsInclude: ['**/*.wasm'],
+  optimizeDeps: {
+    // Pre-bundle the RNNoise package so Vite handles its WASM import correctly.
+    exclude: ['@timephy/rnnoise-wasm'],
   },
 })
