@@ -765,10 +765,14 @@ export function useProximityVoice(
     // Audio graph (gainNode → ctx.destination) below.
     // iOS loudspeaker routing is handled separately via the iosRoutingAudio
     // element created in the mic-acquisition useEffect (see above).
+    // IMPORTANT: Chrome can ignore muted on dynamically created elements, causing
+    // double playback (activation element + gain path) = echo. Use volume=0 too.
     const audio = new Audio();
     audio.muted = true;
+    audio.volume = 0;
     audio.autoplay = true;
     audio.setAttribute("playsinline", "true");
+    audio.setAttribute("muted", "");
 
     // GainNode controls distance-based attenuation and the user's slider.
     // Mobile and desktop use different playback targets:
@@ -861,6 +865,7 @@ export function useProximityVoice(
       if (!entry) return;
 
       // Step 1 — Chrome pipeline activation (muted, no sound).
+      entry.audio.volume = 0;
       entry.audio.srcObject = stream;
       void entry.audio.play().catch(() => {
         console.warn(`[voice] chrome-activation audio.play() failed for ${peerId}`);
