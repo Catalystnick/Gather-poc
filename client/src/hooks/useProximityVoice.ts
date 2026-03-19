@@ -68,22 +68,11 @@ let audioSettingsMigrationChecked = false;
 
 interface PeerEntry {
   connection: RTCPeerConnection;
-  // Muted element — Chrome pipeline activation only.
-  // Chrome requires the raw WebRTC stream to be attached to an HTMLAudioElement
-  // before createMediaStreamSource() produces samples. This element is always
-  // muted so it never emits sound. Firefox/Safari don't need it but it's harmless.
-  // Ref: https://stackoverflow.com/questions/55703316
+  // Direct playback via HTMLAudioElement — required for AEC to work.
+  // Browser AEC only cancels echo when remote audio is played through a media
+  // element; Web Audio playback bypasses the reference signal (Chromium #687574).
+  // Volume (0–1) controls distance attenuation + user slider.
   audio: HTMLAudioElement;
-  // Processing chain:
-  //   source → gainNode
-  // Playback differs by platform:
-  //   mobile  → stereoMerger → gainDest → outputAudio (media pipeline/loudspeaker)
-  //   desktop → AudioContext.destination (native Web Audio output path)
-  // gainNode: distance attenuation + user slider (not capped at 1.0).
-  gainNode: GainNode;
-  stereoMerger: ChannelMergerNode | null;
-  gainDest: MediaStreamAudioDestinationNode | null;
-  outputAudio: HTMLAudioElement | null;
   analyser: AnalyserNode;
   analyserSource: MediaStreamAudioSourceNode | null;
   pendingCandidates: RTCIceCandidateInit[];
@@ -199,11 +188,10 @@ export function useProximityVoice(
       if (ctx.state !== "interrupted") {
         void ctx.resume().catch(() => {/* Safari may still throw — swallow it */});
       }
-      // Mobile uses outputAudio (HTMLMediaElement path) to stay on loudspeaker.
-      // Retry any peer output element that was blocked by autoplay policy.
+      // Retry any peer audio element blocked by autoplay policy.
       peers.current.forEach((entry) => {
-        if (entry.outputAudio?.paused) {
-          void entry.outputAudio.play().catch(() => {});
+        if (entry.audio.paused && entry.audio.srcObject) {
+          void entry.audio.play().catch(() => {});
         }
       });
     };
@@ -680,14 +668,12 @@ export function useProximityVoice(
           const entry = peers.current.get(id);
           if (!entry || !ctx) return;
 
-          // GainNode.gain has no 1.0 ceiling — the full 0.5–5× slider range works.
+          // HTMLAudioElement.volume is 0–1; clamp target gain.
           const userGain = remoteGainRef.current;
           const normalized = Math.min(1, Math.max(0, dist / DISCONNECT_RANGE));
           const distanceFactor = 1 - normalized ** rolloffRef.current;
           const targetGain = Math.max(MIN_GAIN_FLOOR, distanceFactor * userGain);
-          // setTargetAtTime with a short time constant smooths gain changes to
-          // avoid audible clicks when distance or slider value changes.
-          entry.gainNode.gain.setTargetAtTime(targetGain, ctx.currentTime, 0.05);
+          entry.audio.volume = Math.min(1, targetGain);
 
           // Speaking detection via analyser.
           entry.analyser.getByteFrequencyData(dataArray);
@@ -759,45 +745,13 @@ export function useProximityVoice(
       throw new Error("Audio context is not ready");
     }
 
-    // Chrome pipeline activation workaround: WebRTC remote streams only flow
-    // through createMediaStreamSource() once the stream is also attached to a
-    // muted HTMLAudioElement. Actual audible playback is handled by the Web
-    // Audio graph (gainNode → ctx.destination) below.
-    // iOS loudspeaker routing is handled separately via the iosRoutingAudio
-    // element created in the mic-acquisition useEffect (see above).
-    // IMPORTANT: Chrome can ignore muted on dynamically created elements, causing
-    // double playback (activation element + gain path) = echo. Use volume=0 too.
+    // Direct playback via HTMLAudioElement — required for AEC to work.
+    // Browser AEC only cancels echo when remote audio is played through a media
+    // element; Web Audio playback bypasses the reference signal (Chromium #687574).
     const audio = new Audio();
-    audio.muted = true;
-    audio.volume = 0;
     audio.autoplay = true;
     audio.setAttribute("playsinline", "true");
-    audio.setAttribute("muted", "");
-
-    // GainNode controls distance-based attenuation and the user's slider.
-    // Mobile and desktop use different playback targets:
-    // - mobile: HTMLMediaElement output path for reliable loudspeaker routing
-    // - desktop: direct Web Audio output for a cleaner, lower-complexity path
-    const gainNode = ctx.createGain();
-    gainNode.gain.value = MIN_GAIN_FLOOR;
-    const stereoMerger = ctx.createChannelMerger(2);
-    let gainDest: MediaStreamAudioDestinationNode | null = null;
-    let outputAudio: HTMLAudioElement | null = null;
-    // Duplicate mono voice to both channels before final playback/output.
-    // This avoids browser-specific mono panning quirks (left-only output).
-    gainNode.connect(stereoMerger, 0, 0);
-    gainNode.connect(stereoMerger, 0, 1);
-    if (IS_MOBILE) {
-      gainDest = ctx.createMediaStreamDestination();
-      stereoMerger.connect(gainDest);
-
-      outputAudio = new Audio();
-      outputAudio.srcObject = gainDest.stream;
-      outputAudio.setAttribute("playsinline", "true");
-      outputAudio.volume = 1;
-    } else {
-      stereoMerger.connect(ctx.destination);
-    }
+    audio.volume = MIN_GAIN_FLOOR;
 
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 256;
@@ -864,38 +818,23 @@ export function useProximityVoice(
       const entry = peers.current.get(peerId);
       if (!entry) return;
 
-      // Step 1 — Chrome pipeline activation (muted, no sound).
-      entry.audio.volume = 0;
+      // Direct playback — AEC works when stream is played through media element.
       entry.audio.srcObject = stream;
       void entry.audio.play().catch(() => {
-        console.warn(`[voice] chrome-activation audio.play() failed for ${peerId}`);
+        console.warn(`[voice] audio.play() failed for ${peerId} — will retry on gesture`);
       });
 
       if (!entry.analyserSource) {
-        // Step 2 — Web Audio graph:
-        //   source → gainNode   (volume-controlled playback)
-        //   source → analyser   (speaking detection, no output)
+        // Analyser for speaking detection only (no playback path).
         const source = ctx.createMediaStreamSource(stream);
-        source.connect(entry.gainNode);
         source.connect(entry.analyser);
         entry.analyserSource = source;
-      }
-
-      // Step 3 (mobile only) — play output element for loudspeaker route.
-      if (entry.outputAudio) {
-        void entry.outputAudio.play().catch(() => {
-          console.warn(`[voice] outputAudio.play() blocked for ${peerId} — will retry on gesture`);
-        });
       }
     };
 
     peers.current.set(peerId, {
       connection: pc,
       audio,
-      gainNode,
-      stereoMerger,
-      gainDest,
-      outputAudio,
       analyser,
       analyserSource: null,
       pendingCandidates: [],
@@ -947,16 +886,9 @@ export function useProximityVoice(
       entry.analyserSource.disconnect();
       entry.analyserSource = null;
     }
-    entry.gainNode.disconnect();
-    entry.stereoMerger?.disconnect();
-    entry.gainDest?.disconnect();
     entry.analyser.disconnect();
     entry.audio.pause();
     entry.audio.srcObject = null;
-    entry.outputAudio?.pause();
-    if (entry.outputAudio) {
-      entry.outputAudio.srcObject = null;
-    }
 
     entry.connection.onconnectionstatechange = null;
     entry.connection.onicecandidate = null;
