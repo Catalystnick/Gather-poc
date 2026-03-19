@@ -63,18 +63,20 @@ const AudioContextCtor: typeof AudioContext =
 
 interface PeerEntry {
   connection: RTCPeerConnection;
-  // Chrome bug: WebRTC streams routed *only* through Web Audio are silent.
-  // Chrome requires the stream to be attached to a muted HTMLAudioElement to
-  // activate its internal audio pipeline before createMediaStreamSource() works.
-  // The muted element produces no output — it exists solely as a Chrome workaround.
-  // Firefox and Safari don't need this, but it's harmless for them.
+  // Muted element — Chrome pipeline activation only.
+  // Chrome requires the raw WebRTC stream to be attached to an HTMLAudioElement
+  // before createMediaStreamSource() produces samples. This element is always
+  // muted so it never emits sound. Firefox/Safari don't need it but it's harmless.
   // Ref: https://stackoverflow.com/questions/55703316
   audio: HTMLAudioElement;
-  // Actual volume-controlled playback goes through Web Audio:
-  //   MediaStreamAudioSourceNode → gainNode → ctx.destination   (playback)
-  //   MediaStreamAudioSourceNode → analyser                     (speaking detection)
-  // GainNode.gain is not capped at 1.0, so the full 0.5–5× slider range works.
+  // Audible output via the HTMLMediaElement API:
+  //   source → gainNode → gainDest → outputAudio
+  // Using HTMLMediaElement (not AudioContext.destination) is the correct API
+  // for playback — it routes through the media pipeline unconditionally.
+  // GainNode.gain is not capped at 1.0, so the full gain slider range works.
   gainNode: GainNode;
+  gainDest: MediaStreamAudioDestinationNode;
+  outputAudio: HTMLAudioElement;
   analyser: AnalyserNode;
   analyserSource: MediaStreamAudioSourceNode | null;
   pendingCandidates: RTCIceCandidateInit[];
@@ -154,25 +156,6 @@ export function useProximityVoice(
       setAudioBlocked(ctx.state === "suspended" && hasPeers);
     };
 
-    // Mobile loudspeaker routing element (iOS + Android).
-    // When getUserMedia is active, both iOS and Android switch the audio session
-    // into "communication mode" (earpiece). The only reliable JS override is a
-    // non-muted HTMLAudioElement that is actively playing — the OS then treats the
-    // page as a media-playback app and routes ALL audio to the loudspeaker.
-    // We feed it a silent MediaStreamDestinationNode so it never emits any sound.
-    // It MUST be started from inside a user-gesture handler: play() on a non-muted
-    // element is blocked by autoplay policy outside a gesture on both iOS and Android.
-    let mobileRoutingAudio: HTMLAudioElement | null = null;
-    if (IS_MOBILE) {
-      const routingDest = ctx.createMediaStreamDestination();
-      mobileRoutingAudio = new Audio();
-      mobileRoutingAudio.srcObject = routingDest.stream;
-      mobileRoutingAudio.setAttribute("playsinline", "true");
-      // volume=0: silent. muted=false: OS sees active playback → loudspeaker.
-      mobileRoutingAudio.volume = 0;
-      mobileRoutingAudio.muted = false;
-    }
-
     const resumeOnGesture = () => {
       // "interrupted" means exclusive audio hardware use (e.g. phone call) —
       // resume() would throw InvalidStateError, so skip it in that state.
@@ -181,11 +164,14 @@ export function useProximityVoice(
       if (ctx.state !== "interrupted") {
         void ctx.resume().catch(() => {/* Safari may still throw — swallow it */});
       }
-      // Play from inside a user gesture so the OS allows non-muted media.
-      // Once playing, the whole audio session routes to the loudspeaker.
-      if (mobileRoutingAudio?.paused) {
-        void mobileRoutingAudio.play().catch(() => {});
-      }
+      // Each peer's outputAudio element uses the HTMLMediaElement API (STREAM_MUSIC),
+      // so it plays through the loudspeaker regardless of AudioContext session mode.
+      // Retry any that were blocked by autoplay policy at ontrack time.
+      peers.current.forEach((entry) => {
+        if (entry.outputAudio.paused) {
+          void entry.outputAudio.play().catch(() => {});
+        }
+      });
     };
 
     const resumeOnVisibility = () => {
@@ -197,8 +183,7 @@ export function useProximityVoice(
     };
 
     // iOS Safari: "play-and-record" maps to AVAudioSessionCategoryPlayAndRecord
-    // so the mic and speaker can both be active simultaneously. The loudspeaker
-    // override is handled by mobileRoutingAudio (played from resumeOnGesture above).
+    // so the mic and speaker can both be active simultaneously.
     if ("audioSession" in navigator) {
       (navigator as unknown as { audioSession: { type: string } }).audioSession.type =
         "play-and-record";
@@ -225,6 +210,30 @@ export function useProximityVoice(
           const micDest = ctx.createMediaStreamDestination();
           micSource.connect(gainNode).connect(micDest);
           localStream.current = micDest.stream;
+
+          // Android Chrome 145+ supports AudioContext.setSinkId(), which can
+          // route Web Audio output to the loudspeaker instead of the earpiece.
+          // getUserMedia must already be granted for enumerateDevices() to return
+          // the full device list (otherwise only "default" is visible).
+          // This is a best-effort attempt: many Android devices only expose one
+          // "default" audiooutput so there may be nothing to switch to.
+          if (IS_MOBILE && "setSinkId" in ctx) {
+            try {
+              const devices = await navigator.mediaDevices.enumerateDevices();
+              const outputs = devices.filter((d) => d.kind === "audiooutput");
+              // Prefer an explicit loudspeaker device; fall back to first output.
+              const speaker =
+                outputs.find((d) => /speaker/i.test(d.label) && !/ear/i.test(d.label))
+                ?? outputs[0];
+              if (speaker) {
+                await (ctx as AudioContext & { setSinkId(id: string): Promise<void> })
+                  .setSinkId(speaker.deviceId);
+                console.log("[voice] AudioContext routed to:", speaker.label || speaker.deviceId);
+              }
+            } catch (err) {
+              console.warn("[voice] AudioContext.setSinkId failed (non-fatal):", err);
+            }
+          }
 
           setIsMicReady(true);
           // ctx.resume() here is outside a user-gesture on iOS and is silently
@@ -267,10 +276,6 @@ export function useProximityVoice(
       window.removeEventListener("keydown", resumeOnGesture);
       window.removeEventListener("touchstart", resumeOnGesture);
       document.removeEventListener("visibilitychange", resumeOnVisibility);
-      if (mobileRoutingAudio) {
-        mobileRoutingAudio.pause();
-        mobileRoutingAudio.srcObject = null;
-      }
       [...peers.current.keys()].forEach((peerId) => {
         closePeer(peerId, { emitHangup: false, reason: "hook cleanup" });
       });
@@ -530,11 +535,23 @@ export function useProximityVoice(
     audio.autoplay = true;
     audio.setAttribute("playsinline", "true");
 
-    // GainNode controls both distance-based attenuation and the user's slider.
-    // Unlike HTMLAudioElement.volume, GainNode.gain can exceed 1.0 for true amplification.
+    // GainNode controls distance-based attenuation and the user's slider.
+    // Output goes to gainDest (not ctx.destination) so that the final playback
+    // element (outputAudio) uses STREAM_MUSIC on Android — the same route as an
+    // MP3 player — instead of inheriting MODE_IN_COMMUNICATION (earpiece).
     const gainNode = ctx.createGain();
     gainNode.gain.value = MIN_GAIN_FLOOR;
-    gainNode.connect(ctx.destination);
+    const gainDest = ctx.createMediaStreamDestination();
+    gainNode.connect(gainDest);
+
+    // Output element: uses the HTMLMediaElement playback API, which routes through
+    // the media pipeline (loudspeaker) independently of the AudioContext session.
+    // AudioContext.destination was the wrong API here — this is the correct one.
+    // GainNode handles all volume; the element stays at unity gain.
+    const outputAudio = new Audio();
+    outputAudio.srcObject = gainDest.stream;
+    outputAudio.setAttribute("playsinline", "true");
+    outputAudio.volume = 1;
 
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 256;
@@ -601,32 +618,35 @@ export function useProximityVoice(
       const entry = peers.current.get(peerId);
       if (!entry) return;
 
-      // Step 1 — Chrome workaround: attach the stream to the muted audio element.
-      // This activates Chrome's internal WebRTC audio pipeline; without this,
-      // createMediaStreamSource() produces no samples in Chrome.
-      // The element is muted so it emits no sound — only the Web Audio graph below
-      // is audible.
+      // Step 1 — Chrome pipeline activation (muted, no sound).
       entry.audio.srcObject = stream;
       void entry.audio.play().catch(() => {
-        // Muted autoplay is universally allowed; this catch is a safety net only.
-        console.warn(`[voice] muted audio.play() failed for ${peerId}`);
+        console.warn(`[voice] chrome-activation audio.play() failed for ${peerId}`);
       });
 
       if (!entry.analyserSource) {
-        // Step 2 — Web Audio graph for gain-controlled output and speaking detection.
-        //   source → gainNode → ctx.destination  (audible, gain can exceed 1.0)
-        //   source → analyser                    (speaking detection, no output)
+        // Step 2 — Web Audio graph:
+        //   source → gainNode → gainDest  (volume-controlled, feeds outputAudio)
+        //   source → analyser             (speaking detection, no output)
         const source = ctx.createMediaStreamSource(stream);
         source.connect(entry.gainNode);
         source.connect(entry.analyser);
         entry.analyserSource = source;
       }
+
+      // Step 3 — Play the output element (HTMLMediaElement API → loudspeaker).
+      // resumeOnGesture retries this if autoplay policy blocks it.
+      void entry.outputAudio.play().catch(() => {
+        console.warn(`[voice] outputAudio.play() blocked for ${peerId} — will retry on gesture`);
+      });
     };
 
     peers.current.set(peerId, {
       connection: pc,
       audio,
       gainNode,
+      gainDest,
+      outputAudio,
       analyser,
       analyserSource: null,
       pendingCandidates: [],
@@ -678,9 +698,12 @@ export function useProximityVoice(
       entry.analyserSource = null;
     }
     entry.gainNode.disconnect();
+    entry.gainDest.disconnect();
     entry.analyser.disconnect();
     entry.audio.pause();
     entry.audio.srcObject = null;
+    entry.outputAudio.pause();
+    entry.outputAudio.srcObject = null;
 
     entry.connection.onconnectionstatechange = null;
     entry.connection.onicecandidate = null;
