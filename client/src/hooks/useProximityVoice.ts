@@ -47,10 +47,12 @@ const IS_FIREFOX = /Firefox\//i.test(
 const AUDIO_CONSTRAINTS: MediaStreamConstraints = {
   audio: {
     echoCancellation: true,
-    // RNNoise handles noise suppression in the AudioWorklet pipeline below.
-    // Leaving the browser's native suppressor on alongside RNNoise causes
-    // double-processing artefacts (phase issues, speech colouration).
-    noiseSuppression: false,
+    // Browser noiseSuppression is kept on as a secondary feedback/howl suppressor —
+    // it catches echo artefacts that AEC misses (e.g. at high speaker volumes).
+    // RNNoise runs after this in the AudioWorklet pipeline for deeper denoising.
+    // Double-processing artefacts are minimal because AEC + NS run pre-RNNoise on
+    // the raw PCM, and RNNoise's neural model adapts to already-suppressed input.
+    noiseSuppression: true,
     // AGC: enabled on mobile so the OS normalises mic input levels — without it,
     // mobile mics send a quiet raw signal and the receiving side hears low volume.
     // Disabled on desktop where headset hardware manages gain staging.
