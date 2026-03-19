@@ -753,6 +753,13 @@ export function useProximityVoice(
     const gainNode = ctx.createGain();
     gainNode.gain.value = MIN_GAIN_FLOOR;
     const gainDest = ctx.createMediaStreamDestination();
+    // WebRTC remote tracks are mono (1 channel). Force the destination node to
+    // produce a stereo stream so both ears receive audio through the output
+    // HTMLAudioElement. Without this, browsers map the single mono channel to
+    // the left ear only instead of spreading it to centre/both channels.
+    gainDest.channelCount = 2;
+    gainDest.channelCountMode = "explicit";
+    gainDest.channelInterpretation = "speakers";
     hpfNode.connect(gainNode);
     gainNode.connect(gainDest);
 
