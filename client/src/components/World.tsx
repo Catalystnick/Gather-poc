@@ -45,6 +45,10 @@ export default function World({ player }: Props) {
     setHpfFreq,
     agcEnabled,
     toggleAgc,
+    echoCancelEnabled,
+    toggleEchoCancel,
+    headphonePrompt,
+    confirmHeadphones,
     gateThreshold,
     setGateThreshold,
     audioBlocked,
@@ -95,6 +99,10 @@ export default function World({ player }: Props) {
         onHpfFreqChange={setHpfFreq}
         agcEnabled={agcEnabled}
         onAgcToggle={toggleAgc}
+        echoCancelEnabled={echoCancelEnabled}
+        onEchoCancelToggle={toggleEchoCancel}
+        headphonePrompt={headphonePrompt}
+        onHeadphonesConfirm={confirmHeadphones}
         gateThreshold={gateThreshold}
         onGateThresholdChange={setGateThreshold}
         audioBlocked={audioBlocked}

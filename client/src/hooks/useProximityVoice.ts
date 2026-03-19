@@ -26,7 +26,7 @@ const DEFAULT_ROLLOFF = 1.4; // exponent applied to normalised distance (0–1)
 const HPF_STORAGE_KEY = "gather_poc_hpf_freq";
 const DEFAULT_HPF_FREQ = 80; // Hz — removes sub-bass rumble, leaves voice intact
 const GATE_STORAGE_KEY = "gather_poc_gate_threshold";
-const DEFAULT_GATE_THRESHOLD = 0; // 0 = off; >0 = RMS threshold on 0–255 scale
+const DEFAULT_GATE_THRESHOLD = 25; // RMS threshold on 0–255 scale; 0 = off
 const GATE_ATTACK_TC = 0.003;  // seconds — time constant to open (fast, ~10ms)
 const GATE_RELEASE_TC = 0.08;  // seconds — time constant to close (slow, ~250ms)
 const DISCONNECTED_GRACE_MS = 5000;
@@ -118,6 +118,11 @@ export function useProximityVoice(
   const [gateThreshold, setGateThresholdState] = useState(loadGateThreshold());
   // AGC default matches the AUDIO_CONSTRAINTS constant (on for mobile, off for desktop).
   const [agcEnabled, setAgcEnabledState] = useState<boolean>(IS_MOBILE);
+  // echoCancelEnabled tracks whether AEC is currently active on the mic track.
+  const [echoCancelEnabled, setEchoCancelEnabledState] = useState(true);
+  // headphonePrompt: non-null while the "headphones detected" confirm banner is visible.
+  // Value is the device label string shown to the user.
+  const [headphonePrompt, setHeadphonePrompt] = useState<string | null>(null);
   // audioBlocked: suspended context, user tap will fix it.
   // audioInterrupted: exclusive hardware use (phone call etc), user cannot fix it —
   //   the OS will restore it when the interruption ends.
@@ -158,6 +163,15 @@ export function useProximityVoice(
   hpfFreqRef.current = hpfFreq;
   const gateThresholdRef = useRef(gateThreshold);
   gateThresholdRef.current = gateThreshold;
+  const echoCancelEnabledRef = useRef(echoCancelEnabled);
+  echoCancelEnabledRef.current = echoCancelEnabled;
+
+  // Tracks output device IDs seen on the previous devicechange (or mount).
+  // Used to diff which device newly appeared or disappeared.
+  const prevOutputDeviceIdsRef = useRef<Set<string>>(new Set());
+  // The deviceId of the output device the user confirmed as headphones.
+  // Used to auto-restore AEC when that device disconnects.
+  const headphoneDeviceIdRef = useRef<string | null>(null);
 
   const wasLocalSpeaking = useRef(false);
   const wasSpeakingPeers = useRef(new Set<string>());
@@ -358,6 +372,77 @@ export function useProximityVoice(
       });
     }, TELEMETRY_EVERY_MS);
     return () => clearInterval(interval);
+  }, []);
+
+  // Headphone / audio output device detection.
+  // Listens for devicechange events and diffs the output device list to detect
+  // newly connected devices (likely headphones).  Prompts the user to disable
+  // AEC when that happens; auto-restores AEC when the confirmed device leaves.
+  // Does not run on iOS (enumerateDevices never exposes output devices there).
+  useEffect(() => {
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.addEventListener !== "function") return;
+
+    let disposed = false;
+
+    // Snapshot the baseline output devices on mount so we can diff against them.
+    navigator.mediaDevices.enumerateDevices().then((devices) => {
+      if (disposed) return;
+      prevOutputDeviceIdsRef.current = new Set(
+        devices
+          .filter((d) => d.kind === "audiooutput")
+          .map((d) => d.deviceId),
+      );
+    }).catch(() => {});
+
+    async function handleDeviceChange() {
+      if (disposed) return;
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const outputs = devices.filter((d) => d.kind === "audiooutput");
+        const newIds = new Set(outputs.map((d) => d.deviceId));
+
+        // "default" and "communications" are virtual aliases — skip them to avoid
+        // false-positive prompts when the OS switches the default output.
+        const appeared = outputs.filter(
+          (d) =>
+            !prevOutputDeviceIdsRef.current.has(d.deviceId) &&
+            d.deviceId !== "default" &&
+            d.deviceId !== "communications",
+        );
+        const disappearedIds = [...prevOutputDeviceIdsRef.current].filter(
+          (id) => !newIds.has(id),
+        );
+
+        prevOutputDeviceIdsRef.current = newIds;
+
+        // If the confirmed headphone device disconnected and AEC was off, re-enable.
+        const confirmedId = headphoneDeviceIdRef.current;
+        if (
+          confirmedId &&
+          disappearedIds.includes(confirmedId) &&
+          !echoCancelEnabledRef.current
+        ) {
+          headphoneDeviceIdRef.current = null;
+          console.log("[voice] headphones disconnected — restoring AEC");
+          void applyEchoCancel(true);
+        }
+
+        // New output device appeared — prompt the user.
+        if (appeared.length > 0) {
+          const device = appeared[0];
+          headphoneDeviceIdRef.current = device.deviceId;
+          setHeadphonePrompt(device.label || "New audio device");
+        }
+      } catch {
+        // enumerateDevices can fail if permissions were revoked; ignore silently.
+      }
+    }
+
+    navigator.mediaDevices.addEventListener("devicechange", handleDeviceChange);
+    return () => {
+      disposed = true;
+      navigator.mediaDevices.removeEventListener("devicechange", handleDeviceChange);
+    };
   }, []);
 
   // Handle incoming signaling events.
@@ -890,6 +975,33 @@ export function useProximityVoice(
     }
   }
 
+  async function applyEchoCancel(enable: boolean) {
+    setEchoCancelEnabledState(enable);
+    const track = rawMicStream.current?.getAudioTracks()[0];
+    if (track) {
+      try {
+        await track.applyConstraints({ echoCancellation: enable });
+        console.log(`[voice] AEC ${enable ? "enabled" : "disabled"}`);
+      } catch (err) {
+        console.warn("[voice] applyConstraints(echoCancellation) failed:", err);
+      }
+    }
+  }
+
+  function confirmHeadphones(accept: boolean) {
+    setHeadphonePrompt(null);
+    if (accept) {
+      void applyEchoCancel(false);
+    } else {
+      // User declined — forget this device so it doesn't trigger again on reconnect.
+      headphoneDeviceIdRef.current = null;
+    }
+  }
+
+  function toggleEchoCancel() {
+    void applyEchoCancel(!echoCancelEnabledRef.current);
+  }
+
   function updateHpfFreq(value: number) {
     const freq = Math.max(20, value);
     setHpfFreqState(freq);
@@ -959,6 +1071,10 @@ export function useProximityVoice(
     setHpfFreq: updateHpfFreq,
     agcEnabled,
     toggleAgc,
+    echoCancelEnabled,
+    toggleEchoCancel,
+    headphonePrompt,
+    confirmHeadphones,
     gateThreshold,
     setGateThreshold: updateGateThreshold,
     audioBlocked,

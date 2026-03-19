@@ -84,13 +84,17 @@ interface Props {
   onHpfFreqChange: (value: number) => void
   agcEnabled: boolean
   onAgcToggle: () => void
+  echoCancelEnabled: boolean
+  onEchoCancelToggle: () => void
+  headphonePrompt: string | null
+  onHeadphonesConfirm: (accept: boolean) => void
   gateThreshold: number
   onGateThresholdChange: (v: number) => void
   audioBlocked?: boolean
   audioInterrupted?: boolean
 }
 
-export default function VoiceControls({ muted, onToggle, remoteGain, onGainChange, micGain, onMicGainChange, rolloff, onRolloffChange, hpfFreq, onHpfFreqChange, agcEnabled, onAgcToggle, gateThreshold, onGateThresholdChange, audioBlocked, audioInterrupted }: Props) {
+export default function VoiceControls({ muted, onToggle, remoteGain, onGainChange, micGain, onMicGainChange, rolloff, onRolloffChange, hpfFreq, onHpfFreqChange, agcEnabled, onAgcToggle, echoCancelEnabled, onEchoCancelToggle, headphonePrompt, onHeadphonesConfirm, gateThreshold, onGateThresholdChange, audioBlocked, audioInterrupted }: Props) {
   return (
     <>
       {audioInterrupted && (
@@ -101,6 +105,19 @@ export default function VoiceControls({ muted, onToggle, remoteGain, onGainChang
       {audioBlocked && !audioInterrupted && (
         <div style={styles.blockedBanner}>
           Tap anywhere to enable voice audio
+        </div>
+      )}
+      {headphonePrompt && (
+        <div style={styles.headphoneBanner}>
+          <span>🎧 <strong>{headphonePrompt}</strong> detected — disable echo cancellation for better quality?</span>
+          <div style={styles.headphoneBannerBtns}>
+            <button style={styles.headphoneBtn} onClick={() => onHeadphonesConfirm(true)}>
+              Yes, disable AEC
+            </button>
+            <button style={{ ...styles.headphoneBtn, ...styles.headphoneBtnDismiss }} onClick={() => onHeadphonesConfirm(false)}>
+              No, keep it
+            </button>
+          </div>
         </div>
       )}
       <div style={styles.wrapper}>
@@ -143,13 +160,22 @@ export default function VoiceControls({ muted, onToggle, remoteGain, onGainChang
           unit="rms"
           title="Noise gate: mic is silenced when its RMS level is below this threshold. 0 = off. ~10 = light (blocks dead silence), ~25 = medium (blocks background hum), ~50 = aggressive."
         />
-        <button
-          style={{ ...styles.btn, ...styles.agcBtn, background: agcEnabled ? 'rgba(34,197,94,0.25)' : 'rgba(0,0,0,0.7)' }}
-          onClick={onAgcToggle}
-          title="Automatic Gain Control normalises your mic volume. Disable if you prefer manual control via the Mic slider."
-        >
-          AGC {agcEnabled ? 'ON' : 'OFF'}
-        </button>
+        <div style={styles.toggleRow}>
+          <button
+            style={{ ...styles.btn, ...styles.agcBtn, background: agcEnabled ? 'rgba(34,197,94,0.25)' : 'rgba(0,0,0,0.7)' }}
+            onClick={onAgcToggle}
+            title="Automatic Gain Control normalises your mic volume. Disable if you prefer manual control via the Mic slider."
+          >
+            AGC {agcEnabled ? 'ON' : 'OFF'}
+          </button>
+          <button
+            style={{ ...styles.btn, ...styles.agcBtn, background: echoCancelEnabled ? 'rgba(34,197,94,0.25)' : 'rgba(0,0,0,0.7)' }}
+            onClick={onEchoCancelToggle}
+            title="Echo Cancellation removes your speaker output from your mic signal. Disable when using headphones — no echo risk and better simultaneous-speech quality."
+          >
+            AEC {echoCancelEnabled ? 'ON' : 'OFF'}
+          </button>
+        </div>
       </div>
     </>
   )
@@ -236,5 +262,47 @@ const styles: Record<string, React.CSSProperties> = {
     zIndex: 9999,
     whiteSpace: 'nowrap',
     boxShadow: '0 2px 12px rgba(0,0,0,0.4)',
+  },
+  headphoneBanner: {
+    position: 'fixed',
+    top: 16,
+    left: '50%',
+    transform: 'translateX(-50%)',
+    background: 'rgba(14, 116, 144, 0.95)',
+    color: '#fff',
+    padding: '12px 20px',
+    borderRadius: 12,
+    fontSize: 14,
+    zIndex: 9999,
+    boxShadow: '0 2px 12px rgba(0,0,0,0.4)',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    gap: 10,
+    maxWidth: 420,
+    textAlign: 'center' as const,
+  },
+  headphoneBannerBtns: {
+    display: 'flex',
+    gap: 8,
+  },
+  headphoneBtn: {
+    background: 'rgba(255,255,255,0.2)',
+    color: '#fff',
+    border: '1px solid rgba(255,255,255,0.4)',
+    borderRadius: 8,
+    padding: '5px 14px',
+    fontSize: 13,
+    cursor: 'pointer',
+    fontWeight: 600,
+  },
+  headphoneBtnDismiss: {
+    background: 'transparent',
+    fontWeight: 400,
+  },
+  toggleRow: {
+    display: 'flex',
+    flexDirection: 'row' as const,
+    gap: 8,
   },
 }
