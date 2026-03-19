@@ -10,6 +10,7 @@ import type { RemotePlayer } from "../types";
 // Vite-specific and creates a bundled AudioWorklet script at build time.
 import NoiseSuppressorWorkletUrl from "@timephy/rnnoise-wasm/NoiseSuppressorWorklet?worker&url";
 import { NoiseSuppressorWorklet_Name } from "@timephy/rnnoise-wasm";
+import { MicVAD } from "@ricky0123/vad-web";
 
 const CONNECT_RANGE = 7;
 const DISCONNECT_RANGE = 9;
@@ -26,7 +27,7 @@ const DEFAULT_ROLLOFF = 1.4; // exponent applied to normalised distance (0–1)
 const HPF_STORAGE_KEY = "gather_poc_hpf_freq";
 const DEFAULT_HPF_FREQ = 80; // Hz — removes sub-bass rumble, leaves voice intact
 const GATE_STORAGE_KEY = "gather_poc_gate_threshold";
-const DEFAULT_GATE_THRESHOLD = 25; // RMS threshold on 0–255 scale; 0 = off
+const DEFAULT_GATE_THRESHOLD = 50; // speech probability ×100 (0–100); 0 = off; 50 = Silero default
 const GATE_ATTACK_TC = 0.003;  // seconds — time constant to open (fast, ~10ms)
 const GATE_RELEASE_TC = 0.08;  // seconds — time constant to close (slow, ~250ms)
 const DISCONNECTED_GRACE_MS = 5000;
@@ -134,7 +135,8 @@ export function useProximityVoice(
   const audioCtx = useRef<AudioContext | null>(null);
   const micGainNode = useRef<GainNode | null>(null); // controls outgoing mic level
   const noiseGateNode = useRef<GainNode | null>(null); // noise gate before micGain
-  const gateIntervalIdRef = useRef<number | null>(null);
+  const gateIntervalIdRef = useRef<number | null>(null); // RMS fallback interval id
+  const vadRef = useRef<MicVAD | null>(null); // Silero VAD instance (replaces RMS gate when ready)
   const localAnalyser = useRef<AnalyserNode | null>(null);
   const peers = useRef<Map<string, PeerEntry>>(new Map());
   const [isMicReady, setIsMicReady] = useState(false);
@@ -287,17 +289,26 @@ export function useProximityVoice(
           ctx.createMediaStreamSource(processedStream).connect(analyser);
           localAnalyser.current = analyser;
 
-          // Noise gate: check mic RMS every 20ms against the user-set threshold.
-          // When voice is detected (rms > threshold) the gate GainNode opens fast
-          // (GATE_ATTACK_TC); when silence is detected it closes slowly (GATE_RELEASE_TC)
-          // so word endings are not clipped.  Threshold 0 = disabled (gate held open).
+          // Noise gate — Silero VAD (ML-based) with RMS fallback.
+          //
+          // Primary: MicVAD (Silero VAD v5/legacy model via ONNX) runs its own
+          //   AudioWorklet inside our AudioContext, reading from processedStream.
+          //   onSpeechStart/onSpeechEnd open/close the noiseGateNode with the same
+          //   GATE_ATTACK_TC / GATE_RELEASE_TC time constants.
+          //
+          // Fallback: if MicVAD fails to load (model fetch blocked, WASM unsupported
+          //   etc.) an RMS threshold interval keeps the gate functional.
+          //
+          // Gate threshold 0 → gate disabled; >0 maps to positiveSpeechThreshold
+          //   (value / 100).  The RMS fallback uses the value directly on 0–255 scale.
+
+          // --- RMS fallback interval (runs until VAD replaces it) ---
           const freqData = new Uint8Array(analyser.frequencyBinCount);
-          const gateTimerId = window.setInterval(() => {
+          const rmsGateTimer = window.setInterval(() => {
             const threshold = gateThresholdRef.current;
             const gate = noiseGateNode.current;
             if (!gate) return;
             if (threshold === 0) {
-              // Ensure the gate stays fully open when disabled.
               if (gate.gain.value < 0.99) gate.gain.setTargetAtTime(1, ctx.currentTime, GATE_ATTACK_TC);
               return;
             }
@@ -311,7 +322,58 @@ export function useProximityVoice(
               gate.gain.setTargetAtTime(0, ctx.currentTime, GATE_RELEASE_TC);
             }
           }, 20);
-          gateIntervalIdRef.current = gateTimerId;
+          gateIntervalIdRef.current = rmsGateTimer;
+
+          // --- Silero VAD (primary) ---
+          // Initialised asynchronously; on success it cancels the RMS interval.
+          // We pass our existing AudioContext and processedStream so the VAD worklet
+          // lives in the same audio graph without a second getUserMedia call.
+          // pauseStream/resumeStream are no-ops — we own the stream lifecycle.
+          const posThresh = Math.max(0.01, gateThresholdRef.current / 100);
+          MicVAD.new({
+            audioContext: ctx,
+            getStream: async () => processedStream,
+            pauseStream: async () => {},
+            resumeStream: async (stream) => stream,
+            startOnLoad: false,
+            baseAssetPath: "/",
+            onnxWASMBasePath: "/",
+            positiveSpeechThreshold: posThresh,
+            negativeSpeechThreshold: Math.max(0.01, posThresh - 0.15),
+            // Hold the gate open for ~300ms after speech drops — avoids clipping
+            // trailing consonants and breath pauses mid-sentence.
+            redemptionMs: 300,
+            onSpeechStart: () => {
+              if (gateThresholdRef.current === 0) return;
+              const gate = noiseGateNode.current;
+              if (gate) gate.gain.setTargetAtTime(1, ctx.currentTime, GATE_ATTACK_TC);
+            },
+            onSpeechEnd: () => {
+              if (gateThresholdRef.current === 0) return;
+              const gate = noiseGateNode.current;
+              if (gate) gate.gain.setTargetAtTime(0, ctx.currentTime, GATE_RELEASE_TC);
+            },
+            onVADMisfire: () => {
+              if (gateThresholdRef.current === 0) return;
+              const gate = noiseGateNode.current;
+              if (gate) gate.gain.setTargetAtTime(0, ctx.currentTime, GATE_RELEASE_TC);
+            },
+          }).then((vad) => {
+            vadRef.current = vad;
+            // Cancel the RMS fallback — VAD takes over from here.
+            if (gateIntervalIdRef.current !== null) {
+              window.clearInterval(gateIntervalIdRef.current);
+              gateIntervalIdRef.current = null;
+            }
+            // If gate is active, start closed and wait for first speech event.
+            if (gateThresholdRef.current > 0 && noiseGateNode.current) {
+              noiseGateNode.current.gain.setTargetAtTime(0, ctx.currentTime, GATE_RELEASE_TC);
+            }
+            void vad.start();
+            console.log("[voice] Silero VAD gate active");
+          }).catch((err) => {
+            console.warn("[voice] Silero VAD init failed — RMS gate fallback active:", err);
+          });
 
           // Attach mic tracks to peers that were created while permission was
           // pending, and renegotiate so they receive our audio.
@@ -356,6 +418,9 @@ export function useProximityVoice(
         window.clearInterval(gateIntervalIdRef.current);
         gateIntervalIdRef.current = null;
       }
+      // Pause (not destroy) the VAD — destroy() would stop our shared processedStream tracks.
+      void vadRef.current?.pause();
+      vadRef.current = null;
       // Closing the AudioContext also destroys the RNNoise worklet and all nodes.
       void ctx.close();
     };
@@ -1017,12 +1082,18 @@ export function useProximityVoice(
   function updateGateThreshold(value: number) {
     const next = Math.max(0, value);
     setGateThresholdState(next);
-    // If gate is being disabled, immediately open the gate node so it doesn't
-    // stay silenced until the next gate interval tick.
+    const ctx = audioCtx.current;
+    const gate = noiseGateNode.current;
     if (next === 0) {
-      const ctx = audioCtx.current;
-      const gate = noiseGateNode.current;
+      // Gate disabled — open immediately so mic is never silenced.
       if (ctx && gate) gate.gain.setTargetAtTime(1, ctx.currentTime, GATE_ATTACK_TC);
+    } else {
+      // Update VAD thresholds at runtime without reinitialising the model.
+      const posThresh = next / 100;
+      vadRef.current?.setOptions({
+        positiveSpeechThreshold: posThresh,
+        negativeSpeechThreshold: Math.max(0.01, posThresh - 0.15),
+      });
     }
     try { localStorage.setItem(GATE_STORAGE_KEY, String(next)); } catch { /* storage unavailable */ }
   }

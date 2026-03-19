@@ -157,8 +157,8 @@ export default function VoiceControls({ muted, onToggle, remoteGain, onGainChang
           min={0}
           sliderMax={80}
           step={1}
-          unit="rms"
-          title="Noise gate: mic is silenced when its RMS level is below this threshold. 0 = off. ~10 = light (blocks dead silence), ~25 = medium (blocks background hum), ~50 = aggressive."
+          unit="%"
+          title="Noise gate (Silero VAD): mic is silenced when no speech is detected. 0 = off. 30 = lenient, 50 = default (Silero), 70 = strict. Higher = requires more confidence of speech before opening the gate."
         />
         <div style={styles.toggleRow}>
           <button
