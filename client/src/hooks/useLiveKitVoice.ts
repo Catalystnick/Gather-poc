@@ -1,6 +1,6 @@
 // LiveKit-based proximity voice
 // Uses LiveKit room with selective subscription based on distance.
-// Mic processing: browser-native noiseSuppression + echoCancellation + AGC via getUserMedia constraints.
+// Mic processing: RNNoise (neural-net denoiser) → gain → stereoMerger (forced stereo) → publish.
 
 import { useEffect, useRef, useState } from "react";
 import type { Socket } from "socket.io-client";
@@ -13,6 +13,7 @@ import {
   type RemoteTrackPublication,
   type RemoteAudioTrack,
 } from "livekit-client";
+import { NoiseSuppressorWorklet_Name } from "@timephy/rnnoise-wasm";
 
 const CONNECT_RANGE = 7;
 const DISCONNECT_RANGE = 9;
@@ -265,9 +266,17 @@ export function useLiveKitVoice(
       return;
     }
 
+    const base = (import.meta as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? "/";
+    const workletUrl = new URL("NoiseSuppressorWorklet.js", window.location.origin + base).href;
+    const rnnoiseReady = ctx.audioWorklet
+      .addModule(workletUrl)
+      .then(() => true)
+      .catch((err) => { console.warn("[voice] RNNoise worklet failed to load:", err); return false; });
+
     navigator.mediaDevices
       .getUserMedia(AUDIO_CONSTRAINTS)
       .then(async (rawStream) => {
+        const rnnoiseAvailable = await rnnoiseReady;
         rawMicStream.current = rawStream;
 
         const gainNode = ctx.createGain();
@@ -278,11 +287,17 @@ export function useLiveKitVoice(
         micSourceRef.current = micSource;
         const micDest = ctx.createMediaStreamDestination();
         const stereoMerger = ctx.createChannelMerger(2);
-        // Hard guarantee dual-mono publish: feed the same processed signal into L and R.
+        // Force stereo: RNNoise outputs mono — duplicate into both L and R channels.
         gainNode.connect(stereoMerger, 0, 0);
         gainNode.connect(stereoMerger, 0, 1);
         stereoMerger.connect(micDest);
-        micSource.connect(gainNode);
+
+        if (rnnoiseAvailable) {
+          const rnnoiseNode = new AudioWorkletNode(ctx, NoiseSuppressorWorklet_Name);
+          micSource.connect(rnnoiseNode).connect(gainNode);
+        } else {
+          micSource.connect(gainNode);
+        }
         localStream.current = micDest.stream;
 
         if (IS_MOBILE && "setSinkId" in ctx) {
