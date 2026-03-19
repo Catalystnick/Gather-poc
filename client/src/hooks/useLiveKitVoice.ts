@@ -1,6 +1,6 @@
 // LiveKit-based proximity voice
 // Uses LiveKit room with selective subscription based on distance.
-// Mic processing (RNnoise, VAD gate) preserved from P2P implementation.
+// Mic processing: browser-native noiseSuppression + echoCancellation + AGC via getUserMedia constraints.
 
 import { useEffect, useRef, useState } from "react";
 import type { Socket } from "socket.io-client";
@@ -13,8 +13,6 @@ import {
   type RemoteTrackPublication,
   type RemoteAudioTrack,
 } from "livekit-client";
-import { MicVAD } from "@ricky0123/vad-web";
-import { NoiseSuppressorWorklet_Name } from "@timephy/rnnoise-wasm";
 
 const CONNECT_RANGE = 7;
 const DISCONNECT_RANGE = 9;
@@ -27,13 +25,8 @@ const GAIN_STORAGE_KEY = "gather_poc_remote_gain";
 const MIC_GAIN_STORAGE_KEY = "gather_poc_mic_gain";
 const ROLLOFF_STORAGE_KEY = "gather_poc_rolloff";
 const DEFAULT_ROLLOFF = 1.4;
-const GATE_STORAGE_KEY = "gather_poc_gate_threshold";
-const DEFAULT_GATE_THRESHOLD = 0;
-const RNNOISE_STORAGE_KEY = "gather_poc_rnnoise";
 const AUDIO_SETTINGS_VERSION_KEY = "gather_poc_audio_settings_version";
-const AUDIO_SETTINGS_VERSION = "2026-03-standard-v1";
-const GATE_ATTACK_TC = 0.003;
-const GATE_RELEASE_TC = 0.08;
+const AUDIO_SETTINGS_VERSION = "2026-03-native-v1"; // bumped: drops legacy gate/rnnoise settings
 const MIC_DUCKING_FACTOR = 0.25;
 const MIC_DUCK_ATTACK_TC = 0.02;
 const MIC_DUCK_RELEASE_TC = 0.14;
@@ -150,30 +143,6 @@ function loadRolloff(): number {
   }
 }
 
-function loadGateThreshold(): number {
-  ensureAudioSettingsMigration();
-  try {
-    const raw = localStorage.getItem(GATE_STORAGE_KEY);
-    if (!raw) return DEFAULT_GATE_THRESHOLD;
-    const parsed = Number(raw);
-    if (Number.isNaN(parsed)) return DEFAULT_GATE_THRESHOLD;
-    return Math.max(0, parsed);
-  } catch {
-    return DEFAULT_GATE_THRESHOLD;
-  }
-}
-
-function loadRnnoiseEnabled(): boolean {
-  ensureAudioSettingsMigration();
-  try {
-    const raw = localStorage.getItem(RNNOISE_STORAGE_KEY);
-    if (!raw) return true;
-    return raw === "1" || raw.toLowerCase() === "true";
-  } catch {
-    return true;
-  }
-}
-
 function ensureAudioSettingsMigration() {
   if (audioSettingsMigrationChecked) return;
   audioSettingsMigrationChecked = true;
@@ -182,8 +151,9 @@ function ensureAudioSettingsMigration() {
     localStorage.removeItem(GAIN_STORAGE_KEY);
     localStorage.removeItem(MIC_GAIN_STORAGE_KEY);
     localStorage.removeItem(ROLLOFF_STORAGE_KEY);
-    localStorage.removeItem(GATE_STORAGE_KEY);
-    localStorage.removeItem(RNNOISE_STORAGE_KEY);
+    // Clean up legacy gate/rnnoise keys
+    localStorage.removeItem("gather_poc_gate_threshold");
+    localStorage.removeItem("gather_poc_rnnoise");
     localStorage.setItem(AUDIO_SETTINGS_VERSION_KEY, AUDIO_SETTINGS_VERSION);
   } catch {
     /* storage unavailable */
@@ -204,13 +174,11 @@ export function useLiveKitVoice(
   const [remoteGain, setRemoteGain] = useState(loadRemoteGain());
   const [micGain, setMicGainState] = useState(loadMicGain());
   const [rolloff, setRolloffState] = useState(loadRolloff());
-  const [gateThreshold, setGateThresholdState] = useState(loadGateThreshold());
   const [agcEnabled, setAgcEnabledState] = useState<boolean>(DEFAULT_AGC_ENABLED);
   const [echoCancelEnabled, setEchoCancelEnabledState] = useState(true);
   const [headphonePrompt, setHeadphonePrompt] = useState<string | null>(null);
   const [audioBlocked, setAudioBlocked] = useState(false);
   const [audioInterrupted, setAudioInterrupted] = useState(false);
-  const [rnnoiseEnabled, setRnnoiseEnabledState] = useState(loadRnnoiseEnabled());
   const [roomReady, setRoomReady] = useState(false);
 
   const roomRef = useRef<Room | null>(null);
@@ -218,10 +186,6 @@ export function useLiveKitVoice(
   const rawMicStream = useRef<MediaStream | null>(null);
   const audioCtx = useRef<AudioContext | null>(null);
   const micGainNode = useRef<GainNode | null>(null);
-  const noiseGateNode = useRef<GainNode | null>(null);
-  const gateIntervalIdRef = useRef<number | null>(null);
-  const vadRef = useRef<MicVAD | null>(null);
-  const rnnoiseNodeRef = useRef<AudioWorkletNode | null>(null);
   const micSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const localAnalyser = useRef<AnalyserNode | null>(null);
   const remoteEntries = useRef<Map<string, RemoteEntry>>(new Map());
@@ -239,12 +203,8 @@ export function useLiveKitVoice(
   remoteGainRef.current = remoteGain;
   const rolloffRef = useRef(rolloff);
   rolloffRef.current = rolloff;
-  const gateThresholdRef = useRef(gateThreshold);
-  gateThresholdRef.current = gateThreshold;
   const echoCancelEnabledRef = useRef(echoCancelEnabled);
   echoCancelEnabledRef.current = echoCancelEnabled;
-  const rnnoiseEnabledRef = useRef(rnnoiseEnabled);
-  rnnoiseEnabledRef.current = rnnoiseEnabled;
   const micGainRef = useRef(micGain);
   micGainRef.current = micGain;
   const mutedRef = useRef(muted);
@@ -265,7 +225,7 @@ export function useLiveKitVoice(
     micDuckedRef.current = shouldDuck && effectiveBase > 0;
   }
 
-  // Mic setup (same pipeline as P2P: RNnoise, VAD gate, mic gain)
+  // Mic setup — browser-native noiseSuppression + echoCancellation + AGC via getUserMedia constraints
   useEffect(() => {
     const ctx = new AudioContextCtor();
     audioCtx.current = ctx;
@@ -305,45 +265,23 @@ export function useLiveKitVoice(
       return;
     }
 
-    const base = (import.meta as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? "/";
-    const workletUrl = new URL("NoiseSuppressorWorklet.js", window.location.origin + base).href;
-    const workletReady = ctx.audioWorklet
-      .addModule(workletUrl)
-      .then(() => true)
-      .catch((err) => {
-        console.warn("[voice] RNnoise worklet failed to load:", err);
-        return false;
-      });
-
     navigator.mediaDevices
       .getUserMedia(AUDIO_CONSTRAINTS)
       .then(async (rawStream) => {
-        const rnnoiseAvailable = await workletReady;
         rawMicStream.current = rawStream;
 
-        const gateNode = ctx.createGain();
-        gateNode.gain.value = 1;
-        noiseGateNode.current = gateNode;
         const gainNode = ctx.createGain();
         gainNode.gain.value = loadMicGain();
+        // Force stereo so any mono source doesn't produce one-ear audio.
+        // Web Audio up-mix (mono→stereo, "speakers"): output.L = output.R = input.
+        gainNode.channelCount = 2;
+        gainNode.channelCountMode = "explicit";
         micGainNode.current = gainNode;
+
         const micSource = ctx.createMediaStreamSource(rawStream);
         micSourceRef.current = micSource;
         const micDest = ctx.createMediaStreamDestination();
-        const stereoMerger = ctx.createChannelMerger(2);
-        // Duplicate mono mic into both L/R channels to avoid one-ear/mono regressions.
-        gainNode.connect(stereoMerger, 0, 0);
-        gainNode.connect(stereoMerger, 0, 1);
-        stereoMerger.connect(micDest);
-
-        const useRnnoise = loadRnnoiseEnabled() && rnnoiseAvailable;
-        if (useRnnoise) {
-          const rnnoiseNode = new AudioWorkletNode(ctx, NoiseSuppressorWorklet_Name);
-          rnnoiseNodeRef.current = rnnoiseNode;
-          micSource.connect(rnnoiseNode).connect(gateNode).connect(gainNode);
-        } else {
-          micSource.connect(gateNode).connect(gainNode);
-        }
+        micSource.connect(gainNode).connect(micDest);
         localStream.current = micDest.stream;
 
         if (IS_MOBILE && "setSinkId" in ctx) {
@@ -366,68 +304,6 @@ export function useLiveKitVoice(
         analyser.fftSize = 256;
         ctx.createMediaStreamSource(rawStream).connect(analyser);
         localAnalyser.current = analyser;
-
-        const freqData = new Uint8Array(analyser.frequencyBinCount);
-        const rmsGateTimer = window.setInterval(() => {
-          const threshold = gateThresholdRef.current;
-          const gate = noiseGateNode.current;
-          if (!gate) return;
-          if (threshold === 0) {
-            if (gate.gain.value < 0.99) gate.gain.setTargetAtTime(1, ctx.currentTime, GATE_ATTACK_TC);
-            return;
-          }
-          analyser.getByteFrequencyData(freqData);
-          let sum = 0;
-          for (let i = 0; i < freqData.length; i++) sum += freqData[i] * freqData[i];
-          const rms = Math.sqrt(sum / freqData.length);
-          if (rms > threshold) {
-            gate.gain.setTargetAtTime(1, ctx.currentTime, GATE_ATTACK_TC);
-          } else {
-            gate.gain.setTargetAtTime(0, ctx.currentTime, GATE_RELEASE_TC);
-          }
-        }, 20);
-        gateIntervalIdRef.current = rmsGateTimer;
-
-        const posThresh = Math.max(0.01, gateThresholdRef.current / 100);
-        MicVAD.new({
-          audioContext: ctx,
-          getStream: async () => rawStream,
-          pauseStream: async () => {},
-          resumeStream: async (stream) => stream,
-          startOnLoad: false,
-          baseAssetPath: "/",
-          onnxWASMBasePath: "/",
-          positiveSpeechThreshold: posThresh,
-          negativeSpeechThreshold: Math.max(0.01, posThresh - 0.15),
-          redemptionMs: 300,
-          onSpeechStart: () => {
-            if (gateThresholdRef.current === 0) return;
-            const gate = noiseGateNode.current;
-            if (gate) gate.gain.setTargetAtTime(1, ctx.currentTime, GATE_ATTACK_TC);
-          },
-          onSpeechEnd: () => {
-            if (gateThresholdRef.current === 0) return;
-            const gate = noiseGateNode.current;
-            if (gate) gate.gain.setTargetAtTime(0, ctx.currentTime, GATE_RELEASE_TC);
-          },
-          onVADMisfire: () => {
-            if (gateThresholdRef.current === 0) return;
-            const gate = noiseGateNode.current;
-            if (gate) gate.gain.setTargetAtTime(0, ctx.currentTime, GATE_RELEASE_TC);
-          },
-        })
-          .then((vad) => {
-            vadRef.current = vad;
-            if (gateIntervalIdRef.current !== null) {
-              window.clearInterval(gateIntervalIdRef.current);
-              gateIntervalIdRef.current = null;
-            }
-            if (gateThresholdRef.current > 0 && noiseGateNode.current) {
-              noiseGateNode.current.gain.setTargetAtTime(0, ctx.currentTime, GATE_RELEASE_TC);
-            }
-            void vad.start();
-          })
-          .catch((err) => console.warn("[voice] Silero VAD init failed:", err));
       })
       .catch((err) => console.warn("[voice] mic denied:", err));
 
@@ -442,13 +318,6 @@ export function useLiveKitVoice(
       window.removeEventListener("touchstart", resumeOnGesture);
       document.removeEventListener("visibilitychange", resumeOnVisibility);
       rawMicStream.current?.getTracks().forEach((t) => t.stop());
-      if (gateIntervalIdRef.current !== null) {
-        window.clearInterval(gateIntervalIdRef.current);
-        gateIntervalIdRef.current = null;
-      }
-      void vadRef.current?.pause();
-      vadRef.current = null;
-      rnnoiseNodeRef.current = null;
       micSourceRef.current = null;
       void ctx.close();
     };
