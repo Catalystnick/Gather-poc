@@ -3,6 +3,7 @@ import { useFrame } from '@react-three/fiber'
 import { Text } from '@react-three/drei'
 import { Vector3, type Group } from 'three'
 import AvatarMesh from './AvatarMesh'
+import ChatBubble from './ChatBubble'
 import type { Avatar } from '../App'
 
 interface Props {
@@ -10,11 +11,14 @@ interface Props {
   name: string
   avatar: Avatar
   position: { x: number; y: number; z: number }
+  bubble?: string
+  inRange?: boolean
+  isSpeaking?: boolean
 }
 
 const target = new Vector3()
 
-export default function RemotePlayer({ name, avatar, position }: Props) {
+export default function RemotePlayer({ name, avatar, position, bubble, inRange, isSpeaking }: Props) {
   const ref = useRef<Group>(null)
 
   useFrame(() => {
@@ -26,6 +30,21 @@ export default function RemotePlayer({ name, avatar, position }: Props) {
   return (
     <group ref={ref} position={[position.x, position.y, position.z]}>
       <AvatarMesh avatar={avatar} />
+
+      {/* Voice range indicator — blue ring when in range, green when speaking */}
+      {inRange && !isSpeaking && (
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.45, 0]}>
+          <ringGeometry args={[0.55, 0.65, 32]} />
+          <meshBasicMaterial color="#3498db" transparent opacity={0.5} />
+        </mesh>
+      )}
+      {isSpeaking && (
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.45, 0]}>
+          <ringGeometry args={[0.55, 0.65, 32]} />
+          <meshBasicMaterial color="#2ecc71" transparent opacity={0.8} />
+        </mesh>
+      )}
+
       <Text
         position={[0, 1.4, 0]}
         fontSize={0.25}
@@ -37,6 +56,8 @@ export default function RemotePlayer({ name, avatar, position }: Props) {
       >
         {name}
       </Text>
+
+      {bubble && <ChatBubble text={bubble} />}
     </group>
   )
 }

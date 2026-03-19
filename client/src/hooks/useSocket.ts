@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { io, type Socket } from 'socket.io-client'
 import type { Avatar, Player } from '../App'
 
@@ -12,16 +12,18 @@ export interface RemotePlayer {
 }
 
 export function useSocket(player: Player) {
-  const socketRef = useRef<Socket | null>(null)
+  const [socket, setSocket] = useState<Socket | null>(null)
   const [remotePlayers, setRemotePlayers] = useState<Map<string, RemotePlayer>>(new Map())
 
   useEffect(() => {
-    const socket = io(SERVER_URL)
-    socketRef.current = socket
+    const s = io(SERVER_URL)
+    setSocket(s)
 
-    socket.on('connect', () => {
-      socket.emit('player:join', { name: player.name, avatar: player.avatar })
+    s.on('connect', () => {
+      s.emit('player:join', { name: player.name, avatar: player.avatar })
     })
+
+    const socket = s
 
     socket.on('room:state', (players: RemotePlayer[]) => {
       setRemotePlayers(new Map(players.map(p => [p.id, p])))
@@ -48,12 +50,12 @@ export function useSocket(player: Player) {
       })
     })
 
-    return () => { socket.disconnect() }
+    return () => { s.disconnect() }
   }, [player.name, player.avatar])
 
   function emitMove(position: { x: number; y: number; z: number }) {
-    socketRef.current?.emit('player:move', position)
+    socket?.emit('player:move', position)
   }
 
-  return { remotePlayers, emitMove }
+  return { socket, remotePlayers, emitMove }
 }

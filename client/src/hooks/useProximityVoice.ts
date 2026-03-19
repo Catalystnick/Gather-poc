@@ -7,36 +7,67 @@ import type { Socket } from 'socket.io-client'
 import type { RemotePlayer } from './useSocket'
 
 const VOICE_RANGE = 8
+const SPEAKING_THRESHOLD = 20
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }]
 
 interface PeerEntry {
   connection: RTCPeerConnection
   gainNode: GainNode
+  analyser: AnalyserNode
 }
 
 export function useProximityVoice(
   socket: Socket | null,
-  localPosition: { x: number; y: number; z: number },
+  localPositionRef: React.MutableRefObject<{ x: number; y: number; z: number }>,
   remotePlayers: Map<string, RemotePlayer>
 ) {
   const [muted, setMuted] = useState(false)
+  const [isLocalSpeaking, setIsLocalSpeaking] = useState(false)
+  const [speakingPeers, setSpeakingPeers] = useState<Set<string>>(new Set())
+  const [connectedPeers, setConnectedPeers] = useState<Set<string>>(new Set())
+
   const localStream = useRef<MediaStream | null>(null)
   const audioCtx = useRef<AudioContext | null>(null)
+  const localAnalyser = useRef<AnalyserNode | null>(null)
   const peers = useRef<Map<string, PeerEntry>>(new Map())
 
-  // Acquire mic on mount
+  const remotePlayersRef = useRef(remotePlayers)
+  remotePlayersRef.current = remotePlayers
+
+  const wasLocalSpeaking = useRef(false)
+  const wasSpeakingPeers = useRef(new Set<string>())
+
+  // Acquire mic and set up local speaking analyser
   useEffect(() => {
+    const ctx = new AudioContext()
+    audioCtx.current = ctx
+
+    // Browsers suspend AudioContext until a user gesture.
+    // Resume it as soon as mic permission is granted (which itself requires a gesture).
     navigator.mediaDevices.getUserMedia({ audio: true, video: false })
-      .then(stream => { localStream.current = stream })
+      .then(stream => {
+        localStream.current = stream
+        ctx.resume()
+
+        // Analyser on local mic so we can detect our own speaking
+        const analyser = ctx.createAnalyser()
+        analyser.fftSize = 256
+        ctx.createMediaStreamSource(stream).connect(analyser)
+        localAnalyser.current = analyser
+      })
       .catch(err => console.warn('[voice] mic denied:', err))
 
-    audioCtx.current = new AudioContext()
+    // Fallback: also resume on any user interaction in case mic was
+    // pre-granted and the AudioContext was created before a gesture
+    const resume = () => { ctx.resume() }
+    window.addEventListener('pointerdown', resume, { once: true })
 
     return () => {
+      window.removeEventListener('pointerdown', resume)
       peers.current.forEach(({ connection }) => connection.close())
       peers.current.clear()
       localStream.current?.getTracks().forEach(t => t.stop())
-      audioCtx.current?.close()
+      ctx.close()
     }
   }, [])
 
@@ -70,13 +101,31 @@ export function useProximityVoice(
     }
   }, [socket])
 
-  // Proximity check — throttled to ~10Hz via setInterval
+  // Proximity + speaking detection — restarts only when socket changes
   useEffect(() => {
     if (!socket) return
 
+    const dataArray = new Uint8Array(128)
+
     const interval = setInterval(() => {
-      remotePlayers.forEach((remote, id) => {
-        const dist = distance(localPosition, remote.position)
+      const local = localPositionRef.current
+      const remote = remotePlayersRef.current
+      const nextSpeaking = new Set<string>()
+
+      // Detect local speaking via local mic analyser
+      if (localAnalyser.current) {
+        localAnalyser.current.getByteFrequencyData(dataArray)
+        const speaking = rmsOf(dataArray) > SPEAKING_THRESHOLD
+        if (speaking !== wasLocalSpeaking.current) {
+          console.log(`[voice] you ${speaking ? 'started' : 'stopped'} speaking`)
+          wasLocalSpeaking.current = speaking
+        }
+        setIsLocalSpeaking(speaking)
+      }
+
+      // Proximity + remote speaking detection
+      remote.forEach((player, id) => {
+        const dist = distance(local, player.position)
         const connected = peers.current.has(id)
 
         if (dist < VOICE_RANGE && !connected) {
@@ -85,22 +134,41 @@ export function useProximityVoice(
           closePeer(id)
           socket.emit('rtc:hangup', { to: id })
         } else if (connected) {
-          const gain = peers.current.get(id)?.gainNode
-          if (gain) gain.gain.value = 1 - dist / VOICE_RANGE
+          const entry = peers.current.get(id)!
+          entry.gainNode.gain.value = 1 - dist / VOICE_RANGE
+
+          // Detect remote peer speaking via their incoming stream analyser
+          entry.analyser.getByteFrequencyData(dataArray)
+          const remoteSpeaking = rmsOf(dataArray) > SPEAKING_THRESHOLD
+          if (remoteSpeaking) nextSpeaking.add(id)
+
+          const name = remote.get(id)?.name ?? id
+          const wasSpeaking = wasSpeakingPeers.current.has(id)
+          if (remoteSpeaking && !wasSpeaking) console.log(`[voice] ${name} started speaking`)
+          if (!remoteSpeaking && wasSpeaking) console.log(`[voice] ${name} stopped speaking`)
         }
       })
+
+      wasSpeakingPeers.current = nextSpeaking
+      setSpeakingPeers(nextSpeaking)
+      setConnectedPeers(new Set(peers.current.keys()))
     }, 100)
 
     return () => clearInterval(interval)
-  }, [socket, localPosition, remotePlayers])
+  }, [socket])
 
   function getOrCreatePeer(peerId: string, socket: Socket, initiator: boolean): RTCPeerConnection {
     if (peers.current.has(peerId)) return peers.current.get(peerId)!.connection
 
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
-    const gainNode = audioCtx.current!.createGain()
+    const ctx = audioCtx.current!
+
+    const gainNode = ctx.createGain()
     gainNode.gain.value = 1
-    gainNode.connect(audioCtx.current!.destination)
+    gainNode.connect(ctx.destination)
+
+    const analyser = ctx.createAnalyser()
+    analyser.fftSize = 256
 
     localStream.current?.getTracks().forEach(t => pc.addTrack(t, localStream.current!))
 
@@ -109,18 +177,19 @@ export function useProximityVoice(
     }
 
     pc.ontrack = ({ streams }) => {
-      const source = audioCtx.current!.createMediaStreamSource(streams[0])
-      source.connect(gainNode)
+      const source = ctx.createMediaStreamSource(streams[0])
+      source.connect(analyser)
+      analyser.connect(gainNode)
     }
 
-    peers.current.set(peerId, { connection: pc, gainNode })
+    peers.current.set(peerId, { connection: pc, gainNode, analyser })
 
-    if (!initiator) return pc
-
-    pc.createOffer().then(offer => {
-      pc.setLocalDescription(offer)
-      socket.emit('rtc:offer', { to: peerId, offer })
-    })
+    if (initiator) {
+      pc.createOffer().then(offer => {
+        pc.setLocalDescription(offer)
+        socket.emit('rtc:offer', { to: peerId, offer })
+      })
+    }
 
     return pc
   }
@@ -138,13 +207,15 @@ export function useProximityVoice(
   }
 
   function toggleMute() {
-    localStream.current?.getAudioTracks().forEach(t => {
-      t.enabled = muted // flip: if currently muted, re-enable
-    })
+    localStream.current?.getAudioTracks().forEach(t => { t.enabled = muted })
     setMuted(m => !m)
   }
 
-  return { muted, toggleMute }
+  return { muted, toggleMute, isLocalSpeaking, speakingPeers, connectedPeers }
+}
+
+function rmsOf(data: Uint8Array): number {
+  return Math.sqrt(data.reduce((s, v) => s + v * v, 0) / data.length)
 }
 
 function distance(

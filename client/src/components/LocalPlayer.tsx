@@ -10,9 +10,11 @@ const SPEED = 5
 interface Props {
   player: Player
   onMove: (position: { x: number; y: number; z: number }) => void
+  positionRef: React.MutableRefObject<{ x: number; y: number; z: number }>
+  isSpeaking?: boolean
 }
 
-export default function LocalPlayer({ player, onMove }: Props) {
+export default function LocalPlayer({ player, onMove, positionRef, isSpeaking }: Props) {
   const ref = useRef<Group>(null)
   const lastEmit = useRef(0)
   const [, getKeys] = useKeyboardControls()
@@ -27,11 +29,15 @@ export default function LocalPlayer({ player, onMove }: Props) {
     ref.current.position.x += dx * SPEED * delta
     ref.current.position.z += dz * SPEED * delta
 
-    // throttle emit to ~20Hz
+    const { x, y, z } = ref.current.position
+
+    // Keep shared ref in sync for proximity voice
+    positionRef.current = { x, y, z }
+
+    // Throttle emit to ~20Hz
     const now = performance.now()
     if (now - lastEmit.current > 50) {
       lastEmit.current = now
-      const { x, y, z } = ref.current.position
       onMove({ x, y, z })
     }
   })
@@ -39,6 +45,12 @@ export default function LocalPlayer({ player, onMove }: Props) {
   return (
     <group ref={ref} position={[0, 0.5, 0]}>
       <AvatarMesh avatar={player.avatar} />
+      {isSpeaking && (
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.45, 0]}>
+          <ringGeometry args={[0.55, 0.65, 32]} />
+          <meshBasicMaterial color="#2ecc71" transparent opacity={0.8} />
+        </mesh>
+      )}
     </group>
   )
 }
