@@ -330,14 +330,19 @@ export function useLiveKitVoice(
         const micSource = ctx.createMediaStreamSource(rawStream);
         micSourceRef.current = micSource;
         const micDest = ctx.createMediaStreamDestination();
+        const stereoMerger = ctx.createChannelMerger(2);
+        // Duplicate mono mic into both L/R channels to avoid one-ear/mono regressions.
+        gainNode.connect(stereoMerger, 0, 0);
+        gainNode.connect(stereoMerger, 0, 1);
+        stereoMerger.connect(micDest);
 
         const useRnnoise = loadRnnoiseEnabled() && rnnoiseAvailable;
         if (useRnnoise) {
           const rnnoiseNode = new AudioWorkletNode(ctx, NoiseSuppressorWorklet_Name);
           rnnoiseNodeRef.current = rnnoiseNode;
-          micSource.connect(rnnoiseNode).connect(gateNode).connect(gainNode).connect(micDest);
+          micSource.connect(rnnoiseNode).connect(gateNode).connect(gainNode);
         } else {
-          micSource.connect(gateNode).connect(gainNode).connect(micDest);
+          micSource.connect(gateNode).connect(gainNode);
         }
         localStream.current = micDest.stream;
 
