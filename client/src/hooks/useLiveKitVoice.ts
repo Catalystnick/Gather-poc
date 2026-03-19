@@ -34,6 +34,9 @@ const AUDIO_SETTINGS_VERSION_KEY = "gather_poc_audio_settings_version";
 const AUDIO_SETTINGS_VERSION = "2026-03-standard-v1";
 const GATE_ATTACK_TC = 0.003;
 const GATE_RELEASE_TC = 0.08;
+const MIC_DUCKING_FACTOR = 0.25;
+const MIC_DUCK_ATTACK_TC = 0.02;
+const MIC_DUCK_RELEASE_TC = 0.14;
 const ROOM_NAME = "gather-world";
 
 const IS_MOBILE = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
@@ -242,6 +245,25 @@ export function useLiveKitVoice(
   echoCancelEnabledRef.current = echoCancelEnabled;
   const rnnoiseEnabledRef = useRef(rnnoiseEnabled);
   rnnoiseEnabledRef.current = rnnoiseEnabled;
+  const micGainRef = useRef(micGain);
+  micGainRef.current = micGain;
+  const mutedRef = useRef(muted);
+  mutedRef.current = muted;
+  const micDuckedRef = useRef(false);
+
+  function applyEffectiveMicGain(baseGain: number, shouldDuck: boolean) {
+    const ctx = audioCtx.current;
+    const gainNode = micGainNode.current;
+    if (!ctx || !gainNode) return;
+    const effectiveBase = mutedRef.current ? 0 : baseGain;
+    const targetGain = shouldDuck ? effectiveBase * MIC_DUCKING_FACTOR : effectiveBase;
+    gainNode.gain.setTargetAtTime(
+      targetGain,
+      ctx.currentTime,
+      shouldDuck ? MIC_DUCK_ATTACK_TC : MIC_DUCK_RELEASE_TC,
+    );
+    micDuckedRef.current = shouldDuck && effectiveBase > 0;
+  }
 
   // Mic setup (same pipeline as P2P: RNnoise, VAD gate, mic gain)
   useEffect(() => {
@@ -454,15 +476,17 @@ export function useLiveKitVoice(
         prevOutputDeviceIdsRef.current = newIds;
 
         const confirmedId = headphoneDeviceIdRef.current;
-        if (confirmedId && disappearedIds.includes(confirmedId) && !echoCancelEnabledRef.current) {
+        if (confirmedId && disappearedIds.includes(confirmedId)) {
           headphoneDeviceIdRef.current = null;
-          setEchoCancelEnabledState(true);
-          const track = rawMicStream.current?.getAudioTracks()[0];
-          if (track) {
-            try {
-              await track.applyConstraints({ echoCancellation: true });
-            } catch {
-              /* ignore */
+          if (!echoCancelEnabledRef.current) {
+            setEchoCancelEnabledState(true);
+            const track = rawMicStream.current?.getAudioTracks()[0];
+            if (track) {
+              try {
+                await track.applyConstraints({ echoCancellation: true });
+              } catch {
+                /* ignore */
+              }
             }
           }
         }
@@ -589,6 +613,7 @@ export function useLiveKitVoice(
           roomRef.current = null;
           cleanupAllRemoteEntries();
           subscribedIdentities.current.clear();
+          applyEffectiveMicGain(micGainRef.current, false);
           setConnectedPeers(new Set());
           setPeerConnectionStates({});
         });
@@ -672,6 +697,7 @@ export function useLiveKitVoice(
       }
       cleanupAllRemoteEntries();
       subscribedIdentities.current.clear();
+      applyEffectiveMicGain(micGainRef.current, false);
     };
   }, [socket?.id, isMicReady, playerName]);
 
@@ -768,6 +794,8 @@ export function useLiveKitVoice(
 
       wasSpeakingPeers.current = nextSpeaking;
       setSpeakingPeers(nextSpeaking);
+      const shouldDuck = nextSpeaking.size > 0 && !headphoneDeviceIdRef.current;
+      applyEffectiveMicGain(micGainRef.current, shouldDuck);
       setConnectedPeers(new Set(subscribedIdentities.current));
       const ctxState = audioCtx.current?.state;
       const hasPeers = remoteEntries.current.size > 0;
@@ -793,9 +821,11 @@ export function useLiveKitVoice(
   function toggleMute() {
     setMuted((prev) => {
       const next = !prev;
+      mutedRef.current = next;
       localStream.current?.getAudioTracks().forEach((t) => {
         t.enabled = !next;
       });
+      applyEffectiveMicGain(micGainRef.current, micDuckedRef.current);
       return next;
     });
   }
@@ -909,9 +939,7 @@ export function useLiveKitVoice(
   function updateMicGain(value: number) {
     const next = Math.max(0, value);
     setMicGainState(next);
-    if (micGainNode.current && audioCtx.current) {
-      micGainNode.current.gain.setTargetAtTime(next, audioCtx.current.currentTime, 0.02);
-    }
+    applyEffectiveMicGain(next, micDuckedRef.current);
     try {
       localStorage.setItem(MIC_GAIN_STORAGE_KEY, String(next));
     } catch {
