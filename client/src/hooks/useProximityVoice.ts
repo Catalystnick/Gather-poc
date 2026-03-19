@@ -15,7 +15,8 @@ const CONNECT_RANGE = 7;
 const DISCONNECT_RANGE = 9;
 const SPEAKING_THRESHOLD = 20;
 // GainNode.gain is not capped at 1.0 — the slider's full 0.5–5× range works.
-const MIN_GAIN_FLOOR = 0.05; // never fully silent even at the edge of range
+// 0.15 keeps distant peers audible on phone speakers without being intrusive.
+const MIN_GAIN_FLOOR = 0.15;
 const MAX_ACTIVE_PEERS = 8; // admission control for dense crowds
 const TELEMETRY_EVERY_MS = 15000;
 const GAIN_STORAGE_KEY = "gather_poc_remote_gain";
@@ -29,6 +30,11 @@ const ICE_SERVERS_DEFAULT = resolveIceServers();
 const ICE_SERVERS_FIREFOX = resolveIceServersForFirefox();
 
 const IS_MOBILE = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+  typeof navigator !== "undefined" ? navigator.userAgent : "",
+);
+// iOS routes getUserMedia audio sessions to the earpiece by default.
+// We detect it separately so we can apply the loudspeaker override trick.
+const IS_IOS = /iPhone|iPad|iPod/i.test(
   typeof navigator !== "undefined" ? navigator.userAgent : "",
 );
 // Firefox uses a different ICE candidate strategy than Chromium-based browsers.
@@ -45,10 +51,10 @@ const AUDIO_CONSTRAINTS: MediaStreamConstraints = {
     // Leaving the browser's native suppressor on alongside RNNoise causes
     // double-processing artefacts (phase issues, speech colouration).
     noiseSuppression: false,
-    // AGC is disabled on all platforms. On mobile it can cause pumping/clipping
-    // artifacts; on desktop it interferes with headset hardware gain staging.
-    // Users control loudness via the voice gain slider instead.
-    autoGainControl: false,
+    // AGC: enabled on mobile so the OS normalises mic input levels — without it,
+    // mobile mics send a quiet raw signal and the receiving side hears low volume.
+    // Disabled on desktop where headset hardware manages gain staging.
+    autoGainControl: IS_MOBILE,
     // Chrome-only: cuts low-freq rumble that feeds back.
     ...(IS_MOBILE ? {} : { googHighpassFilter: true }),
   } as MediaTrackConstraints,
@@ -166,9 +172,9 @@ export function useProximityVoice(
       }
     };
 
-    // iOS Safari: setting the audio session type to "play-and-record" before
-    // getUserMedia prevents the OS from routing output to the built-in speaker
-    // when headphones or AirPods are connected.
+    // iOS Safari: "play-and-record" maps to AVAudioSessionCategoryPlayAndRecord
+    // so the mic and speaker can both be active. The loudspeaker override is
+    // handled separately via the non-muted audio element trick in getOrCreatePeer.
     if ("audioSession" in navigator) {
       (navigator as unknown as { audioSession: { type: string } }).audioSession.type =
         "play-and-record";
@@ -476,12 +482,18 @@ export function useProximityVoice(
       throw new Error("Audio context is not ready");
     }
 
-    // Muted audio element — Chrome-only workaround. Chrome requires the WebRTC
-    // stream to be attached to an HTMLAudioElement before createMediaStreamSource()
-    // will produce any samples. Setting muted=true means it produces no output;
-    // the Web Audio graph below handles the actual audible playback.
+    // Chrome workaround: WebRTC remote streams only flow through
+    // createMediaStreamSource() if the stream is also attached to an
+    // HTMLAudioElement. On non-iOS we keep it muted so the Web Audio graph is
+    // the sole audible output.
+    //
+    // iOS loudspeaker trick: iOS routes AVAudioSessionCategoryPlayAndRecord to
+    // the earpiece by default. The only JS-level override is to keep a non-muted
+    // audio element playing (even at volume=0). iOS then treats the page as a
+    // media-playback app and routes the entire audio session to the loudspeaker.
     const audio = new Audio();
-    audio.muted = true;
+    audio.muted = !IS_IOS;   // non-muted on iOS forces loudspeaker routing
+    audio.volume = 0;        // silent on iOS; Web Audio graph handles output
     audio.autoplay = true;
     audio.setAttribute("playsinline", "true");
 
@@ -898,9 +910,10 @@ function resolveIceServersForFirefox(): RTCIceServer[] {
 function loadRemoteGain(): number {
   try {
     const raw = localStorage.getItem(GAIN_STORAGE_KEY);
-    if (!raw) return IS_MOBILE ? 1.5 : 1; // Higher default on mobile
+    // Mobile speakers need more drive than desktop headphones/monitors.
+    if (!raw) return IS_MOBILE ? 3.0 : 1;
     const parsed = Number(raw);
-    if (Number.isNaN(parsed)) return IS_MOBILE ? 1.5 : 1;
+    if (Number.isNaN(parsed)) return IS_MOBILE ? 3.0 : 1;
     return Math.min(5, Math.max(0.5, parsed));
   } catch {
     return IS_MOBILE ? 1.5 : 1;
