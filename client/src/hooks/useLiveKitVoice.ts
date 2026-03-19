@@ -70,7 +70,7 @@ function resolveIceServersForFirefox(): RTCIceServer[] {
 const AUDIO_CONSTRAINTS: MediaStreamConstraints = {
   audio: {
     echoCancellation: true,
-    noiseSuppression: true,
+    noiseSuppression: false, // Krisp handles noise cancellation — browser NC off to avoid double-processing and constraint conflicts
     autoGainControl: DEFAULT_AGC_ENABLED,
   } as MediaTrackConstraints,
   video: false,
@@ -539,10 +539,14 @@ export function useLiveKitVoice(
             name: "mic",
           });
           if (publication.track && isKrispNoiseFilterSupported()) {
-            const krisp = KrispNoiseFilter();
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            await publication.track.setProcessor(krisp as any);
-            console.log("[voice] Krisp noise filter enabled");
+            try {
+              const krisp = KrispNoiseFilter();
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              await publication.track.setProcessor(krisp as any);
+              console.log("[voice] Krisp noise filter enabled");
+            } catch (krispErr) {
+              console.warn("[voice] Krisp noise filter failed to initialize (LiveKit Cloud required):", krispErr);
+            }
           }
         }
 
