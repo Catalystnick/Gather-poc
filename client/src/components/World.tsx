@@ -27,7 +27,15 @@ export default function World({ player }: Props) {
 
   const { socket, remotePlayers, emitMove } = useSocket(player)
   const { messages, bubbles, sendMessage } = useChat(socket)
-  const { muted, toggleMute, isLocalSpeaking, speakingPeers, connectedPeers } = useProximityVoice(socket, localPositionRef, remotePlayers)
+  const {
+    muted,
+    toggleMute,
+    isLocalSpeaking,
+    speakingPeers,
+    connectedPeers,
+    remoteGain,
+    setRemoteGain,
+  } = useProximityVoice(socket, localPositionRef, remotePlayers)
 
   return (
     <>
@@ -60,7 +68,12 @@ export default function World({ player }: Props) {
         messages={messages}
         onSend={text => socket && sendMessage(socket, text)}
       />
-      <VoiceControls muted={muted} onToggle={toggleMute} />
+      <VoiceControls
+        muted={muted}
+        onToggle={toggleMute}
+        remoteGain={remoteGain}
+        onGainChange={setRemoteGain}
+      />
     </>
   )
 }

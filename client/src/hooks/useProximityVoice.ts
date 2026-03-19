@@ -10,8 +10,10 @@ const CONNECT_RANGE = 7;
 const DISCONNECT_RANGE = 9;
 const SPEAKING_THRESHOLD = 20;
 const MAX_PLAYBACK_VOLUME = 0.7; // Cap volume to reduce feedback
+const MIN_PLAYBACK_VOLUME = 0.12;
 const MAX_ACTIVE_PEERS = 8; // admission control for dense crowds
 const TELEMETRY_EVERY_MS = 15000;
+const GAIN_STORAGE_KEY = "gather_poc_remote_gain";
 const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
 ];
@@ -53,6 +55,7 @@ export function useProximityVoice(
   const [isLocalSpeaking, setIsLocalSpeaking] = useState(false);
   const [speakingPeers, setSpeakingPeers] = useState<Set<string>>(new Set());
   const [connectedPeers, setConnectedPeers] = useState<Set<string>>(new Set());
+  const [remoteGain, setRemoteGain] = useState(loadRemoteGain());
 
   const localStream = useRef<MediaStream | null>(null);
   const audioCtx = useRef<AudioContext | null>(null);
@@ -300,10 +303,16 @@ export function useProximityVoice(
           const entry = peers.current.get(id);
           if (!entry) return;
 
-          // Volume via audio element — cap to reduce feedback/screeching.
+          // Volume via audio element.
+          // Use a gentler falloff and a user-controlled gain multiplier for testing.
+          const normalized = Math.min(1, Math.max(0, dist / DISCONNECT_RANGE));
+          const distanceFactor = 1 - normalized ** 1.4;
           entry.audio.volume = Math.min(
-            MAX_PLAYBACK_VOLUME,
-            Math.max(0, 1 - dist / DISCONNECT_RANGE),
+            1,
+            Math.max(
+              MIN_PLAYBACK_VOLUME,
+              distanceFactor * MAX_PLAYBACK_VOLUME * remoteGain,
+            ),
           );
 
           // Speaking detection via analyser.
@@ -563,7 +572,21 @@ export function useProximityVoice(
     });
   }
 
-  return { muted, toggleMute, isLocalSpeaking, speakingPeers, connectedPeers };
+  function updateRemoteGain(value: number) {
+    const next = Math.min(3, Math.max(0.5, value));
+    setRemoteGain(next);
+    localStorage.setItem(GAIN_STORAGE_KEY, String(next));
+  }
+
+  return {
+    muted,
+    toggleMute,
+    isLocalSpeaking,
+    speakingPeers,
+    connectedPeers,
+    remoteGain,
+    setRemoteGain: updateRemoteGain,
+  };
 }
 
 function rmsOf(data: Uint8Array): number {
@@ -622,4 +645,16 @@ function resolveIceServers(): RTCIceServer[] {
   }
 
   return DEFAULT_ICE_SERVERS;
+}
+
+function loadRemoteGain(): number {
+  try {
+    const raw = localStorage.getItem(GAIN_STORAGE_KEY);
+    if (!raw) return 1;
+    const parsed = Number(raw);
+    if (Number.isNaN(parsed)) return 1;
+    return Math.min(3, Math.max(0.5, parsed));
+  } catch {
+    return 1;
+  }
 }
