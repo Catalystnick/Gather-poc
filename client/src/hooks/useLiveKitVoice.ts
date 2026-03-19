@@ -42,6 +42,7 @@ const IS_MOBILE = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini
 const IS_FIREFOX = /Firefox\//i.test(
   typeof navigator !== "undefined" ? navigator.userAgent : "",
 );
+const DEFAULT_AGC_ENABLED = true;
 
 const DEFAULT_ICE_SERVERS: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
 
@@ -72,8 +73,8 @@ function resolveIceServersForFirefox(): RTCIceServer[] {
 const AUDIO_CONSTRAINTS: MediaStreamConstraints = {
   audio: {
     echoCancellation: true,
-    noiseSuppression: false,
-    autoGainControl: IS_MOBILE,
+    noiseSuppression: true,
+    autoGainControl: DEFAULT_AGC_ENABLED,
   } as MediaTrackConstraints,
   video: false,
 };
@@ -201,7 +202,7 @@ export function useLiveKitVoice(
   const [micGain, setMicGainState] = useState(loadMicGain());
   const [rolloff, setRolloffState] = useState(loadRolloff());
   const [gateThreshold, setGateThresholdState] = useState(loadGateThreshold());
-  const [agcEnabled, setAgcEnabledState] = useState<boolean>(IS_MOBILE);
+  const [agcEnabled, setAgcEnabledState] = useState<boolean>(DEFAULT_AGC_ENABLED);
   const [echoCancelEnabled, setEchoCancelEnabledState] = useState(true);
   const [headphonePrompt, setHeadphonePrompt] = useState<string | null>(null);
   const [audioBlocked, setAudioBlocked] = useState(false);
@@ -526,7 +527,11 @@ export function useLiveKitVoice(
           dynacast: false,
           singlePeerConnection: true, // Helps Firefox↔Chromium; some setups fail with dual PC
           webAudioMix: false, // Use HTMLAudioElement for playback — required for AEC, more reliable Firefox→Chromium
-          audioCaptureDefaults: { echoCancellation: true },
+          audioCaptureDefaults: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: DEFAULT_AGC_ENABLED,
+          },
         });
         (
           room as Room & {
@@ -821,15 +826,11 @@ export function useLiveKitVoice(
   function confirmHeadphones(accept: boolean) {
     setHeadphonePrompt(null);
     if (accept) {
-      setEchoCancelEnabledState(false);
-      const track = rawMicStream.current?.getAudioTracks()[0];
-      if (track) {
-        try {
-          track.applyConstraints({ echoCancellation: false });
-        } catch {
-          /* ignore */
-        }
-      }
+      // Keep AEC enabled by default even with headphones. Auto-disabling can reintroduce
+      // speaker loopback/echo on imperfect routing setups; users can still toggle manually.
+      setEchoCancelEnabledState(true);
+      echoCancelEnabledRef.current = true;
+      void rawMicStream.current?.getAudioTracks()[0]?.applyConstraints({ echoCancellation: true }).catch(() => {});
     } else {
       headphoneDeviceIdRef.current = null;
     }
