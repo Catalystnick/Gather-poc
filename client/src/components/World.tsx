@@ -45,6 +45,8 @@ export default function World({ player }: Props) {
     setHpfFreq,
     agcEnabled,
     toggleAgc,
+    gateThreshold,
+    setGateThreshold,
     audioBlocked,
     audioInterrupted,
   } = useProximityVoice(socket, localPositionRef, remotePlayers)
@@ -93,6 +95,8 @@ export default function World({ player }: Props) {
         onHpfFreqChange={setHpfFreq}
         agcEnabled={agcEnabled}
         onAgcToggle={toggleAgc}
+        gateThreshold={gateThreshold}
+        onGateThresholdChange={setGateThreshold}
         audioBlocked={audioBlocked}
         audioInterrupted={audioInterrupted}
       />

@@ -25,6 +25,10 @@ const ROLLOFF_STORAGE_KEY = "gather_poc_rolloff";
 const DEFAULT_ROLLOFF = 1.4; // exponent applied to normalised distance (0–1)
 const HPF_STORAGE_KEY = "gather_poc_hpf_freq";
 const DEFAULT_HPF_FREQ = 80; // Hz — removes sub-bass rumble, leaves voice intact
+const GATE_STORAGE_KEY = "gather_poc_gate_threshold";
+const DEFAULT_GATE_THRESHOLD = 0; // 0 = off; >0 = RMS threshold on 0–255 scale
+const GATE_ATTACK_TC = 0.003;  // seconds — time constant to open (fast, ~10ms)
+const GATE_RELEASE_TC = 0.08;  // seconds — time constant to close (slow, ~250ms)
 const DISCONNECTED_GRACE_MS = 5000;
 const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
@@ -111,6 +115,7 @@ export function useProximityVoice(
   const [micGain, setMicGainState] = useState(loadMicGain());
   const [rolloff, setRolloffState] = useState(loadRolloff());
   const [hpfFreq, setHpfFreqState] = useState(loadHpfFreq());
+  const [gateThreshold, setGateThresholdState] = useState(loadGateThreshold());
   // AGC default matches the AUDIO_CONSTRAINTS constant (on for mobile, off for desktop).
   const [agcEnabled, setAgcEnabledState] = useState<boolean>(IS_MOBILE);
   // audioBlocked: suspended context, user tap will fix it.
@@ -123,6 +128,8 @@ export function useProximityVoice(
   const rawMicStream = useRef<MediaStream | null>(null); // raw getUserMedia stream → stop() on cleanup
   const audioCtx = useRef<AudioContext | null>(null);
   const micGainNode = useRef<GainNode | null>(null); // controls outgoing mic level
+  const noiseGateNode = useRef<GainNode | null>(null); // noise gate before micGain
+  const gateIntervalIdRef = useRef<number | null>(null);
   const localAnalyser = useRef<AnalyserNode | null>(null);
   const peers = useRef<Map<string, PeerEntry>>(new Map());
   const [isMicReady, setIsMicReady] = useState(false);
@@ -149,6 +156,8 @@ export function useProximityVoice(
   rolloffRef.current = rolloff;
   const hpfFreqRef = useRef(hpfFreq);
   hpfFreqRef.current = hpfFreq;
+  const gateThresholdRef = useRef(gateThreshold);
+  gateThresholdRef.current = gateThreshold;
 
   const wasLocalSpeaking = useRef(false);
   const wasSpeakingPeers = useRef(new Set<string>());
@@ -214,13 +223,18 @@ export function useProximityVoice(
           const processedStream = await applyNoiseSuppression(ctx, rawStream);
 
           // Mic gain stage — sits after RNNoise so we amplify clean speech only.
-          // Signal graph: RNNoise output → GainNode → MediaStreamDestination → WebRTC
+          // Signal graph:
+          //   RNNoise output → noiseGateNode → GainNode → MediaStreamDestination → WebRTC
+          // noiseGateNode holds at 1.0 (pass-through) when threshold is 0 (disabled).
+          const gateNode = ctx.createGain();
+          gateNode.gain.value = 1;
+          noiseGateNode.current = gateNode;
           const gainNode = ctx.createGain();
           gainNode.gain.value = loadMicGain();
           micGainNode.current = gainNode;
           const micSource = ctx.createMediaStreamSource(processedStream);
           const micDest = ctx.createMediaStreamDestination();
-          micSource.connect(gainNode).connect(micDest);
+          micSource.connect(gateNode).connect(gainNode).connect(micDest);
           localStream.current = micDest.stream;
 
           // Android Chrome 145+ supports AudioContext.setSinkId(), which can
@@ -258,6 +272,32 @@ export function useProximityVoice(
           analyser.fftSize = 256;
           ctx.createMediaStreamSource(processedStream).connect(analyser);
           localAnalyser.current = analyser;
+
+          // Noise gate: check mic RMS every 20ms against the user-set threshold.
+          // When voice is detected (rms > threshold) the gate GainNode opens fast
+          // (GATE_ATTACK_TC); when silence is detected it closes slowly (GATE_RELEASE_TC)
+          // so word endings are not clipped.  Threshold 0 = disabled (gate held open).
+          const freqData = new Uint8Array(analyser.frequencyBinCount);
+          const gateTimerId = window.setInterval(() => {
+            const threshold = gateThresholdRef.current;
+            const gate = noiseGateNode.current;
+            if (!gate) return;
+            if (threshold === 0) {
+              // Ensure the gate stays fully open when disabled.
+              if (gate.gain.value < 0.99) gate.gain.setTargetAtTime(1, ctx.currentTime, GATE_ATTACK_TC);
+              return;
+            }
+            analyser.getByteFrequencyData(freqData);
+            let sum = 0;
+            for (let i = 0; i < freqData.length; i++) sum += freqData[i] * freqData[i];
+            const rms = Math.sqrt(sum / freqData.length);
+            if (rms > threshold) {
+              gate.gain.setTargetAtTime(1, ctx.currentTime, GATE_ATTACK_TC);
+            } else {
+              gate.gain.setTargetAtTime(0, ctx.currentTime, GATE_RELEASE_TC);
+            }
+          }, 20);
+          gateIntervalIdRef.current = gateTimerId;
 
           // Attach mic tracks to peers that were created while permission was
           // pending, and renegotiate so they receive our audio.
@@ -298,6 +338,10 @@ export function useProximityVoice(
       // Stop the raw hardware mic tracks (not the processed stream, which
       // is a synthetic MediaStreamDestinationNode output with no hardware).
       rawMicStream.current?.getTracks().forEach((track) => track.stop());
+      if (gateIntervalIdRef.current !== null) {
+        window.clearInterval(gateIntervalIdRef.current);
+        gateIntervalIdRef.current = null;
+      }
       // Closing the AudioContext also destroys the RNNoise worklet and all nodes.
       void ctx.close();
     };
@@ -858,6 +902,19 @@ export function useProximityVoice(
     try { localStorage.setItem(HPF_STORAGE_KEY, String(freq)); } catch { /* storage unavailable */ }
   }
 
+  function updateGateThreshold(value: number) {
+    const next = Math.max(0, value);
+    setGateThresholdState(next);
+    // If gate is being disabled, immediately open the gate node so it doesn't
+    // stay silenced until the next gate interval tick.
+    if (next === 0) {
+      const ctx = audioCtx.current;
+      const gate = noiseGateNode.current;
+      if (ctx && gate) gate.gain.setTargetAtTime(1, ctx.currentTime, GATE_ATTACK_TC);
+    }
+    try { localStorage.setItem(GATE_STORAGE_KEY, String(next)); } catch { /* storage unavailable */ }
+  }
+
   function updateRolloff(value: number) {
     const next = Math.max(0.1, value);
     setRolloffState(next);
@@ -902,6 +959,8 @@ export function useProximityVoice(
     setHpfFreq: updateHpfFreq,
     agcEnabled,
     toggleAgc,
+    gateThreshold,
+    setGateThreshold: updateGateThreshold,
     audioBlocked,
     audioInterrupted,
   };
@@ -1079,5 +1138,17 @@ function loadRolloff(): number {
     return Math.max(0.1, parsed);
   } catch {
     return DEFAULT_ROLLOFF;
+  }
+}
+
+function loadGateThreshold(): number {
+  try {
+    const raw = localStorage.getItem(GATE_STORAGE_KEY);
+    if (!raw) return DEFAULT_GATE_THRESHOLD;
+    const parsed = Number(raw);
+    if (Number.isNaN(parsed)) return DEFAULT_GATE_THRESHOLD;
+    return Math.max(0, parsed);
+  } catch {
+    return DEFAULT_GATE_THRESHOLD;
   }
 }

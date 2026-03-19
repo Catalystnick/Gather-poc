@@ -84,11 +84,13 @@ interface Props {
   onHpfFreqChange: (value: number) => void
   agcEnabled: boolean
   onAgcToggle: () => void
+  gateThreshold: number
+  onGateThresholdChange: (v: number) => void
   audioBlocked?: boolean
   audioInterrupted?: boolean
 }
 
-export default function VoiceControls({ muted, onToggle, remoteGain, onGainChange, micGain, onMicGainChange, rolloff, onRolloffChange, hpfFreq, onHpfFreqChange, agcEnabled, onAgcToggle, audioBlocked, audioInterrupted }: Props) {
+export default function VoiceControls({ muted, onToggle, remoteGain, onGainChange, micGain, onMicGainChange, rolloff, onRolloffChange, hpfFreq, onHpfFreqChange, agcEnabled, onAgcToggle, gateThreshold, onGateThresholdChange, audioBlocked, audioInterrupted }: Props) {
   return (
     <>
       {audioInterrupted && (
@@ -130,6 +132,16 @@ export default function VoiceControls({ muted, onToggle, remoteGain, onGainChang
           sliderMax={4}
           step={0.1}
           title="Distance attenuation curve. 0.5 = gradual, 1.0 = linear, 1.4 = default, 2.0 = inverse-square, 3+ = sharp cutoff"
+        />
+        <GainControl
+          label="🔇 Noise gate"
+          value={gateThreshold}
+          onChange={onGateThresholdChange}
+          min={0}
+          sliderMax={80}
+          step={1}
+          unit="rms"
+          title="Noise gate: mic is silenced when its RMS level is below this threshold. 0 = off. ~10 = light (blocks dead silence), ~25 = medium (blocks background hum), ~50 = aggressive."
         />
         <button
           style={{ ...styles.btn, ...styles.agcBtn, background: agcEnabled ? 'rgba(34,197,94,0.25)' : 'rgba(0,0,0,0.7)' }}
