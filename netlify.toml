@@ -9,12 +9,7 @@
 # Cross-Origin isolation headers required by onnxruntime-web (SharedArrayBuffer)
 # and AudioWorklet security. Must be set on every response, including the SPA
 # index.html and all static assets.
-[[headers]]
-  for = "/*"
-  [headers.values]
-    Cross-Origin-Opener-Policy = "same-origin"
-    Cross-Origin-Embedder-Policy = "require-corp"
-
+x
 # SPA: serve index.html for all routes
 [[redirects]]
   from = "/*"
