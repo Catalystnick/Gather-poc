@@ -19,7 +19,7 @@ export default function VoiceControls({ muted, onToggle, remoteGain, onGainChang
       <input
         type="range"
         min={0.5}
-        max={3}
+        max={5}
         step={0.1}
         value={remoteGain}
         onChange={(e) => onGainChange(Number(e.target.value))}
