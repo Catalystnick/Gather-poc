@@ -38,6 +38,7 @@ export default function World({ player }: Props) {
     remoteGain,
     setRemoteGain,
     audioBlocked,
+    audioInterrupted,
   } = useProximityVoice(socket, localPositionRef, remotePlayers)
 
   return (
@@ -77,6 +78,7 @@ export default function World({ player }: Props) {
         remoteGain={remoteGain}
         onGainChange={setRemoteGain}
         audioBlocked={audioBlocked}
+        audioInterrupted={audioInterrupted}
       />
       <VoiceConnectionsPanel
         rows={Array.from(remotePlayers.values()).map((player) => ({

@@ -36,13 +36,23 @@ const AUDIO_CONSTRAINTS: MediaStreamConstraints = {
   video: false,
 };
 
+// Older iOS/macOS Safari ships the Web Audio API under the webkit prefix.
+const AudioContextCtor: typeof AudioContext =
+  window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+
 interface PeerEntry {
   connection: RTCPeerConnection;
-  // Remote audio is routed entirely through Web Audio:
+  // Chrome bug: WebRTC streams routed *only* through Web Audio are silent.
+  // Chrome requires the stream to be attached to a muted HTMLAudioElement to
+  // activate its internal audio pipeline before createMediaStreamSource() works.
+  // The muted element produces no output — it exists solely as a Chrome workaround.
+  // Firefox and Safari don't need this, but it's harmless for them.
+  // Ref: https://stackoverflow.com/questions/55703316
+  audio: HTMLAudioElement;
+  // Actual volume-controlled playback goes through Web Audio:
   //   MediaStreamAudioSourceNode → gainNode → ctx.destination   (playback)
   //   MediaStreamAudioSourceNode → analyser                     (speaking detection)
-  // Using GainNode instead of HTMLAudioElement.volume allows gain values > 1.0,
-  // which is required for the 0.5–5× slider to have any effect.
+  // GainNode.gain is not capped at 1.0, so the full 0.5–5× slider range works.
   gainNode: GainNode;
   analyser: AnalyserNode;
   analyserSource: MediaStreamAudioSourceNode | null;
@@ -69,9 +79,11 @@ export function useProximityVoice(
     Record<string, string>
   >({});
   const [remoteGain, setRemoteGain] = useState(loadRemoteGain());
-  // True when AudioContext is suspended (iOS autoplay policy) AND peers are connected.
-  // Clears automatically once the user taps (which resumes the context).
+  // audioBlocked: suspended context, user tap will fix it.
+  // audioInterrupted: exclusive hardware use (phone call etc), user cannot fix it —
+  //   the OS will restore it when the interruption ends.
   const [audioBlocked, setAudioBlocked] = useState(false);
+  const [audioInterrupted, setAudioInterrupted] = useState(false);
 
   const localStream = useRef<MediaStream | null>(null);
   const audioCtx = useRef<AudioContext | null>(null);
@@ -88,6 +100,11 @@ export function useProximityVoice(
     activePeerPeak: 0,
   });
 
+  // socketRef keeps the first useEffect's closure always holding the current
+  // socket, avoiding a stale-null capture since that effect has [] deps.
+  const socketRef = useRef(socket);
+  socketRef.current = socket;
+
   const remotePlayersRef = useRef(remotePlayers);
   remotePlayersRef.current = remotePlayers;
   const remoteGainRef = useRef(remoteGain);
@@ -99,22 +116,43 @@ export function useProximityVoice(
   // Acquire mic and set up local speaking analyser.
   useEffect(() => {
     // AudioContext must be created eagerly so ICE/peer setup can reference it,
-    // but iOS Safari keeps it suspended until a user-gesture resume() call.
-    // We try an immediate resume (works on desktop) and rely on the gesture
-    // handlers below for iOS.
-    const ctx = new AudioContext();
+    // but iOS Safari keeps it in "suspended" until a user-gesture resume() call,
+    // and can enter "interrupted" when a phone call takes over audio hardware.
+    const ctx = new AudioContextCtor();
     audioCtx.current = ctx;
     void ctx.resume().catch(() => {/* ignored — will retry on gesture */});
 
     ctx.onstatechange = () => {
-      // Clear the banner as soon as the context resumes; show it if it
-      // suspends again while peers are connected.
-      setAudioBlocked(ctx.state === "suspended" && peers.current.size > 0);
+      const hasPeers = peers.current.size > 0;
+      setAudioInterrupted(ctx.state === "interrupted" && hasPeers);
+      setAudioBlocked(ctx.state === "suspended" && hasPeers);
     };
 
     const resumeOnGesture = () => {
-      void ctx.resume();
+      // "interrupted" means exclusive audio hardware use (e.g. phone call) —
+      // resume() would throw InvalidStateError, so skip it in that state.
+      // The context will transition back to "running" on its own when the
+      // interruption ends and onstatechange will clear the banner.
+      if (ctx.state !== "interrupted") {
+        void ctx.resume().catch(() => {/* Safari may still throw — swallow it */});
+      }
     };
+
+    const resumeOnVisibility = () => {
+      // Mobile browsers suspend AudioContext when the tab goes to the
+      // background. Resume as soon as the tab is visible again.
+      if (!document.hidden && ctx.state === "suspended") {
+        void ctx.resume().catch(() => {});
+      }
+    };
+
+    // iOS Safari: setting the audio session type to "play-and-record" before
+    // getUserMedia prevents the OS from routing output to the built-in speaker
+    // when headphones or AirPods are connected.
+    if ("audioSession" in navigator) {
+      (navigator as unknown as { audioSession: { type: string } }).audioSession.type =
+        "play-and-record";
+    }
 
     if (navigator.mediaDevices) {
       navigator.mediaDevices
@@ -123,7 +161,7 @@ export function useProximityVoice(
           localStream.current = stream;
           setIsMicReady(true);
           // ctx.resume() here is outside a user-gesture on iOS and is silently
-          // ignored; the gesture handlers above are the reliable path.
+          // ignored; the gesture handlers above are the reliable resume path.
           void ctx.resume().catch(() => {/* will resume on next gesture */});
 
           const analyser = ctx.createAnalyser();
@@ -131,14 +169,17 @@ export function useProximityVoice(
           ctx.createMediaStreamSource(stream).connect(analyser);
           localAnalyser.current = analyser;
 
-          // Attach mic tracks to peers that were created while permission was pending.
+          // Attach mic tracks to peers that were created while permission was
+          // pending, and renegotiate so they receive our audio.
+          // socketRef.current — NOT the closure-captured `socket` — ensures we
+          // always use the live socket even though this effect has [] deps.
           peers.current.forEach(({ connection }, peerId) => {
             attachLocalTracks(connection, stream);
-            if (socket) {
-              void renegotiatePeer(peerId, socket);
+            const liveSocket = socketRef.current;
+            if (liveSocket) {
+              void renegotiatePeer(peerId, liveSocket);
             }
           });
-
         })
         .catch((err) => console.warn("[voice] mic denied:", err));
     } else {
@@ -150,11 +191,13 @@ export function useProximityVoice(
     window.addEventListener("pointerdown", resumeOnGesture);
     window.addEventListener("keydown", resumeOnGesture);
     window.addEventListener("touchstart", resumeOnGesture, { passive: true });
+    document.addEventListener("visibilitychange", resumeOnVisibility);
 
     return () => {
       window.removeEventListener("pointerdown", resumeOnGesture);
       window.removeEventListener("keydown", resumeOnGesture);
       window.removeEventListener("touchstart", resumeOnGesture);
+      document.removeEventListener("visibilitychange", resumeOnVisibility);
       [...peers.current.keys()].forEach((peerId) => {
         closePeer(peerId, { emitHangup: false, reason: "hook cleanup" });
       });
@@ -367,11 +410,12 @@ export function useProximityVoice(
       wasSpeakingPeers.current = nextSpeaking;
       setSpeakingPeers(nextSpeaking);
       setConnectedPeers(new Set(peers.current.keys()));
-      // Keep audioBlocked in sync with context state (onstatechange handles it too,
-      // but this catches cases where the context suspends between state events).
-      setAudioBlocked(
-        (audioCtx.current?.state === "suspended") && peers.current.size > 0,
-      );
+      // Keep audioBlocked/audioInterrupted in sync (onstatechange handles it
+      // too, but this catches cases where the state changes between events).
+      const ctxState = audioCtx.current?.state;
+      const hasPeers = peers.current.size > 0;
+      setAudioInterrupted(ctxState === "interrupted" && hasPeers);
+      setAudioBlocked(ctxState === "suspended" && hasPeers);
     }, 100);
 
     return () => clearInterval(interval);
@@ -395,6 +439,15 @@ export function useProximityVoice(
     if (!ctx) {
       throw new Error("Audio context is not ready");
     }
+
+    // Muted audio element — Chrome-only workaround. Chrome requires the WebRTC
+    // stream to be attached to an HTMLAudioElement before createMediaStreamSource()
+    // will produce any samples. Setting muted=true means it produces no output;
+    // the Web Audio graph below handles the actual audible playback.
+    const audio = new Audio();
+    audio.muted = true;
+    audio.autoplay = true;
+    audio.setAttribute("playsinline", "true");
 
     // GainNode controls both distance-based attenuation and the user's slider.
     // Unlike HTMLAudioElement.volume, GainNode.gain can exceed 1.0 for true amplification.
@@ -467,12 +520,21 @@ export function useProximityVoice(
       const entry = peers.current.get(peerId);
       if (!entry) return;
 
+      // Step 1 — Chrome workaround: attach the stream to the muted audio element.
+      // This activates Chrome's internal WebRTC audio pipeline; without this,
+      // createMediaStreamSource() produces no samples in Chrome.
+      // The element is muted so it emits no sound — only the Web Audio graph below
+      // is audible.
+      entry.audio.srcObject = stream;
+      void entry.audio.play().catch(() => {
+        // Muted autoplay is universally allowed; this catch is a safety net only.
+        console.warn(`[voice] muted audio.play() failed for ${peerId}`);
+      });
+
       if (!entry.analyserSource) {
-        // Route the stream through the Web Audio graph:
-        //   source → gainNode → ctx.destination  (audible output)
+        // Step 2 — Web Audio graph for gain-controlled output and speaking detection.
+        //   source → gainNode → ctx.destination  (audible, gain can exceed 1.0)
         //   source → analyser                    (speaking detection, no output)
-        // Both uses share the same source node so the stream is only "consumed" once,
-        // which avoids the iOS Safari bug where multiple consumers silence each other.
         const source = ctx.createMediaStreamSource(stream);
         source.connect(entry.gainNode);
         source.connect(entry.analyser);
@@ -482,6 +544,7 @@ export function useProximityVoice(
 
     peers.current.set(peerId, {
       connection: pc,
+      audio,
       gainNode,
       analyser,
       analyserSource: null,
@@ -535,6 +598,8 @@ export function useProximityVoice(
     }
     entry.gainNode.disconnect();
     entry.analyser.disconnect();
+    entry.audio.pause();
+    entry.audio.srcObject = null;
 
     entry.connection.onconnectionstatechange = null;
     entry.connection.onicecandidate = null;
@@ -602,7 +667,20 @@ export function useProximityVoice(
   async function renegotiatePeer(peerId: string, signalSocket: Socket) {
     const entry = peers.current.get(peerId);
     if (!entry) return;
-    if (entry.connection.signalingState !== "stable") return;
+
+    // Wait for a stable signaling state before renegotiating (up to 3 s).
+    // If we bail immediately when not-stable, the peer never sends local audio
+    // tracks — causing one-sided audio where A hears B but B hears nothing.
+    let waited = 0;
+    while (entry.connection.signalingState !== "stable") {
+      if (!peers.current.has(peerId)) return; // peer closed while waiting
+      if (waited >= 3000) {
+        console.warn(`[rtc] renegotiation timed out waiting for stable state (${peerId})`);
+        return;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 200));
+      waited += 200;
+    }
 
     try {
       const offer = await entry.connection.createOffer();
@@ -652,6 +730,7 @@ export function useProximityVoice(
     remoteGain,
     setRemoteGain: updateRemoteGain,
     audioBlocked,
+    audioInterrupted,
   };
 }
 

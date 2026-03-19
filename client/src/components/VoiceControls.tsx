@@ -6,12 +6,18 @@ interface Props {
   remoteGain: number
   onGainChange: (value: number) => void
   audioBlocked?: boolean
+  audioInterrupted?: boolean
 }
 
-export default function VoiceControls({ muted, onToggle, remoteGain, onGainChange, audioBlocked }: Props) {
+export default function VoiceControls({ muted, onToggle, remoteGain, onGainChange, audioBlocked, audioInterrupted }: Props) {
   return (
     <>
-      {audioBlocked && (
+      {audioInterrupted && (
+        <div style={styles.blockedBanner}>
+          Voice paused — end phone call to restore
+        </div>
+      )}
+      {audioBlocked && !audioInterrupted && (
         <div style={styles.blockedBanner}>
           Tap anywhere to enable voice audio
         </div>

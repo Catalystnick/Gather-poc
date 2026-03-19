@@ -86,7 +86,7 @@ io.on('connection', (socket) => {
   })
 
   socket.on('rtc:ice-candidate', ({ to, candidate }) => {
-    if (typeof to !== 'string') return
+    if (typeof to !== 'string' || candidate == null) return
     io.to(to).emit('rtc:ice-candidate', { from: socket.id, candidate })
   })
 
