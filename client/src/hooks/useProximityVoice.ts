@@ -33,11 +33,6 @@ const ICE_SERVERS_FIREFOX = resolveIceServersForFirefox();
 const IS_MOBILE = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
   typeof navigator !== "undefined" ? navigator.userAgent : "",
 );
-// iOS routes getUserMedia audio sessions to the earpiece by default.
-// We detect it separately so we can apply the loudspeaker override trick.
-const IS_IOS = /iPhone|iPad|iPod/i.test(
-  typeof navigator !== "undefined" ? navigator.userAgent : "",
-);
 // Firefox uses a different ICE candidate strategy than Chromium-based browsers.
 // Chrome obfuscates LAN IPs with mDNS `.local` hostnames (privacy feature); Firefox
 // can't resolve those, so Chrome↔Firefox connections fail without a TURN relay.
@@ -159,6 +154,25 @@ export function useProximityVoice(
       setAudioBlocked(ctx.state === "suspended" && hasPeers);
     };
 
+    // Mobile loudspeaker routing element (iOS + Android).
+    // When getUserMedia is active, both iOS and Android switch the audio session
+    // into "communication mode" (earpiece). The only reliable JS override is a
+    // non-muted HTMLAudioElement that is actively playing — the OS then treats the
+    // page as a media-playback app and routes ALL audio to the loudspeaker.
+    // We feed it a silent MediaStreamDestinationNode so it never emits any sound.
+    // It MUST be started from inside a user-gesture handler: play() on a non-muted
+    // element is blocked by autoplay policy outside a gesture on both iOS and Android.
+    let mobileRoutingAudio: HTMLAudioElement | null = null;
+    if (IS_MOBILE) {
+      const routingDest = ctx.createMediaStreamDestination();
+      mobileRoutingAudio = new Audio();
+      mobileRoutingAudio.srcObject = routingDest.stream;
+      mobileRoutingAudio.setAttribute("playsinline", "true");
+      // volume=0: silent. muted=false: OS sees active playback → loudspeaker.
+      mobileRoutingAudio.volume = 0;
+      mobileRoutingAudio.muted = false;
+    }
+
     const resumeOnGesture = () => {
       // "interrupted" means exclusive audio hardware use (e.g. phone call) —
       // resume() would throw InvalidStateError, so skip it in that state.
@@ -166,6 +180,11 @@ export function useProximityVoice(
       // interruption ends and onstatechange will clear the banner.
       if (ctx.state !== "interrupted") {
         void ctx.resume().catch(() => {/* Safari may still throw — swallow it */});
+      }
+      // Play from inside a user gesture so the OS allows non-muted media.
+      // Once playing, the whole audio session routes to the loudspeaker.
+      if (mobileRoutingAudio?.paused) {
+        void mobileRoutingAudio.play().catch(() => {});
       }
     };
 
@@ -178,8 +197,8 @@ export function useProximityVoice(
     };
 
     // iOS Safari: "play-and-record" maps to AVAudioSessionCategoryPlayAndRecord
-    // so the mic and speaker can both be active. The loudspeaker override is
-    // handled separately via the non-muted audio element trick in getOrCreatePeer.
+    // so the mic and speaker can both be active simultaneously. The loudspeaker
+    // override is handled by mobileRoutingAudio (played from resumeOnGesture above).
     if ("audioSession" in navigator) {
       (navigator as unknown as { audioSession: { type: string } }).audioSession.type =
         "play-and-record";
@@ -248,6 +267,10 @@ export function useProximityVoice(
       window.removeEventListener("keydown", resumeOnGesture);
       window.removeEventListener("touchstart", resumeOnGesture);
       document.removeEventListener("visibilitychange", resumeOnVisibility);
+      if (mobileRoutingAudio) {
+        mobileRoutingAudio.pause();
+        mobileRoutingAudio.srcObject = null;
+      }
       [...peers.current.keys()].forEach((peerId) => {
         closePeer(peerId, { emitHangup: false, reason: "hook cleanup" });
       });
@@ -496,18 +519,14 @@ export function useProximityVoice(
       throw new Error("Audio context is not ready");
     }
 
-    // Chrome workaround: WebRTC remote streams only flow through
-    // createMediaStreamSource() if the stream is also attached to an
-    // HTMLAudioElement. On non-iOS we keep it muted so the Web Audio graph is
-    // the sole audible output.
-    //
-    // iOS loudspeaker trick: iOS routes AVAudioSessionCategoryPlayAndRecord to
-    // the earpiece by default. The only JS-level override is to keep a non-muted
-    // audio element playing (even at volume=0). iOS then treats the page as a
-    // media-playback app and routes the entire audio session to the loudspeaker.
+    // Chrome pipeline activation workaround: WebRTC remote streams only flow
+    // through createMediaStreamSource() once the stream is also attached to a
+    // muted HTMLAudioElement. Actual audible playback is handled by the Web
+    // Audio graph (gainNode → ctx.destination) below.
+    // iOS loudspeaker routing is handled separately via the iosRoutingAudio
+    // element created in the mic-acquisition useEffect (see above).
     const audio = new Audio();
-    audio.muted = !IS_IOS;   // non-muted on iOS forces loudspeaker routing
-    audio.volume = 0;        // silent on iOS; Web Audio graph handles output
+    audio.muted = true;
     audio.autoplay = true;
     audio.setAttribute("playsinline", "true");
 
