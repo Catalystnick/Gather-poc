@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Socket } from "socket.io-client";
 import type { RemotePlayer } from "../types";
 import { MicVAD } from "@ricky0123/vad-web";
+import { NoiseSuppressorWorklet_Name } from "@timephy/rnnoise-wasm";
 
 const CONNECT_RANGE = 7;
 const DISCONNECT_RANGE = 9;
@@ -22,6 +23,7 @@ const DEFAULT_ROLLOFF = 1.4; // exponent applied to normalised distance (0–1)
 const HPF_STORAGE_KEY = "gather_poc_hpf_freq";
 const GATE_STORAGE_KEY = "gather_poc_gate_threshold";
 const DEFAULT_GATE_THRESHOLD = 0; // speech probability ×100 (0–100); 0 = off (natural baseline)
+const RNNOISE_STORAGE_KEY = "gather_poc_rnnoise";
 const AUDIO_SETTINGS_VERSION_KEY = "gather_poc_audio_settings_version";
 const AUDIO_SETTINGS_VERSION = "2026-03-standard-v1";
 const GATE_ATTACK_TC = 0.003;  // seconds — time constant to open (fast, ~10ms)
@@ -122,6 +124,7 @@ export function useProximityVoice(
   //   the OS will restore it when the interruption ends.
   const [audioBlocked, setAudioBlocked] = useState(false);
   const [audioInterrupted, setAudioInterrupted] = useState(false);
+  const [rnnoiseEnabled, setRnnoiseEnabledState] = useState(loadRnnoiseEnabled());
 
   const localStream = useRef<MediaStream | null>(null); // mic-gain output stream → sent over WebRTC
   const rawMicStream = useRef<MediaStream | null>(null); // raw getUserMedia stream → stop() on cleanup
@@ -130,6 +133,8 @@ export function useProximityVoice(
   const noiseGateNode = useRef<GainNode | null>(null); // noise gate before micGain
   const gateIntervalIdRef = useRef<number | null>(null); // RMS fallback interval id
   const vadRef = useRef<MicVAD | null>(null); // Silero VAD instance (replaces RMS gate when ready)
+  const rnnoiseNodeRef = useRef<AudioWorkletNode | null>(null);
+  const micSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const localAnalyser = useRef<AnalyserNode | null>(null);
   const peers = useRef<Map<string, PeerEntry>>(new Map());
   const [isMicReady, setIsMicReady] = useState(false);
@@ -158,6 +163,8 @@ export function useProximityVoice(
   gateThresholdRef.current = gateThreshold;
   const echoCancelEnabledRef = useRef(echoCancelEnabled);
   echoCancelEnabledRef.current = echoCancelEnabled;
+  const rnnoiseEnabledRef = useRef(rnnoiseEnabled);
+  rnnoiseEnabledRef.current = rnnoiseEnabled;
 
   // Tracks output device IDs seen on the previous devicechange (or mount).
   // Used to diff which device newly appeared or disappeared.
@@ -217,16 +224,19 @@ export function useProximityVoice(
     }
 
     if (navigator.mediaDevices) {
-      navigator.mediaDevices
-        .getUserMedia(AUDIO_CONSTRAINTS)
-        .then(async (rawStream) => {
+      const workletUrl = `${window.location.origin}/NoiseSuppressorWorklet.js`;
+      Promise.all([
+        navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS),
+        ctx.audioWorklet.addModule(workletUrl),
+      ])
+        .then(async ([rawStream]) => {
           // Keep the raw hardware stream separate so we can stop the mic
           // tracks on cleanup.
           rawMicStream.current = rawStream;
 
-          // Mic gain stage with optional VAD gating.
+          // Mic gain stage with optional VAD gating and RNnoise noise suppression.
           // Signal graph:
-          //   raw mic → noiseGateNode → GainNode → MediaStreamDestination → WebRTC
+          //   raw mic → [rnnoiseNode?] → noiseGateNode → GainNode → MediaStreamDestination → WebRTC
           // noiseGateNode holds at 1.0 (pass-through) when threshold is 0 (disabled).
           const gateNode = ctx.createGain();
           gateNode.gain.value = 1;
@@ -235,8 +245,18 @@ export function useProximityVoice(
           gainNode.gain.value = loadMicGain();
           micGainNode.current = gainNode;
           const micSource = ctx.createMediaStreamSource(rawStream);
+          micSourceRef.current = micSource;
           const micDest = ctx.createMediaStreamDestination();
-          micSource.connect(gateNode).connect(gainNode).connect(micDest);
+
+          const useRnnoise = loadRnnoiseEnabled();
+          if (useRnnoise) {
+            const rnnoiseNode = new AudioWorkletNode(ctx, NoiseSuppressorWorklet_Name);
+            rnnoiseNodeRef.current = rnnoiseNode;
+            micSource.connect(rnnoiseNode).connect(gateNode).connect(gainNode).connect(micDest);
+            console.log("[voice] RNnoise noise suppression active");
+          } else {
+            micSource.connect(gateNode).connect(gainNode).connect(micDest);
+          }
           localStream.current = micDest.stream;
 
           // Android Chrome 145+ supports AudioContext.setSinkId(), which can
@@ -405,6 +425,8 @@ export function useProximityVoice(
       // Pause (not destroy) the VAD — we own the stream lifecycle here.
       void vadRef.current?.pause();
       vadRef.current = null;
+      rnnoiseNodeRef.current = null;
+      micSourceRef.current = null;
       // Closing the AudioContext also destroys all nodes in this graph.
       void ctx.close();
     };
@@ -1055,6 +1077,36 @@ export function useProximityVoice(
     void applyEchoCancel(!echoCancelEnabledRef.current);
   }
 
+  function toggleRnnoise() {
+    const next = !rnnoiseEnabledRef.current;
+    setRnnoiseEnabledState(next);
+    try {
+      localStorage.setItem(RNNOISE_STORAGE_KEY, next ? "1" : "0");
+    } catch { /* storage unavailable */ }
+
+    const ctx = audioCtx.current;
+    const gate = noiseGateNode.current;
+    const micSource = micSourceRef.current;
+    if (!ctx || !gate || !micSource) return;
+
+    micSource.disconnect();
+
+    if (next) {
+      let rnnoiseNode = rnnoiseNodeRef.current;
+      if (!rnnoiseNode) {
+        rnnoiseNode = new AudioWorkletNode(ctx, NoiseSuppressorWorklet_Name);
+        rnnoiseNodeRef.current = rnnoiseNode;
+      }
+      micSource.connect(rnnoiseNode).connect(gate);
+      console.log("[voice] RNnoise noise suppression enabled");
+    } else {
+      micSource.connect(gate);
+      const rnnoiseNode = rnnoiseNodeRef.current;
+      if (rnnoiseNode) rnnoiseNode.disconnect();
+      console.log("[voice] RNnoise noise suppression disabled");
+    }
+  }
+
   function updateGateThreshold(value: number) {
     const next = Math.max(0, value);
     setGateThresholdState(next);
@@ -1101,7 +1153,7 @@ export function useProximityVoice(
     });
   }
 
-  return {
+    return {
     muted,
     toggleMute,
     isLocalSpeaking,
@@ -1118,6 +1170,8 @@ export function useProximityVoice(
     toggleAgc,
     echoCancelEnabled,
     toggleEchoCancel,
+    rnnoiseEnabled,
+    toggleRnnoise,
     headphonePrompt,
     confirmHeadphones,
     gateThreshold,
@@ -1280,6 +1334,17 @@ function loadGateThreshold(): number {
   }
 }
 
+function loadRnnoiseEnabled(): boolean {
+  ensureAudioSettingsMigration();
+  try {
+    const raw = localStorage.getItem(RNNOISE_STORAGE_KEY);
+    if (!raw) return true; // default on for noise suppression
+    return raw === "1" || raw.toLowerCase() === "true";
+  } catch {
+    return true;
+  }
+}
+
 function ensureAudioSettingsMigration() {
   if (audioSettingsMigrationChecked) return;
   audioSettingsMigrationChecked = true;
@@ -1294,6 +1359,7 @@ function ensureAudioSettingsMigration() {
     localStorage.removeItem(ROLLOFF_STORAGE_KEY);
     localStorage.removeItem(HPF_STORAGE_KEY);
     localStorage.removeItem(GATE_STORAGE_KEY);
+    localStorage.removeItem(RNNOISE_STORAGE_KEY);
     localStorage.setItem(AUDIO_SETTINGS_VERSION_KEY, AUDIO_SETTINGS_VERSION);
   } catch {
     // localStorage may be unavailable (privacy mode, SSR, etc.)

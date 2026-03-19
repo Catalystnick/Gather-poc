@@ -35,6 +35,27 @@ const vadAssets = viteStaticCopy({
       src: 'node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.jsep.mjs',
       dest: './',
     },
+    // @timephy/rnnoise-wasm: worklet and deps for RNnoise noise suppression (COEP-safe).
+    {
+      src: 'node_modules/@timephy/rnnoise-wasm/dist/NoiseSuppressorWorklet.js',
+      dest: './',
+    },
+    {
+      src: 'node_modules/@timephy/rnnoise-wasm/dist/polyfills.js',
+      dest: './',
+    },
+    {
+      src: 'node_modules/@timephy/rnnoise-wasm/dist/RnnoiseProcessor.js',
+      dest: './',
+    },
+    {
+      src: 'node_modules/@timephy/rnnoise-wasm/dist/index.js',
+      dest: './',
+    },
+    {
+      src: 'node_modules/@timephy/rnnoise-wasm/dist/generated/rnnoise-sync.js',
+      dest: './generated/',
+    },
   ],
 })
 

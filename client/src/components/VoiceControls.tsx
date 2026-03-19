@@ -88,11 +88,13 @@ interface Props {
   onHeadphonesConfirm: (accept: boolean) => void
   gateThreshold: number
   onGateThresholdChange: (v: number) => void
+  rnnoiseEnabled: boolean
+  onRnnoiseToggle: () => void
   audioBlocked?: boolean
   audioInterrupted?: boolean
 }
 
-export default function VoiceControls({ muted, onToggle, remoteGain, onGainChange, micGain, onMicGainChange, rolloff, onRolloffChange, agcEnabled, onAgcToggle, echoCancelEnabled, onEchoCancelToggle, headphonePrompt, onHeadphonesConfirm, gateThreshold, onGateThresholdChange, audioBlocked, audioInterrupted }: Props) {
+export default function VoiceControls({ muted, onToggle, remoteGain, onGainChange, micGain, onMicGainChange, rolloff, onRolloffChange, agcEnabled, onAgcToggle, echoCancelEnabled, onEchoCancelToggle, rnnoiseEnabled, onRnnoiseToggle, headphonePrompt, onHeadphonesConfirm, gateThreshold, onGateThresholdChange, audioBlocked, audioInterrupted }: Props) {
   return (
     <>
       {audioInterrupted && (
@@ -162,6 +164,13 @@ export default function VoiceControls({ muted, onToggle, remoteGain, onGainChang
             title="Echo Cancellation removes your speaker output from your mic signal. Disable when using headphones — no echo risk and better simultaneous-speech quality."
           >
             AEC {echoCancelEnabled ? 'ON' : 'OFF'}
+          </button>
+          <button
+            style={{ ...styles.btn, ...styles.agcBtn, background: rnnoiseEnabled ? 'rgba(34,197,94,0.25)' : 'rgba(0,0,0,0.7)' }}
+            onClick={onRnnoiseToggle}
+            title="RNnoise noise suppression: removes background noise (keyboard, fans, etc.) from your mic. Disable for raw/unfiltered audio."
+          >
+            RNnoise {rnnoiseEnabled ? 'ON' : 'OFF'}
           </button>
         </div>
       </div>
