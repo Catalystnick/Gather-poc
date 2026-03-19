@@ -86,6 +86,7 @@ interface PeerEntry {
   // gainNode: distance attenuation + user slider (not capped at 1.0).
   hpfNode: BiquadFilterNode;
   gainNode: GainNode;
+  stereoMerger: ChannelMergerNode;
   gainDest: MediaStreamAudioDestinationNode;
   outputAudio: HTMLAudioElement;
   analyser: AnalyserNode;
@@ -752,16 +753,14 @@ export function useProximityVoice(
 
     const gainNode = ctx.createGain();
     gainNode.gain.value = MIN_GAIN_FLOOR;
+    const stereoMerger = ctx.createChannelMerger(2);
     const gainDest = ctx.createMediaStreamDestination();
-    // WebRTC remote tracks are mono (1 channel). Force the destination node to
-    // produce a stereo stream so both ears receive audio through the output
-    // HTMLAudioElement. Without this, browsers map the single mono channel to
-    // the left ear only instead of spreading it to centre/both channels.
-    gainDest.channelCount = 2;
-    gainDest.channelCountMode = "explicit";
-    gainDest.channelInterpretation = "speakers";
     hpfNode.connect(gainNode);
-    gainNode.connect(gainDest);
+    // Duplicate the mono voice signal into both left and right channels.
+    // This is more reliable across browsers than relying on automatic upmixing.
+    gainNode.connect(stereoMerger, 0, 0);
+    gainNode.connect(stereoMerger, 0, 1);
+    stereoMerger.connect(gainDest);
 
     // Output element: uses the HTMLMediaElement playback API, which routes through
     // the media pipeline (loudspeaker) independently of the AudioContext session.
@@ -865,6 +864,7 @@ export function useProximityVoice(
       audio,
       hpfNode,
       gainNode,
+      stereoMerger,
       gainDest,
       outputAudio,
       analyser,
@@ -919,6 +919,7 @@ export function useProximityVoice(
     }
     entry.hpfNode.disconnect();
     entry.gainNode.disconnect();
+    entry.stereoMerger.disconnect();
     entry.gainDest.disconnect();
     entry.analyser.disconnect();
     entry.audio.pause();
