@@ -176,6 +176,7 @@ export function useLiveKitVoice(
   const [audioBlocked, setAudioBlocked] = useState(false);
   const [audioInterrupted, setAudioInterrupted] = useState(false);
   const [rnnoiseEnabled, setRnnoiseEnabledState] = useState(loadRnnoiseEnabled());
+  const [roomReady, setRoomReady] = useState(false);
 
   const roomRef = useRef<Room | null>(null);
   const localStream = useRef<MediaStream | null>(null);
@@ -540,6 +541,7 @@ export function useLiveKitVoice(
         });
 
         room.on(RoomEvent.Disconnected, () => {
+          setRoomReady(false);
           roomRef.current = null;
           remoteEntries.current.clear();
           subscribedIdentities.current.clear();
@@ -552,6 +554,26 @@ export function useLiveKitVoice(
         });
 
         roomRef.current = room;
+        setRoomReady(true);
+
+        // TrackPublished: subscribe only when a new participant publishes (must be registered
+        // after connect, otherwise we miss tracks from participants who join after us)
+        const handleTrackPublished = (publication: RemoteTrackPublication, participant: RemoteParticipant) => {
+          if (publication.kind !== Track.Kind.Audio) return;
+          const player = remotePlayersRef.current.get(participant.identity);
+          if (!player) return;
+          const dist = distance(localPositionRef.current, player.position);
+          const candidates = [...remotePlayersRef.current.entries()]
+            .map(([id, p]) => ({ id, distance: distance(localPositionRef.current, p.position) }))
+            .filter((e) => e.distance < 9)
+            .sort((a, b) => a.distance - b.distance);
+          const preferred = new Set(candidates.slice(0, MAX_ACTIVE_PEERS).map((e) => e.id));
+          if (dist < CONNECT_RANGE && preferred.has(participant.identity)) {
+            publication.setSubscribed(true);
+            subscribedIdentities.current.add(participant.identity);
+          }
+        };
+        room.on(RoomEvent.TrackPublished, handleTrackPublished);
 
         // Publish our processed mic track
         const micTrack = localStream.current!.getAudioTracks()[0];
@@ -588,6 +610,7 @@ export function useLiveKitVoice(
     void connect();
 
     return () => {
+      setRoomReady(false);
       if (room) {
         room.disconnect();
         roomRef.current = null;
@@ -602,35 +625,9 @@ export function useLiveKitVoice(
     };
   }, [socket?.id, isMicReady, playerName]);
 
-  // TrackPublished: subscribe only if in proximity
-  useEffect(() => {
-    const room = roomRef.current;
-    if (!room) return;
-
-    const handleTrackPublished = (publication: RemoteTrackPublication, participant: RemoteParticipant) => {
-      if (publication.kind !== Track.Kind.Audio) return;
-      const player = remotePlayersRef.current.get(participant.identity);
-      if (!player) return;
-      const dist = distance(localPositionRef.current, player.position);
-      const candidates = [...remotePlayersRef.current.entries()]
-        .map(([id, p]) => ({ id, distance: distance(localPositionRef.current, p.position) }))
-        .filter((e) => e.distance < 9)
-        .sort((a, b) => a.distance - b.distance);
-      const preferred = new Set(candidates.slice(0, MAX_ACTIVE_PEERS).map((e) => e.id));
-      if (dist < CONNECT_RANGE && preferred.has(participant.identity)) {
-        publication.setSubscribed(true);
-        subscribedIdentities.current.add(participant.identity);
-      }
-    };
-
-    room.on(RoomEvent.TrackPublished, handleTrackPublished);
-    return () => {
-      room.off(RoomEvent.TrackPublished, handleTrackPublished);
-    };
-  }, [socket?.id, isMicReady]);
-
   // Proximity loop: subscribe/unsubscribe + distance gain + speaking
   useEffect(() => {
+    if (!roomReady) return;
     const room = roomRef.current;
     if (!room) return;
 
@@ -717,7 +714,7 @@ export function useLiveKitVoice(
     }, 100);
 
     return () => clearInterval(interval);
-  }, [socket?.id, isMicReady]);
+  }, [roomReady]);
 
   function setPeerConnectionState(identity: string, state: string | null) {
     setPeerConnectionStates((prev) => {
