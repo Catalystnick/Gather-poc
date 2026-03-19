@@ -28,6 +28,8 @@ const HPF_STORAGE_KEY = "gather_poc_hpf_freq";
 const DEFAULT_HPF_FREQ = 60; // Hz — trims rumble but preserves more low-mid voice body
 const GATE_STORAGE_KEY = "gather_poc_gate_threshold";
 const DEFAULT_GATE_THRESHOLD = 0; // speech probability ×100 (0–100); 0 = off (natural baseline)
+const AUDIO_SETTINGS_VERSION_KEY = "gather_poc_audio_settings_version";
+const AUDIO_SETTINGS_VERSION = "2026-03-standard-v1";
 const GATE_ATTACK_TC = 0.003;  // seconds — time constant to open (fast, ~10ms)
 const GATE_RELEASE_TC = 0.08;  // seconds — time constant to close (slow, ~250ms)
 const DISCONNECTED_GRACE_MS = 5000;
@@ -70,6 +72,8 @@ const AUDIO_CONSTRAINTS: MediaStreamConstraints = {
 const AudioContextCtor: typeof AudioContext =
   window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
 
+let audioSettingsMigrationChecked = false;
+
 interface PeerEntry {
   connection: RTCPeerConnection;
   // Muted element — Chrome pipeline activation only.
@@ -78,15 +82,18 @@ interface PeerEntry {
   // muted so it never emits sound. Firefox/Safari don't need it but it's harmless.
   // Ref: https://stackoverflow.com/questions/55703316
   audio: HTMLAudioElement;
-  // Processing + output chain (HTMLMediaElement API for final playback):
-  //   source → hpfNode → gainNode → gainDest → outputAudio
+  // Processing chain:
+  //   source → hpfNode → gainNode
+  // Playback differs by platform:
+  //   mobile  → stereoMerger → gainDest → outputAudio (media pipeline/loudspeaker)
+  //   desktop → AudioContext.destination (native Web Audio output path)
   // hpfNode: highpass filter — cuts sub-bass / bassy artefacts from incoming voice.
   // gainNode: distance attenuation + user slider (not capped at 1.0).
   hpfNode: BiquadFilterNode;
   gainNode: GainNode;
-  stereoMerger: ChannelMergerNode;
-  gainDest: MediaStreamAudioDestinationNode;
-  outputAudio: HTMLAudioElement;
+  stereoMerger: ChannelMergerNode | null;
+  gainDest: MediaStreamAudioDestinationNode | null;
+  outputAudio: HTMLAudioElement | null;
   analyser: AnalyserNode;
   analyserSource: MediaStreamAudioSourceNode | null;
   pendingCandidates: RTCIceCandidateInit[];
@@ -200,11 +207,10 @@ export function useProximityVoice(
       if (ctx.state !== "interrupted") {
         void ctx.resume().catch(() => {/* Safari may still throw — swallow it */});
       }
-      // Each peer's outputAudio element uses the HTMLMediaElement API (STREAM_MUSIC),
-      // so it plays through the loudspeaker regardless of AudioContext session mode.
-      // Retry any that were blocked by autoplay policy at ontrack time.
+      // Mobile uses outputAudio (HTMLMediaElement path) to stay on loudspeaker.
+      // Retry any peer output element that was blocked by autoplay policy.
       peers.current.forEach((entry) => {
-        if (entry.outputAudio.paused) {
+        if (entry.outputAudio?.paused) {
           void entry.outputAudio.play().catch(() => {});
         }
       });
@@ -741,9 +747,9 @@ export function useProximityVoice(
     audio.setAttribute("playsinline", "true");
 
     // GainNode controls distance-based attenuation and the user's slider.
-    // Output goes to gainDest (not ctx.destination) so that the final playback
-    // element (outputAudio) uses STREAM_MUSIC on Android — the same route as an
-    // MP3 player — instead of inheriting MODE_IN_COMMUNICATION (earpiece).
+    // Mobile and desktop use different playback targets:
+    // - mobile: HTMLMediaElement output path for reliable loudspeaker routing
+    // - desktop: direct Web Audio output for a cleaner, lower-complexity path
     const hpfNode = ctx.createBiquadFilter();
     hpfNode.type = "highpass";
     hpfNode.frequency.value = hpfFreqRef.current;
@@ -751,23 +757,25 @@ export function useProximityVoice(
 
     const gainNode = ctx.createGain();
     gainNode.gain.value = MIN_GAIN_FLOOR;
-    const stereoMerger = ctx.createChannelMerger(2);
-    const gainDest = ctx.createMediaStreamDestination();
     hpfNode.connect(gainNode);
-    // Duplicate the mono voice signal into both left and right channels.
-    // This is more reliable across browsers than relying on automatic upmixing.
-    gainNode.connect(stereoMerger, 0, 0);
-    gainNode.connect(stereoMerger, 0, 1);
-    stereoMerger.connect(gainDest);
+    let stereoMerger: ChannelMergerNode | null = null;
+    let gainDest: MediaStreamAudioDestinationNode | null = null;
+    let outputAudio: HTMLAudioElement | null = null;
+    if (IS_MOBILE) {
+      stereoMerger = ctx.createChannelMerger(2);
+      gainDest = ctx.createMediaStreamDestination();
+      // Duplicate mono voice to both channels before HTMLMediaElement playback.
+      gainNode.connect(stereoMerger, 0, 0);
+      gainNode.connect(stereoMerger, 0, 1);
+      stereoMerger.connect(gainDest);
 
-    // Output element: uses the HTMLMediaElement playback API, which routes through
-    // the media pipeline (loudspeaker) independently of the AudioContext session.
-    // AudioContext.destination was the wrong API here — this is the correct one.
-    // GainNode handles all volume; the element stays at unity gain.
-    const outputAudio = new Audio();
-    outputAudio.srcObject = gainDest.stream;
-    outputAudio.setAttribute("playsinline", "true");
-    outputAudio.volume = 1;
+      outputAudio = new Audio();
+      outputAudio.srcObject = gainDest.stream;
+      outputAudio.setAttribute("playsinline", "true");
+      outputAudio.volume = 1;
+    } else {
+      gainNode.connect(ctx.destination);
+    }
 
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 256;
@@ -850,11 +858,12 @@ export function useProximityVoice(
         entry.analyserSource = source;
       }
 
-      // Step 3 — Play the output element (HTMLMediaElement API → loudspeaker).
-      // resumeOnGesture retries this if autoplay policy blocks it.
-      void entry.outputAudio.play().catch(() => {
-        console.warn(`[voice] outputAudio.play() blocked for ${peerId} — will retry on gesture`);
-      });
+      // Step 3 (mobile only) — play output element for loudspeaker route.
+      if (entry.outputAudio) {
+        void entry.outputAudio.play().catch(() => {
+          console.warn(`[voice] outputAudio.play() blocked for ${peerId} — will retry on gesture`);
+        });
+      }
     };
 
     peers.current.set(peerId, {
@@ -917,13 +926,15 @@ export function useProximityVoice(
     }
     entry.hpfNode.disconnect();
     entry.gainNode.disconnect();
-    entry.stereoMerger.disconnect();
-    entry.gainDest.disconnect();
+    entry.stereoMerger?.disconnect();
+    entry.gainDest?.disconnect();
     entry.analyser.disconnect();
     entry.audio.pause();
     entry.audio.srcObject = null;
-    entry.outputAudio.pause();
-    entry.outputAudio.srcObject = null;
+    entry.outputAudio?.pause();
+    if (entry.outputAudio) {
+      entry.outputAudio.srcObject = null;
+    }
 
     entry.connection.onconnectionstatechange = null;
     entry.connection.onicecandidate = null;
@@ -1285,6 +1296,7 @@ function resolveIceServersForFirefox(): RTCIceServer[] {
 }
 
 function loadRemoteGain(): number {
+  ensureAudioSettingsMigration();
   try {
     const raw = localStorage.getItem(GAIN_STORAGE_KEY);
     // Mobile speakers need more drive than desktop headphones/monitors.
@@ -1298,6 +1310,7 @@ function loadRemoteGain(): number {
 }
 
 function loadMicGain(): number {
+  ensureAudioSettingsMigration();
   try {
     const raw = localStorage.getItem(MIC_GAIN_STORAGE_KEY);
     // Mobile mics are typically quieter without AGC, so we default higher.
@@ -1311,6 +1324,7 @@ function loadMicGain(): number {
 }
 
 function loadHpfFreq(): number {
+  ensureAudioSettingsMigration();
   try {
     const raw = localStorage.getItem(HPF_STORAGE_KEY);
     if (!raw) return DEFAULT_HPF_FREQ;
@@ -1323,6 +1337,7 @@ function loadHpfFreq(): number {
 }
 
 function loadRolloff(): number {
+  ensureAudioSettingsMigration();
   try {
     const raw = localStorage.getItem(ROLLOFF_STORAGE_KEY);
     if (!raw) return DEFAULT_ROLLOFF;
@@ -1335,6 +1350,7 @@ function loadRolloff(): number {
 }
 
 function loadGateThreshold(): number {
+  ensureAudioSettingsMigration();
   try {
     const raw = localStorage.getItem(GATE_STORAGE_KEY);
     if (!raw) return DEFAULT_GATE_THRESHOLD;
@@ -1343,5 +1359,25 @@ function loadGateThreshold(): number {
     return Math.max(0, parsed);
   } catch {
     return DEFAULT_GATE_THRESHOLD;
+  }
+}
+
+function ensureAudioSettingsMigration() {
+  if (audioSettingsMigrationChecked) return;
+  audioSettingsMigrationChecked = true;
+  try {
+    if (localStorage.getItem(AUDIO_SETTINGS_VERSION_KEY) === AUDIO_SETTINGS_VERSION) {
+      return;
+    }
+    // One-time reset so older persisted tuning values don't override
+    // the new "standard quality" defaults for existing users.
+    localStorage.removeItem(GAIN_STORAGE_KEY);
+    localStorage.removeItem(MIC_GAIN_STORAGE_KEY);
+    localStorage.removeItem(ROLLOFF_STORAGE_KEY);
+    localStorage.removeItem(HPF_STORAGE_KEY);
+    localStorage.removeItem(GATE_STORAGE_KEY);
+    localStorage.setItem(AUDIO_SETTINGS_VERSION_KEY, AUDIO_SETTINGS_VERSION);
+  } catch {
+    // localStorage may be unavailable (privacy mode, SSR, etc.)
   }
 }
