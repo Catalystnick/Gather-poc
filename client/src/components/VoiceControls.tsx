@@ -158,7 +158,7 @@ export default function VoiceControls({ muted, onToggle, remoteGain, onGainChang
           sliderMax={80}
           step={1}
           unit="%"
-          title="Noise gate (Silero VAD): mic is silenced when no speech is detected. 0 = off. 30 = lenient, 50 = default (Silero), 70 = strict. Higher = requires more confidence of speech before opening the gate."
+          title="Noise gate (Silero VAD): mic is silenced when no speech is detected. 0 = default/off for natural sound. 30 = lenient, 50 = moderate, 70 = strict. Higher = requires more confidence of speech before opening the gate."
         />
         <div style={styles.toggleRow}>
           <button

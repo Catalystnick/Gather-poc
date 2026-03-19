@@ -25,9 +25,9 @@ const MIC_GAIN_STORAGE_KEY = "gather_poc_mic_gain";
 const ROLLOFF_STORAGE_KEY = "gather_poc_rolloff";
 const DEFAULT_ROLLOFF = 1.4; // exponent applied to normalised distance (0–1)
 const HPF_STORAGE_KEY = "gather_poc_hpf_freq";
-const DEFAULT_HPF_FREQ = 80; // Hz — removes sub-bass rumble, leaves voice intact
+const DEFAULT_HPF_FREQ = 60; // Hz — trims rumble but preserves more low-mid voice body
 const GATE_STORAGE_KEY = "gather_poc_gate_threshold";
-const DEFAULT_GATE_THRESHOLD = 50; // speech probability ×100 (0–100); 0 = off; 50 = Silero default
+const DEFAULT_GATE_THRESHOLD = 0; // speech probability ×100 (0–100); 0 = off (natural baseline)
 const GATE_ATTACK_TC = 0.003;  // seconds — time constant to open (fast, ~10ms)
 const GATE_RELEASE_TC = 0.08;  // seconds — time constant to close (slow, ~250ms)
 const DISCONNECTED_GRACE_MS = 5000;
@@ -52,12 +52,10 @@ const IS_FIREFOX = /Firefox\//i.test(
 const AUDIO_CONSTRAINTS: MediaStreamConstraints = {
   audio: {
     echoCancellation: true,
-    // Browser noiseSuppression is kept on as a secondary feedback/howl suppressor —
-    // it catches echo artefacts that AEC misses (e.g. at high speaker volumes).
-    // RNNoise runs after this in the AudioWorklet pipeline for deeper denoising.
-    // Double-processing artefacts are minimal because AEC + NS run pre-RNNoise on
-    // the raw PCM, and RNNoise's neural model adapts to already-suppressed input.
-    noiseSuppression: true,
+    // RNNoise already performs strong denoising in the worklet pipeline.
+    // Keep browser noise suppression off on desktop to avoid the "hollow/metallic"
+    // tone from stacked suppressors. Mobile keeps it on for speakerphone resilience.
+    noiseSuppression: IS_MOBILE,
     // AGC: enabled on mobile so the OS normalises mic input levels — without it,
     // mobile mics send a quiet raw signal and the receiving side hears low volume.
     // Disabled on desktop where headset hardware manages gain staging.
