@@ -72,7 +72,10 @@ interface PeerEntry {
   // Browser AEC only cancels echo when remote audio is played through a media
   // element; Web Audio playback bypasses the reference signal (Chromium #687574).
   // Volume (0–1) controls distance attenuation + user slider.
+  // stereoMerger + gainDest duplicate mono to both channels (avoids left-only output).
   audio: HTMLAudioElement;
+  stereoMerger: ChannelMergerNode;
+  gainDest: MediaStreamAudioDestinationNode;
   analyser: AnalyserNode;
   analyserSource: MediaStreamAudioSourceNode | null;
   pendingCandidates: RTCIceCandidateInit[];
@@ -723,6 +726,20 @@ export function useProximityVoice(
     }
   }
 
+  function forceOpusStereo(sdp: string): string {
+    const opusPayloadTypes = new Set<number>();
+    for (const m of sdp.matchAll(/a=rtpmap:(\d+) opus\/\d+/gi)) {
+      opusPayloadTypes.add(parseInt(m[1], 10));
+    }
+    return sdp.replace(/a=fmtp:(\d+) ([^\r\n]*)/g, (match, pt, params) => {
+      if (!opusPayloadTypes.has(parseInt(pt, 10))) return match;
+      let p = params.replace(/\bstereo=0\b/g, "stereo=1");
+      if (!/\bstereo=1\b/.test(p)) p += ";stereo=1";
+      if (!/\bsprop-stereo=1\b/.test(p)) p += ";sprop-stereo=1";
+      return `a=fmtp:${pt} ${p}`;
+    });
+  }
+
   function getOrCreatePeer(
     peerId: string,
     signalSocket: Socket,
@@ -752,6 +769,10 @@ export function useProximityVoice(
     audio.autoplay = true;
     audio.setAttribute("playsinline", "true");
     audio.volume = MIN_GAIN_FLOOR;
+
+    // Duplicate mono to both channels — avoids browser left-only panning quirks.
+    const stereoMerger = ctx.createChannelMerger(2);
+    const gainDest = ctx.createMediaStreamDestination();
 
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 256;
@@ -818,23 +839,26 @@ export function useProximityVoice(
       const entry = peers.current.get(peerId);
       if (!entry) return;
 
-      // Direct playback — AEC works when stream is played through media element.
-      entry.audio.srcObject = stream;
-      void entry.audio.play().catch(() => {
-        console.warn(`[voice] audio.play() failed for ${peerId} — will retry on gesture`);
-      });
-
+      // Playback: mono → stereo merge → media element (AEC still works).
       if (!entry.analyserSource) {
-        // Analyser for speaking detection only (no playback path).
         const source = ctx.createMediaStreamSource(stream);
+        source.connect(entry.stereoMerger, 0, 0);
+        source.connect(entry.stereoMerger, 0, 1);
+        entry.stereoMerger.connect(entry.gainDest);
         source.connect(entry.analyser);
         entry.analyserSource = source;
       }
+      entry.audio.srcObject = entry.gainDest.stream;
+      void entry.audio.play().catch(() => {
+        console.warn(`[voice] audio.play() failed for ${peerId} — will retry on gesture`);
+      });
     };
 
     peers.current.set(peerId, {
       connection: pc,
       audio,
+      stereoMerger,
+      gainDest,
       analyser,
       analyserSource: null,
       pendingCandidates: [],
@@ -845,8 +869,9 @@ export function useProximityVoice(
         try {
           enforceOpusCodec(pc);
           const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          signalSocket.emit("rtc:offer", { to: peerId, offer });
+          const offerWithStereo = { ...offer, sdp: forceOpusStereo(offer.sdp ?? "") };
+          await pc.setLocalDescription(offerWithStereo);
+          signalSocket.emit("rtc:offer", { to: peerId, offer: offerWithStereo });
         } catch (err) {
           telemetry.current.negotiationFailures += 1;
           console.warn(`[rtc] failed to create offer for ${peerId}`, err);
@@ -886,6 +911,8 @@ export function useProximityVoice(
       entry.analyserSource.disconnect();
       entry.analyserSource = null;
     }
+    entry.stereoMerger.disconnect();
+    entry.gainDest.disconnect();
     entry.analyser.disconnect();
     entry.audio.pause();
     entry.audio.srcObject = null;
@@ -944,8 +971,9 @@ export function useProximityVoice(
       await flushPendingCandidates(from);
       enforceOpusCodec(pc);
       const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      socket.emit("rtc:answer", { to: from, answer });
+      const answerWithStereo = { ...answer, sdp: forceOpusStereo(answer.sdp ?? "") };
+      await pc.setLocalDescription(answerWithStereo);
+      socket.emit("rtc:answer", { to: from, answer: answerWithStereo });
       connectingPeers.current.delete(from);
     } catch (err) {
       telemetry.current.negotiationFailures += 1;
@@ -975,8 +1003,9 @@ export function useProximityVoice(
     try {
       enforceOpusCodec(entry.connection);
       const offer = await entry.connection.createOffer();
-      await entry.connection.setLocalDescription(offer);
-      signalSocket.emit("rtc:offer", { to: peerId, offer });
+      const offerWithStereo = { ...offer, sdp: forceOpusStereo(offer.sdp ?? "") };
+      await entry.connection.setLocalDescription(offerWithStereo);
+      signalSocket.emit("rtc:offer", { to: peerId, offer: offerWithStereo });
     } catch (err) {
       telemetry.current.negotiationFailures += 1;
       console.warn(`[rtc] renegotiation failed for ${peerId}`, err);
