@@ -37,6 +37,10 @@ export default function World({ player }: Props) {
     peerConnectionStates,
     remoteGain,
     setRemoteGain,
+    micGain,
+    setMicGain,
+    agcEnabled,
+    toggleAgc,
     audioBlocked,
     audioInterrupted,
   } = useProximityVoice(socket, localPositionRef, remotePlayers)
@@ -77,6 +81,10 @@ export default function World({ player }: Props) {
         onToggle={toggleMute}
         remoteGain={remoteGain}
         onGainChange={setRemoteGain}
+        micGain={micGain}
+        onMicGainChange={setMicGain}
+        agcEnabled={agcEnabled}
+        onAgcToggle={toggleAgc}
         audioBlocked={audioBlocked}
         audioInterrupted={audioInterrupted}
       />

@@ -1,15 +1,86 @@
 // Phase 2 — mute/unmute toggle for proximity voice
 
+import { useState, useEffect } from 'react'
+
+const IS_MOBILE = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+const IS_IOS    = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+const PLATFORM_LABEL = IS_IOS ? 'iOS' : /Android/i.test(navigator.userAgent) ? 'Android' : 'Mobile';
+
+// Slider soft-max: dragging covers 0–SLIDER_MAX.
+// Values above this are still reachable via the text input.
+const SLIDER_MAX = 10;
+
+interface GainControlProps {
+  label: string
+  value: number
+  onChange: (v: number) => void
+}
+
+function GainControl({ label, value, onChange }: GainControlProps) {
+  const [text, setText] = useState(value.toFixed(1))
+  const [focused, setFocused] = useState(false)
+
+  // When the slider (or any external source) changes the value, update the
+  // text field — but only while the text field isn't actively being edited.
+  useEffect(() => {
+    if (!focused) setText(value.toFixed(1))
+  }, [value, focused])
+
+  function commitText(raw: string) {
+    const v = parseFloat(raw)
+    if (!Number.isNaN(v) && v >= 0) {
+      onChange(v)
+    } else {
+      // Invalid — snap back to the last known good value
+      setText(value.toFixed(1))
+    }
+  }
+
+  return (
+    <div style={styles.gainRow}>
+      <span style={styles.gainLabel}>{label}</span>
+      <input
+        type="range"
+        min={0}
+        max={SLIDER_MAX}
+        step={0.1}
+        value={Math.min(SLIDER_MAX, value)}
+        onChange={(e) => onChange(parseFloat(e.target.value))}
+        style={styles.slider}
+      />
+      <input
+        type="text"
+        inputMode="decimal"
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value)
+          const v = parseFloat(e.target.value)
+          if (!Number.isNaN(v) && v >= 0) onChange(v)
+        }}
+        onFocus={() => setFocused(true)}
+        onBlur={(e) => { setFocused(false); commitText(e.target.value) }}
+        onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+        style={styles.gainInput}
+      />
+      <span style={styles.gainUnit}>x</span>
+    </div>
+  )
+}
+
 interface Props {
   muted: boolean
   onToggle: () => void
   remoteGain: number
   onGainChange: (value: number) => void
+  micGain: number
+  onMicGainChange: (value: number) => void
+  agcEnabled: boolean
+  onAgcToggle: () => void
   audioBlocked?: boolean
   audioInterrupted?: boolean
 }
 
-export default function VoiceControls({ muted, onToggle, remoteGain, onGainChange, audioBlocked, audioInterrupted }: Props) {
+export default function VoiceControls({ muted, onToggle, remoteGain, onGainChange, micGain, onMicGainChange, agcEnabled, onAgcToggle, audioBlocked, audioInterrupted }: Props) {
   return (
     <>
       {audioInterrupted && (
@@ -23,21 +94,23 @@ export default function VoiceControls({ muted, onToggle, remoteGain, onGainChang
         </div>
       )}
       <div style={styles.wrapper}>
+        {IS_MOBILE && (
+          <div style={styles.mobileBadge} title={`Detected platform: ${PLATFORM_LABEL}`}>
+            📱 {PLATFORM_LABEL}
+          </div>
+        )}
         <button style={styles.btn} onClick={onToggle} title={muted ? 'Unmute' : 'Mute'}>
           {muted ? '🔇 Muted' : '🎤 Live'}
         </button>
-        <label style={styles.gainLabel}>
-          Voice gain: {remoteGain.toFixed(1)}x
-        </label>
-        <input
-          type="range"
-          min={0.5}
-          max={5}
-          step={0.1}
-          value={remoteGain}
-          onChange={(e) => onGainChange(Number(e.target.value))}
-          style={styles.slider}
-        />
+        <GainControl label="🔊 Speaker" value={remoteGain} onChange={onGainChange} />
+        <GainControl label="🎙 Mic"     value={micGain}    onChange={onMicGainChange} />
+        <button
+          style={{ ...styles.btn, ...styles.agcBtn, background: agcEnabled ? 'rgba(34,197,94,0.25)' : 'rgba(0,0,0,0.7)' }}
+          onClick={onAgcToggle}
+          title="Automatic Gain Control normalises your mic volume. Disable if you prefer manual control via the Mic slider."
+        >
+          AGC {agcEnabled ? 'ON' : 'OFF'}
+        </button>
       </div>
     </>
   )
@@ -57,16 +130,57 @@ const styles: Record<string, React.CSSProperties> = {
     border: '1px solid #444', borderRadius: 20,
     padding: '8px 20px', fontSize: 14, cursor: 'pointer',
   },
+  gainRow: {
+    display: 'flex',
+    flexDirection: 'row' as const,
+    alignItems: 'center',
+    gap: 6,
+  },
   gainLabel: {
     fontSize: 12,
     color: '#ddd',
-    background: 'rgba(0,0,0,0.65)',
-    padding: '2px 8px',
-    borderRadius: 8,
+    minWidth: 80,
+    textAlign: 'right' as const,
   },
   slider: {
-    width: 180,
+    width: 120,
     accentColor: '#3498db',
+    cursor: 'pointer',
+  },
+  gainInput: {
+    width: 52,
+    background: 'rgba(0,0,0,0.7)',
+    color: '#fff',
+    border: '1px solid #555',
+    borderRadius: 6,
+    padding: '3px 6px',
+    fontSize: 13,
+    textAlign: 'center' as const,
+    outline: 'none',
+  },
+  gainUnit: {
+    fontSize: 12,
+    color: '#aaa',
+  },
+  agcBtn: {
+    fontSize: 12,
+    padding: '4px 14px',
+    border: '1px solid #555',
+    borderRadius: 20,
+    cursor: 'pointer',
+    color: '#fff',
+    transition: 'background 0.15s',
+  },
+  mobileBadge: {
+    fontSize: 11,
+    fontWeight: 600,
+    color: '#a5f3fc',
+    background: 'rgba(0,0,0,0.55)',
+    border: '1px solid rgba(165,243,252,0.3)',
+    padding: '3px 10px',
+    borderRadius: 20,
+    letterSpacing: '0.03em',
+    pointerEvents: 'none' as const,
   },
   blockedBanner: {
     position: 'fixed',

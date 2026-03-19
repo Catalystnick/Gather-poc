@@ -20,6 +20,7 @@ const MIN_GAIN_FLOOR = 0.15;
 const MAX_ACTIVE_PEERS = 8; // admission control for dense crowds
 const TELEMETRY_EVERY_MS = 15000;
 const GAIN_STORAGE_KEY = "gather_poc_remote_gain";
+const MIC_GAIN_STORAGE_KEY = "gather_poc_mic_gain";
 const DISCONNECTED_GRACE_MS = 5000;
 const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
@@ -104,15 +105,19 @@ export function useProximityVoice(
     Record<string, string>
   >({});
   const [remoteGain, setRemoteGain] = useState(loadRemoteGain());
+  const [micGain, setMicGainState] = useState(loadMicGain());
+  // AGC default matches the AUDIO_CONSTRAINTS constant (on for mobile, off for desktop).
+  const [agcEnabled, setAgcEnabledState] = useState<boolean>(IS_MOBILE);
   // audioBlocked: suspended context, user tap will fix it.
   // audioInterrupted: exclusive hardware use (phone call etc), user cannot fix it —
   //   the OS will restore it when the interruption ends.
   const [audioBlocked, setAudioBlocked] = useState(false);
   const [audioInterrupted, setAudioInterrupted] = useState(false);
 
-  const localStream = useRef<MediaStream | null>(null); // RNNoise-processed stream → sent over WebRTC
+  const localStream = useRef<MediaStream | null>(null); // mic-gain output stream → sent over WebRTC
   const rawMicStream = useRef<MediaStream | null>(null); // raw getUserMedia stream → stop() on cleanup
   const audioCtx = useRef<AudioContext | null>(null);
+  const micGainNode = useRef<GainNode | null>(null); // controls outgoing mic level
   const localAnalyser = useRef<AnalyserNode | null>(null);
   const peers = useRef<Map<string, PeerEntry>>(new Map());
   const [isMicReady, setIsMicReady] = useState(false);
@@ -191,7 +196,16 @@ export function useProximityVoice(
           // Apply RNNoise noise suppression. On failure the raw stream is
           // returned as a transparent fallback so voice still works.
           const processedStream = await applyNoiseSuppression(ctx, rawStream);
-          localStream.current = processedStream;
+
+          // Mic gain stage — sits after RNNoise so we amplify clean speech only.
+          // Signal graph: RNNoise output → GainNode → MediaStreamDestination → WebRTC
+          const gainNode = ctx.createGain();
+          gainNode.gain.value = loadMicGain();
+          micGainNode.current = gainNode;
+          const micSource = ctx.createMediaStreamSource(processedStream);
+          const micDest = ctx.createMediaStreamDestination();
+          micSource.connect(gainNode).connect(micDest);
+          localStream.current = micDest.stream;
 
           setIsMicReady(true);
           // ctx.resume() here is outside a user-gesture on iOS and is silently
@@ -751,9 +765,32 @@ export function useProximityVoice(
   }
 
   function updateRemoteGain(value: number) {
-    const next = Math.min(5, Math.max(0.5, value));
+    const next = Math.max(0, value);
     setRemoteGain(next);
-    localStorage.setItem(GAIN_STORAGE_KEY, String(next));
+    try { localStorage.setItem(GAIN_STORAGE_KEY, String(next)); } catch { /* storage unavailable */ }
+  }
+
+  async function toggleAgc() {
+    const next = !agcEnabled;
+    setAgcEnabledState(next);
+    const track = rawMicStream.current?.getAudioTracks()[0];
+    if (track) {
+      try {
+        await track.applyConstraints({ autoGainControl: next });
+        console.log(`[voice] AGC ${next ? "enabled" : "disabled"}`);
+      } catch (err) {
+        console.warn("[voice] applyConstraints(autoGainControl) failed:", err);
+      }
+    }
+  }
+
+  function updateMicGain(value: number) {
+    const next = Math.max(0, value);
+    setMicGainState(next);
+    if (micGainNode.current && audioCtx.current) {
+      micGainNode.current.gain.setTargetAtTime(next, audioCtx.current.currentTime, 0.02);
+    }
+    try { localStorage.setItem(MIC_GAIN_STORAGE_KEY, String(next)); } catch { /* storage unavailable */ }
   }
 
   function setPeerConnectionState(peerId: string, state: string | null) {
@@ -777,6 +814,10 @@ export function useProximityVoice(
     peerConnectionStates,
     remoteGain,
     setRemoteGain: updateRemoteGain,
+    micGain,
+    setMicGain: updateMicGain,
+    agcEnabled,
+    toggleAgc,
     audioBlocked,
     audioInterrupted,
   };
@@ -914,8 +955,21 @@ function loadRemoteGain(): number {
     if (!raw) return IS_MOBILE ? 3.0 : 1;
     const parsed = Number(raw);
     if (Number.isNaN(parsed)) return IS_MOBILE ? 3.0 : 1;
-    return Math.min(5, Math.max(0.5, parsed));
+    return Math.max(0, parsed);
   } catch {
     return IS_MOBILE ? 1.5 : 1;
+  }
+}
+
+function loadMicGain(): number {
+  try {
+    const raw = localStorage.getItem(MIC_GAIN_STORAGE_KEY);
+    // Mobile mics are typically quieter without AGC, so we default higher.
+    if (!raw) return IS_MOBILE ? 2.0 : 1;
+    const parsed = Number(raw);
+    if (Number.isNaN(parsed)) return IS_MOBILE ? 2.0 : 1;
+    return Math.max(0, parsed);
+  } catch {
+    return IS_MOBILE ? 2.0 : 1;
   }
 }
