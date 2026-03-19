@@ -13,6 +13,7 @@ import {
   type RemoteTrackPublication,
   type RemoteAudioTrack,
 } from "livekit-client";
+import { KrispNoiseFilter, isKrispNoiseFilterSupported } from "@livekit/krisp-noise-filter";
 
 const CONNECT_RANGE = 7;
 const DISCONNECT_RANGE = 9;
@@ -272,16 +273,17 @@ export function useLiveKitVoice(
 
         const gainNode = ctx.createGain();
         gainNode.gain.value = loadMicGain();
-        // Force stereo so any mono source doesn't produce one-ear audio.
-        // Web Audio up-mix (mono→stereo, "speakers"): output.L = output.R = input.
-        gainNode.channelCount = 2;
-        gainNode.channelCountMode = "explicit";
         micGainNode.current = gainNode;
 
         const micSource = ctx.createMediaStreamSource(rawStream);
         micSourceRef.current = micSource;
         const micDest = ctx.createMediaStreamDestination();
-        micSource.connect(gainNode).connect(micDest);
+        const stereoMerger = ctx.createChannelMerger(2);
+        // Hard guarantee dual-mono publish: feed the same processed signal into L and R.
+        gainNode.connect(stereoMerger, 0, 0);
+        gainNode.connect(stereoMerger, 0, 1);
+        stereoMerger.connect(micDest);
+        micSource.connect(gainNode);
         localStream.current = micDest.stream;
 
         if (IS_MOBILE && "setSinkId" in ctx) {
@@ -532,10 +534,16 @@ export function useLiveKitVoice(
         }
         const micTrack = localStream.current!.getAudioTracks()[0];
         if (micTrack) {
-          await room.localParticipant.publishTrack(micTrack, {
+          const publication = await room.localParticipant.publishTrack(micTrack, {
             source: Track.Source.Microphone,
             name: "mic",
           });
+          if (publication.track && isKrispNoiseFilterSupported()) {
+            const krisp = KrispNoiseFilter();
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            await publication.track.setProcessor(krisp as any);
+            console.log("[voice] Krisp noise filter enabled");
+          }
         }
 
         // Subscribe to existing participants in range (will be updated by proximity loop)
