@@ -35,11 +35,6 @@ interface PeerEntry {
   pendingCandidates: RTCIceCandidateInit[];
 }
 
-interface PendingOffer {
-  from: string;
-  offer: RTCSessionDescriptionInit;
-}
-
 interface Telemetry {
   negotiationAttempts: number;
   negotiationFailures: number;
@@ -64,7 +59,6 @@ export function useProximityVoice(
   const localAnalyser = useRef<AnalyserNode | null>(null);
   const peers = useRef<Map<string, PeerEntry>>(new Map());
   const [isMicReady, setIsMicReady] = useState(false);
-  const pendingOffers = useRef<PendingOffer[]>([]);
   const connectingPeers = useRef<Set<string>>(new Set());
   const hangupSent = useRef<Set<string>>(new Set());
   const pendingAudioPlay = useRef<Map<string, HTMLAudioElement>>(new Map());
@@ -107,15 +101,13 @@ export function useProximityVoice(
           localAnalyser.current = analyser;
 
           // Attach mic tracks to peers that were created while permission was pending.
-          peers.current.forEach(({ connection }) => {
+          peers.current.forEach(({ connection }, peerId) => {
             attachLocalTracks(connection, stream);
+            if (socket) {
+              void renegotiatePeer(peerId, socket);
+            }
           });
 
-          const queuedOffers = [...pendingOffers.current];
-          pendingOffers.current = [];
-          queuedOffers.forEach(({ from, offer }) => {
-            void handleOffer(from, offer, stream);
-          });
         })
         .catch((err) => console.warn("[voice] mic denied:", err));
     } else {
@@ -169,16 +161,7 @@ export function useProximityVoice(
         from: string;
         offer: RTCSessionDescriptionInit;
       }) => {
-        if (!localStream.current) {
-          console.log(`[voice] queueing offer from ${from} until mic is ready`);
-          pendingOffers.current = [
-            ...pendingOffers.current.filter((entry) => entry.from !== from),
-            { from, offer },
-          ];
-          return;
-        }
-
-        await handleOffer(from, offer, localStream.current);
+        await handleOffer(from, offer, localStream.current ?? undefined);
       },
     );
 
@@ -247,7 +230,7 @@ export function useProximityVoice(
 
   // Proximity + speaking detection + admission control.
   useEffect(() => {
-    if (!socket || !isMicReady) return;
+    if (!socket) return;
 
     const dataArray = new Uint8Array(128);
 
@@ -293,6 +276,7 @@ export function useProximityVoice(
         const preferred = preferredPeerIds.has(id);
 
         if (
+          socket.id &&
           dist < CONNECT_RANGE &&
           preferred &&
           !connected &&
@@ -531,14 +515,16 @@ export function useProximityVoice(
   async function handleOffer(
     from: string,
     offer: RTCSessionDescriptionInit,
-    stream: MediaStream,
+    stream?: MediaStream,
   ) {
     if (!socket) return;
 
     try {
       connectingPeers.current.add(from);
       const pc = getOrCreatePeer(from, socket, false);
-      attachLocalTracks(pc, stream);
+      if (stream) {
+        attachLocalTracks(pc, stream);
+      }
       await pc.setRemoteDescription(offer);
       await flushPendingCandidates(from);
       const answer = await pc.createAnswer();
@@ -549,6 +535,21 @@ export function useProximityVoice(
       telemetry.current.negotiationFailures += 1;
       console.warn(`[rtc] failed to handle offer from ${from}`, err);
       closePeer(from, { emitHangup: true, socket, reason: "offer handling failed" });
+    }
+  }
+
+  async function renegotiatePeer(peerId: string, signalSocket: Socket) {
+    const entry = peers.current.get(peerId);
+    if (!entry) return;
+    if (entry.connection.signalingState !== "stable") return;
+
+    try {
+      const offer = await entry.connection.createOffer();
+      await entry.connection.setLocalDescription(offer);
+      signalSocket.emit("rtc:offer", { to: peerId, offer });
+    } catch (err) {
+      telemetry.current.negotiationFailures += 1;
+      console.warn(`[rtc] renegotiation failed for ${peerId}`, err);
     }
   }
 
