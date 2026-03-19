@@ -714,6 +714,20 @@ export function useProximityVoice(
     return () => clearInterval(interval);
   }, [socket, isMicReady]);
 
+  function enforceOpusCodec(pc: RTCPeerConnection): void {
+    try {
+      const caps = RTCRtpReceiver.getCapabilities?.("audio");
+      if (!caps?.codecs) return;
+      const opus = caps.codecs.filter((c) => c.mimeType?.toLowerCase() === "audio/opus");
+      if (opus.length === 0) return;
+      for (const tr of pc.getTransceivers()) {
+        if ((tr as { kind?: string }).kind === "audio") tr.setCodecPreferences(opus);
+      }
+    } catch {
+      /* setCodecPreferences not supported or failed */
+    }
+  }
+
   function getOrCreatePeer(
     peerId: string,
     signalSocket: Socket,
@@ -876,6 +890,7 @@ export function useProximityVoice(
     if (initiator) {
       void (async () => {
         try {
+          enforceOpusCodec(pc);
           const offer = await pc.createOffer();
           await pc.setLocalDescription(offer);
           signalSocket.emit("rtc:offer", { to: peerId, offer });
@@ -981,6 +996,7 @@ export function useProximityVoice(
       }
       await pc.setRemoteDescription(offer);
       await flushPendingCandidates(from);
+      enforceOpusCodec(pc);
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       socket.emit("rtc:answer", { to: from, answer });
@@ -1011,6 +1027,7 @@ export function useProximityVoice(
     }
 
     try {
+      enforceOpusCodec(entry.connection);
       const offer = await entry.connection.createOffer();
       await entry.connection.setLocalDescription(offer);
       signalSocket.emit("rtc:offer", { to: peerId, offer });
