@@ -21,6 +21,10 @@ const MAX_ACTIVE_PEERS = 8; // admission control for dense crowds
 const TELEMETRY_EVERY_MS = 15000;
 const GAIN_STORAGE_KEY = "gather_poc_remote_gain";
 const MIC_GAIN_STORAGE_KEY = "gather_poc_mic_gain";
+const ROLLOFF_STORAGE_KEY = "gather_poc_rolloff";
+const DEFAULT_ROLLOFF = 1.4; // exponent applied to normalised distance (0–1)
+const HPF_STORAGE_KEY = "gather_poc_hpf_freq";
+const DEFAULT_HPF_FREQ = 80; // Hz — removes sub-bass rumble, leaves voice intact
 const DISCONNECTED_GRACE_MS = 5000;
 const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
@@ -69,11 +73,11 @@ interface PeerEntry {
   // muted so it never emits sound. Firefox/Safari don't need it but it's harmless.
   // Ref: https://stackoverflow.com/questions/55703316
   audio: HTMLAudioElement;
-  // Audible output via the HTMLMediaElement API:
-  //   source → gainNode → gainDest → outputAudio
-  // Using HTMLMediaElement (not AudioContext.destination) is the correct API
-  // for playback — it routes through the media pipeline unconditionally.
-  // GainNode.gain is not capped at 1.0, so the full gain slider range works.
+  // Processing + output chain (HTMLMediaElement API for final playback):
+  //   source → hpfNode → gainNode → gainDest → outputAudio
+  // hpfNode: highpass filter — cuts sub-bass / bassy artefacts from incoming voice.
+  // gainNode: distance attenuation + user slider (not capped at 1.0).
+  hpfNode: BiquadFilterNode;
   gainNode: GainNode;
   gainDest: MediaStreamAudioDestinationNode;
   outputAudio: HTMLAudioElement;
@@ -103,6 +107,8 @@ export function useProximityVoice(
   >({});
   const [remoteGain, setRemoteGain] = useState(loadRemoteGain());
   const [micGain, setMicGainState] = useState(loadMicGain());
+  const [rolloff, setRolloffState] = useState(loadRolloff());
+  const [hpfFreq, setHpfFreqState] = useState(loadHpfFreq());
   // AGC default matches the AUDIO_CONSTRAINTS constant (on for mobile, off for desktop).
   const [agcEnabled, setAgcEnabledState] = useState<boolean>(IS_MOBILE);
   // audioBlocked: suspended context, user tap will fix it.
@@ -137,6 +143,10 @@ export function useProximityVoice(
   remotePlayersRef.current = remotePlayers;
   const remoteGainRef = useRef(remoteGain);
   remoteGainRef.current = remoteGain;
+  const rolloffRef = useRef(rolloff);
+  rolloffRef.current = rolloff;
+  const hpfFreqRef = useRef(hpfFreq);
+  hpfFreqRef.current = hpfFreq;
 
   const wasLocalSpeaking = useRef(false);
   const wasSpeakingPeers = useRef(new Set<string>());
@@ -462,7 +472,7 @@ export function useProximityVoice(
           // GainNode.gain has no 1.0 ceiling — the full 0.5–5× slider range works.
           const userGain = remoteGainRef.current;
           const normalized = Math.min(1, Math.max(0, dist / DISCONNECT_RANGE));
-          const distanceFactor = 1 - normalized ** 1.4;
+          const distanceFactor = 1 - normalized ** rolloffRef.current;
           const targetGain = Math.max(MIN_GAIN_FLOOR, distanceFactor * userGain);
           // setTargetAtTime with a short time constant smooths gain changes to
           // avoid audible clicks when distance or slider value changes.
@@ -539,9 +549,15 @@ export function useProximityVoice(
     // Output goes to gainDest (not ctx.destination) so that the final playback
     // element (outputAudio) uses STREAM_MUSIC on Android — the same route as an
     // MP3 player — instead of inheriting MODE_IN_COMMUNICATION (earpiece).
+    const hpfNode = ctx.createBiquadFilter();
+    hpfNode.type = "highpass";
+    hpfNode.frequency.value = hpfFreqRef.current;
+    hpfNode.Q.value = 0.7; // Butterworth-ish — smooth rolloff, no resonance peak
+
     const gainNode = ctx.createGain();
     gainNode.gain.value = MIN_GAIN_FLOOR;
     const gainDest = ctx.createMediaStreamDestination();
+    hpfNode.connect(gainNode);
     gainNode.connect(gainDest);
 
     // Output element: uses the HTMLMediaElement playback API, which routes through
@@ -626,10 +642,10 @@ export function useProximityVoice(
 
       if (!entry.analyserSource) {
         // Step 2 — Web Audio graph:
-        //   source → gainNode → gainDest  (volume-controlled, feeds outputAudio)
-        //   source → analyser             (speaking detection, no output)
+        //   source → hpfNode → gainNode → gainDest  (filtered + volume-controlled)
+        //   source → analyser                        (speaking detection, no output)
         const source = ctx.createMediaStreamSource(stream);
-        source.connect(entry.gainNode);
+        source.connect(entry.hpfNode);
         source.connect(entry.analyser);
         entry.analyserSource = source;
       }
@@ -644,6 +660,7 @@ export function useProximityVoice(
     peers.current.set(peerId, {
       connection: pc,
       audio,
+      hpfNode,
       gainNode,
       gainDest,
       outputAudio,
@@ -697,6 +714,7 @@ export function useProximityVoice(
       entry.analyserSource.disconnect();
       entry.analyserSource = null;
     }
+    entry.hpfNode.disconnect();
     entry.gainNode.disconnect();
     entry.gainDest.disconnect();
     entry.analyser.disconnect();
@@ -826,6 +844,24 @@ export function useProximityVoice(
     }
   }
 
+  function updateHpfFreq(value: number) {
+    const freq = Math.max(20, value);
+    setHpfFreqState(freq);
+    const ctx = audioCtx.current;
+    if (ctx) {
+      peers.current.forEach((entry) => {
+        entry.hpfNode.frequency.setValueAtTime(freq, ctx.currentTime);
+      });
+    }
+    try { localStorage.setItem(HPF_STORAGE_KEY, String(freq)); } catch { /* storage unavailable */ }
+  }
+
+  function updateRolloff(value: number) {
+    const next = Math.max(0.1, value);
+    setRolloffState(next);
+    try { localStorage.setItem(ROLLOFF_STORAGE_KEY, String(next)); } catch { /* storage unavailable */ }
+  }
+
   function updateMicGain(value: number) {
     const next = Math.max(0, value);
     setMicGainState(next);
@@ -858,6 +894,10 @@ export function useProximityVoice(
     setRemoteGain: updateRemoteGain,
     micGain,
     setMicGain: updateMicGain,
+    rolloff,
+    setRolloff: updateRolloff,
+    hpfFreq,
+    setHpfFreq: updateHpfFreq,
     agcEnabled,
     toggleAgc,
     audioBlocked,
@@ -1013,5 +1053,29 @@ function loadMicGain(): number {
     return Math.max(0, parsed);
   } catch {
     return IS_MOBILE ? 2.0 : 1;
+  }
+}
+
+function loadHpfFreq(): number {
+  try {
+    const raw = localStorage.getItem(HPF_STORAGE_KEY);
+    if (!raw) return DEFAULT_HPF_FREQ;
+    const parsed = Number(raw);
+    if (Number.isNaN(parsed)) return DEFAULT_HPF_FREQ;
+    return Math.max(20, parsed);
+  } catch {
+    return DEFAULT_HPF_FREQ;
+  }
+}
+
+function loadRolloff(): number {
+  try {
+    const raw = localStorage.getItem(ROLLOFF_STORAGE_KEY);
+    if (!raw) return DEFAULT_ROLLOFF;
+    const parsed = Number(raw);
+    if (Number.isNaN(parsed)) return DEFAULT_ROLLOFF;
+    return Math.max(0.1, parsed);
+  } catch {
+    return DEFAULT_ROLLOFF;
   }
 }

@@ -39,6 +39,10 @@ export default function World({ player }: Props) {
     setRemoteGain,
     micGain,
     setMicGain,
+    rolloff,
+    setRolloff,
+    hpfFreq,
+    setHpfFreq,
     agcEnabled,
     toggleAgc,
     audioBlocked,
@@ -83,6 +87,10 @@ export default function World({ player }: Props) {
         onGainChange={setRemoteGain}
         micGain={micGain}
         onMicGainChange={setMicGain}
+        rolloff={rolloff}
+        onRolloffChange={setRolloff}
+        hpfFreq={hpfFreq}
+        onHpfFreqChange={setHpfFreq}
         agcEnabled={agcEnabled}
         onAgcToggle={toggleAgc}
         audioBlocked={audioBlocked}

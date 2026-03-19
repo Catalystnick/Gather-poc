@@ -14,9 +14,14 @@ interface GainControlProps {
   label: string
   value: number
   onChange: (v: number) => void
+  min?: number
+  sliderMax?: number
+  step?: number
+  unit?: string
+  title?: string
 }
 
-function GainControl({ label, value, onChange }: GainControlProps) {
+function GainControl({ label, value, onChange, min = 0, sliderMax = SLIDER_MAX, step = 0.1, unit = 'x', title }: GainControlProps) {
   const [text, setText] = useState(value.toFixed(1))
   const [focused, setFocused] = useState(false)
 
@@ -28,23 +33,22 @@ function GainControl({ label, value, onChange }: GainControlProps) {
 
   function commitText(raw: string) {
     const v = parseFloat(raw)
-    if (!Number.isNaN(v) && v >= 0) {
+    if (!Number.isNaN(v) && v >= min) {
       onChange(v)
     } else {
-      // Invalid — snap back to the last known good value
       setText(value.toFixed(1))
     }
   }
 
   return (
-    <div style={styles.gainRow}>
+    <div style={styles.gainRow} title={title}>
       <span style={styles.gainLabel}>{label}</span>
       <input
         type="range"
-        min={0}
-        max={SLIDER_MAX}
-        step={0.1}
-        value={Math.min(SLIDER_MAX, value)}
+        min={min}
+        max={sliderMax}
+        step={step}
+        value={Math.min(sliderMax, Math.max(min, value))}
         onChange={(e) => onChange(parseFloat(e.target.value))}
         style={styles.slider}
       />
@@ -55,14 +59,14 @@ function GainControl({ label, value, onChange }: GainControlProps) {
         onChange={(e) => {
           setText(e.target.value)
           const v = parseFloat(e.target.value)
-          if (!Number.isNaN(v) && v >= 0) onChange(v)
+          if (!Number.isNaN(v) && v >= min) onChange(v)
         }}
         onFocus={() => setFocused(true)}
         onBlur={(e) => { setFocused(false); commitText(e.target.value) }}
         onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
         style={styles.gainInput}
       />
-      <span style={styles.gainUnit}>x</span>
+      <span style={styles.gainUnit}>{unit}</span>
     </div>
   )
 }
@@ -74,13 +78,17 @@ interface Props {
   onGainChange: (value: number) => void
   micGain: number
   onMicGainChange: (value: number) => void
+  rolloff: number
+  onRolloffChange: (value: number) => void
+  hpfFreq: number
+  onHpfFreqChange: (value: number) => void
   agcEnabled: boolean
   onAgcToggle: () => void
   audioBlocked?: boolean
   audioInterrupted?: boolean
 }
 
-export default function VoiceControls({ muted, onToggle, remoteGain, onGainChange, micGain, onMicGainChange, agcEnabled, onAgcToggle, audioBlocked, audioInterrupted }: Props) {
+export default function VoiceControls({ muted, onToggle, remoteGain, onGainChange, micGain, onMicGainChange, rolloff, onRolloffChange, hpfFreq, onHpfFreqChange, agcEnabled, onAgcToggle, audioBlocked, audioInterrupted }: Props) {
   return (
     <>
       {audioInterrupted && (
@@ -104,6 +112,25 @@ export default function VoiceControls({ muted, onToggle, remoteGain, onGainChang
         </button>
         <GainControl label="🔊 Speaker" value={remoteGain} onChange={onGainChange} />
         <GainControl label="🎙 Mic"     value={micGain}    onChange={onMicGainChange} />
+        <GainControl
+          label="🎚 Bass cut"
+          value={hpfFreq}
+          onChange={onHpfFreqChange}
+          min={20}
+          sliderMax={1000}
+          step={10}
+          unit="Hz"
+          title="Highpass filter cutoff. 20Hz = off, 80Hz = remove rumble, 200–400Hz = cut bassy voice, 800Hz+ = very thin"
+        />
+        <GainControl
+          label="📉 Rolloff"
+          value={rolloff}
+          onChange={onRolloffChange}
+          min={0.1}
+          sliderMax={4}
+          step={0.1}
+          title="Distance attenuation curve. 0.5 = gradual, 1.0 = linear, 1.4 = default, 2.0 = inverse-square, 3+ = sharp cutoff"
+        />
         <button
           style={{ ...styles.btn, ...styles.agcBtn, background: agcEnabled ? 'rgba(34,197,94,0.25)' : 'rgba(0,0,0,0.7)' }}
           onClick={onAgcToggle}
