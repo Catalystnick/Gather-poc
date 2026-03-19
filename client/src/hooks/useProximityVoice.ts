@@ -6,10 +6,16 @@ import { useEffect, useRef, useState } from "react";
 import type { Socket } from "socket.io-client";
 import type { RemotePlayer } from "../types";
 
-const VOICE_RANGE = 8;
+const CONNECT_RANGE = 7;
+const DISCONNECT_RANGE = 9;
 const SPEAKING_THRESHOLD = 20;
 const MAX_PLAYBACK_VOLUME = 0.7; // Cap volume to reduce feedback
-const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
+const MAX_ACTIVE_PEERS = 8; // admission control for dense crowds
+const TELEMETRY_EVERY_MS = 15000;
+const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
+  { urls: "stun:stun.l.google.com:19302" },
+];
+const ICE_SERVERS = resolveIceServers();
 const AUDIO_CONSTRAINTS: MediaStreamConstraints = {
   audio: {
     echoCancellation: true,
@@ -25,12 +31,22 @@ interface PeerEntry {
   connection: RTCPeerConnection;
   audio: HTMLAudioElement; // handles playback — reliable on mobile
   analyser: AnalyserNode; // Web Audio API used only for speaking detection
+  analyserSource: MediaStreamAudioSourceNode | null;
   pendingCandidates: RTCIceCandidateInit[];
 }
 
 interface PendingOffer {
   from: string;
   offer: RTCSessionDescriptionInit;
+}
+
+interface Telemetry {
+  negotiationAttempts: number;
+  negotiationFailures: number;
+  cleanupCount: number;
+  autoplayFailures: number;
+  autoplayRecovered: number;
+  activePeerPeak: number;
 }
 
 export function useProximityVoice(
@@ -49,6 +65,17 @@ export function useProximityVoice(
   const peers = useRef<Map<string, PeerEntry>>(new Map());
   const [isMicReady, setIsMicReady] = useState(false);
   const pendingOffers = useRef<PendingOffer[]>([]);
+  const connectingPeers = useRef<Set<string>>(new Set());
+  const hangupSent = useRef<Set<string>>(new Set());
+  const pendingAudioPlay = useRef<Map<string, HTMLAudioElement>>(new Map());
+  const telemetry = useRef<Telemetry>({
+    negotiationAttempts: 0,
+    negotiationFailures: 0,
+    cleanupCount: 0,
+    autoplayFailures: 0,
+    autoplayRecovered: 0,
+    activePeerPeak: 0,
+  });
 
   const remotePlayersRef = useRef(remotePlayers);
   remotePlayersRef.current = remotePlayers;
@@ -56,10 +83,15 @@ export function useProximityVoice(
   const wasLocalSpeaking = useRef(false);
   const wasSpeakingPeers = useRef(new Set<string>());
 
-  // Acquire mic and set up local speaking analyser
+  // Acquire mic and set up local speaking analyser.
   useEffect(() => {
     const ctx = new AudioContext();
     audioCtx.current = ctx;
+
+    const resumeAndRetryPlayback = () => {
+      void ctx.resume();
+      retryPendingAudioPlayback();
+    };
 
     if (navigator.mediaDevices) {
       navigator.mediaDevices
@@ -67,14 +99,14 @@ export function useProximityVoice(
         .then((stream) => {
           localStream.current = stream;
           setIsMicReady(true);
-          ctx.resume();
+          void ctx.resume();
 
           const analyser = ctx.createAnalyser();
           analyser.fftSize = 256;
           ctx.createMediaStreamSource(stream).connect(analyser);
           localAnalyser.current = analyser;
 
-          // Attach the mic to peers that were created while permission was pending.
+          // Attach mic tracks to peers that were created while permission was pending.
           peers.current.forEach(({ connection }) => {
             attachLocalTracks(connection, stream);
           });
@@ -92,25 +124,39 @@ export function useProximityVoice(
       );
     }
 
-    const resume = () => {
-      ctx.resume();
-    };
-    window.addEventListener("pointerdown", resume, { once: true });
+    window.addEventListener("pointerdown", resumeAndRetryPlayback);
+    window.addEventListener("keydown", resumeAndRetryPlayback);
+    window.addEventListener("touchstart", resumeAndRetryPlayback);
 
     return () => {
-      window.removeEventListener("pointerdown", resume);
-      peers.current.forEach(({ connection, audio }) => {
-        connection.close();
-        audio.pause();
-        audio.srcObject = null;
+      window.removeEventListener("pointerdown", resumeAndRetryPlayback);
+      window.removeEventListener("keydown", resumeAndRetryPlayback);
+      window.removeEventListener("touchstart", resumeAndRetryPlayback);
+      [...peers.current.keys()].forEach((peerId) => {
+        closePeer(peerId, { emitHangup: false, reason: "hook cleanup" });
       });
       peers.current.clear();
-      localStream.current?.getTracks().forEach((t) => t.stop());
-      ctx.close();
+      connectingPeers.current.clear();
+      pendingAudioPlay.current.clear();
+      localStream.current?.getTracks().forEach((track) => track.stop());
+      void ctx.close();
     };
   }, []);
 
-  // Handle incoming signaling events
+  // Lightweight periodic telemetry to help diagnose crowd behavior.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      console.debug("[voice] telemetry", {
+        ...telemetry.current,
+        connected: peers.current.size,
+        connecting: connectingPeers.current.size,
+        pendingAudioPlay: pendingAudioPlay.current.size,
+      });
+    }, TELEMETRY_EVERY_MS);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Handle incoming signaling events.
   useEffect(() => {
     if (!socket) return;
 
@@ -147,8 +193,18 @@ export function useProximityVoice(
       }) => {
         const entry = peers.current.get(from);
         if (!entry) return;
-        await entry.connection.setRemoteDescription(answer);
-        await flushPendingCandidates(from);
+        try {
+          await entry.connection.setRemoteDescription(answer);
+          await flushPendingCandidates(from);
+          connectingPeers.current.delete(from);
+        } catch (err) {
+          telemetry.current.negotiationFailures += 1;
+          console.warn(`[rtc] failed to apply answer from ${from}`, err);
+          closePeer(from, {
+            emitHangup: true,
+            reason: "answer application failed",
+          });
+        }
       },
     );
 
@@ -169,11 +225,17 @@ export function useProximityVoice(
           return;
         }
 
-        await entry.connection.addIceCandidate(candidate);
+        try {
+          await entry.connection.addIceCandidate(candidate);
+        } catch (err) {
+          console.warn(`[rtc] failed to add ice candidate from ${from}`, err);
+        }
       },
     );
 
-    socket.on("rtc:hangup", ({ from }: { from: string }) => closePeer(from));
+    socket.on("rtc:hangup", ({ from }: { from: string }) => {
+      closePeer(from, { emitHangup: false, reason: "remote hangup" });
+    });
 
     return () => {
       socket.off("rtc:offer");
@@ -183,7 +245,7 @@ export function useProximityVoice(
     };
   }, [socket]);
 
-  // Proximity + speaking detection
+  // Proximity + speaking detection + admission control.
   useEffect(() => {
     if (!socket || !isMicReady) return;
 
@@ -199,51 +261,87 @@ export function useProximityVoice(
         localAnalyser.current.getByteFrequencyData(dataArray);
         const speaking = rmsOf(dataArray) > SPEAKING_THRESHOLD;
         if (speaking !== wasLocalSpeaking.current) {
-          console.log(
-            `[voice] you ${speaking ? "started" : "stopped"} speaking`,
-          );
+          console.log(`[voice] you ${speaking ? "started" : "stopped"} speaking`);
           wasLocalSpeaking.current = speaking;
         }
         setIsLocalSpeaking(speaking);
       }
 
-      // Proximity + remote speaking detection
+      const candidates = [...remote.entries()]
+        .map(([id, player]) => ({
+          id,
+          player,
+          distance: distance(local, player.position),
+        }))
+        .filter((entry) => entry.distance < DISCONNECT_RANGE)
+        .sort((a, b) => a.distance - b.distance);
+      const preferredPeerIds = new Set(
+        candidates.slice(0, MAX_ACTIVE_PEERS).map((entry) => entry.id),
+      );
+
+      // Disconnect stale peers no longer visible in room state.
+      for (const peerId of peers.current.keys()) {
+        if (!remote.has(peerId)) {
+          closePeer(peerId, { emitHangup: false, reason: "peer left room" });
+        }
+      }
+
+      // Proximity + remote speaking detection.
       remote.forEach((player, id) => {
         const dist = distance(local, player.position);
         const connected = peers.current.has(id);
+        const preferred = preferredPeerIds.has(id);
 
-        if (dist < VOICE_RANGE && !connected) {
-          // Only the side with the lower socket ID initiates to prevent glare
+        if (
+          dist < CONNECT_RANGE &&
+          preferred &&
+          !connected &&
+          !connectingPeers.current.has(id)
+        ) {
+          // Only the side with the lower socket ID initiates to prevent glare.
           if ((socket.id ?? "") < id) {
             console.log(`[rtc] initiating connection to ${id}`);
             initiatePeer(id, socket);
           }
-        } else if (dist >= VOICE_RANGE && connected) {
-          closePeer(id);
-          socket.emit("rtc:hangup", { to: id });
+        } else if (
+          connected &&
+          (!preferred || dist > DISCONNECT_RANGE)
+        ) {
+          closePeer(id, {
+            emitHangup: true,
+            socket,
+            reason: "out of range or outside top-k",
+          });
         } else if (connected) {
-          const entry = peers.current.get(id)!;
+          const entry = peers.current.get(id);
+          if (!entry) return;
 
-          // Volume via audio element — cap to reduce feedback/screeching
+          // Volume via audio element — cap to reduce feedback/screeching.
           entry.audio.volume = Math.min(
             MAX_PLAYBACK_VOLUME,
-            Math.max(0, 1 - dist / VOICE_RANGE)
+            Math.max(0, 1 - dist / DISCONNECT_RANGE),
           );
 
-          // Speaking detection via analyser
+          // Speaking detection via analyser.
           entry.analyser.getByteFrequencyData(dataArray);
           const remoteSpeaking = rmsOf(dataArray) > SPEAKING_THRESHOLD;
           if (remoteSpeaking) nextSpeaking.add(id);
 
-          const name = remote.get(id)?.name ?? id;
+          const name = player.name ?? id;
           const wasSpeaking = wasSpeakingPeers.current.has(id);
-          if (remoteSpeaking && !wasSpeaking)
+          if (remoteSpeaking && !wasSpeaking) {
             console.log(`[voice] ${name} started speaking`);
-          if (!remoteSpeaking && wasSpeaking)
+          }
+          if (!remoteSpeaking && wasSpeaking) {
             console.log(`[voice] ${name} stopped speaking`);
+          }
         }
       });
 
+      telemetry.current.activePeerPeak = Math.max(
+        telemetry.current.activePeerPeak,
+        peers.current.size,
+      );
       wasSpeakingPeers.current = nextSpeaking;
       setSpeakingPeers(nextSpeaking);
       setConnectedPeers(new Set(peers.current.keys()));
@@ -254,21 +352,29 @@ export function useProximityVoice(
 
   function getOrCreatePeer(
     peerId: string,
-    socket: Socket,
+    signalSocket: Socket,
     initiator: boolean,
   ): RTCPeerConnection {
-    if (peers.current.has(peerId)) return peers.current.get(peerId)!.connection;
+    const existing = peers.current.get(peerId);
+    if (existing) return existing.connection;
+
+    connectingPeers.current.add(peerId);
+    telemetry.current.negotiationAttempts += 1;
+    hangupSent.current.delete(peerId);
 
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-    const ctx = audioCtx.current!;
+    const ctx = audioCtx.current;
+    if (!ctx) {
+      throw new Error("Audio context is not ready");
+    }
 
     // <audio> element handles playback — more reliable on mobile than Web Audio API
     const audio = new Audio();
     audio.autoplay = true;
     audio.setAttribute("playsinline", "true");
-    audio.volume = 0.5; // Lower default to reduce feedback
+    audio.volume = 0.5;
 
-    // Analyser for speaking detection only — NOT connected to audio destination
+    // Analyser for speaking detection only — NOT connected to audio destination.
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 256;
 
@@ -277,53 +383,133 @@ export function useProximityVoice(
     }
 
     pc.onicecandidate = ({ candidate }) => {
-      if (candidate)
-        socket.emit("rtc:ice-candidate", { to: peerId, candidate });
+      if (candidate) {
+        signalSocket.emit("rtc:ice-candidate", { to: peerId, candidate });
+      }
     };
 
     pc.onconnectionstatechange = () => {
-      console.log(`[rtc] connection to ${peerId}: ${pc.connectionState}`);
+      const state = pc.connectionState;
+      console.log(`[rtc] connection to ${peerId}: ${state}`);
+
+      if (state === "connected") {
+        connectingPeers.current.delete(peerId);
+      }
+
+      if (state === "failed" || state === "disconnected" || state === "closed") {
+        closePeer(peerId, {
+          emitHangup: state !== "closed",
+          socket: signalSocket,
+          reason: `connection state ${state}`,
+        });
+      }
     };
 
     pc.ontrack = ({ streams }) => {
+      const stream = streams[0];
+      if (!stream) return;
+
       console.log(`[rtc] received audio track from ${peerId}`);
+      audio.srcObject = stream;
+      void tryPlayAudio(peerId, audio);
 
-      // Wire stream to <audio> element for playback
-      audio.srcObject = streams[0];
-      audio.play().catch((e) => console.warn("[voice] audio play failed:", e));
-
-      // Wire stream to analyser for speaking detection
-      ctx.createMediaStreamSource(streams[0]).connect(analyser);
+      const entry = peers.current.get(peerId);
+      if (entry && !entry.analyserSource) {
+        entry.analyserSource = ctx.createMediaStreamSource(stream);
+        entry.analyserSource.connect(entry.analyser);
+      }
     };
 
     peers.current.set(peerId, {
       connection: pc,
       audio,
       analyser,
+      analyserSource: null,
       pendingCandidates: [],
     });
 
     if (initiator) {
-      pc.createOffer().then((offer) => {
-        pc.setLocalDescription(offer);
-        socket.emit("rtc:offer", { to: peerId, offer });
-      });
+      void (async () => {
+        try {
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          signalSocket.emit("rtc:offer", { to: peerId, offer });
+        } catch (err) {
+          telemetry.current.negotiationFailures += 1;
+          console.warn(`[rtc] failed to create offer for ${peerId}`, err);
+          closePeer(peerId, {
+            emitHangup: true,
+            socket: signalSocket,
+            reason: "offer creation failed",
+          });
+        }
+      })();
     }
 
     return pc;
   }
 
-  function initiatePeer(peerId: string, socket: Socket) {
-    getOrCreatePeer(peerId, socket, true);
+  function initiatePeer(peerId: string, signalSocket: Socket) {
+    if (connectingPeers.current.has(peerId) || peers.current.has(peerId)) return;
+    getOrCreatePeer(peerId, signalSocket, true);
   }
 
-  function closePeer(peerId: string) {
+  async function tryPlayAudio(peerId: string, audio: HTMLAudioElement) {
+    try {
+      await audio.play();
+      if (pendingAudioPlay.current.has(peerId)) {
+        telemetry.current.autoplayRecovered += 1;
+      }
+      pendingAudioPlay.current.delete(peerId);
+    } catch (err) {
+      telemetry.current.autoplayFailures += 1;
+      pendingAudioPlay.current.set(peerId, audio);
+      console.warn(`[voice] audio play blocked for ${peerId}; waiting for gesture`, err);
+    }
+  }
+
+  function retryPendingAudioPlayback() {
+    pendingAudioPlay.current.forEach((audio, peerId) => {
+      void tryPlayAudio(peerId, audio);
+    });
+  }
+
+  function closePeer(
+    peerId: string,
+    opts?: { emitHangup?: boolean; socket?: Socket; reason?: string },
+  ) {
     const entry = peers.current.get(peerId);
-    if (entry) {
+    if (!entry) return;
+
+    peers.current.delete(peerId);
+    connectingPeers.current.delete(peerId);
+    pendingAudioPlay.current.delete(peerId);
+
+    if (entry.analyserSource) {
+      entry.analyserSource.disconnect();
+      entry.analyserSource = null;
+    }
+
+    entry.connection.onconnectionstatechange = null;
+    entry.connection.onicecandidate = null;
+    entry.connection.ontrack = null;
+    if (entry.connection.signalingState !== "closed") {
       entry.connection.close();
-      entry.audio.pause();
-      entry.audio.srcObject = null;
-      peers.current.delete(peerId);
+    }
+    entry.audio.pause();
+    entry.audio.srcObject = null;
+    telemetry.current.cleanupCount += 1;
+
+    if (
+      opts?.emitHangup &&
+      opts.socket &&
+      !hangupSent.current.has(peerId)
+    ) {
+      hangupSent.current.add(peerId);
+      opts.socket.emit("rtc:hangup", { to: peerId });
+    }
+    if (opts?.reason) {
+      console.log(`[rtc] closed peer ${peerId}: ${opts.reason}`);
     }
   }
 
@@ -333,7 +519,12 @@ export function useProximityVoice(
 
     while (entry.pendingCandidates.length > 0) {
       const candidate = entry.pendingCandidates.shift();
-      if (candidate) await entry.connection.addIceCandidate(candidate);
+      if (!candidate) continue;
+      try {
+        await entry.connection.addIceCandidate(candidate);
+      } catch (err) {
+        console.warn(`[rtc] failed to flush pending candidate for ${peerId}`, err);
+      }
     }
   }
 
@@ -344,22 +535,30 @@ export function useProximityVoice(
   ) {
     if (!socket) return;
 
-    const pc = getOrCreatePeer(from, socket, false);
-    attachLocalTracks(pc, stream);
-    await pc.setRemoteDescription(offer);
-    await flushPendingCandidates(from);
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    socket.emit("rtc:answer", { to: from, answer });
+    try {
+      connectingPeers.current.add(from);
+      const pc = getOrCreatePeer(from, socket, false);
+      attachLocalTracks(pc, stream);
+      await pc.setRemoteDescription(offer);
+      await flushPendingCandidates(from);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      socket.emit("rtc:answer", { to: from, answer });
+      connectingPeers.current.delete(from);
+    } catch (err) {
+      telemetry.current.negotiationFailures += 1;
+      console.warn(`[rtc] failed to handle offer from ${from}`, err);
+      closePeer(from, { emitHangup: true, socket, reason: "offer handling failed" });
+    }
   }
 
   function toggleMute() {
-    setMuted((m) => {
-      const next = !m;
-      localStream.current?.getAudioTracks().forEach((t) => {
-        t.enabled = !next; // enabled=true sends audio, enabled=false mutes
+    setMuted((prev) => {
+      const nextMuted = !prev;
+      localStream.current?.getAudioTracks().forEach((track) => {
+        track.enabled = !nextMuted; // enabled=true sends audio, enabled=false mutes
       });
-      return next;
+      return nextMuted;
     });
   }
 
@@ -367,7 +566,7 @@ export function useProximityVoice(
 }
 
 function rmsOf(data: Uint8Array): number {
-  return Math.sqrt(data.reduce((s, v) => s + v * v, 0) / data.length);
+  return Math.sqrt(data.reduce((sum, value) => sum + value * value, 0) / data.length);
 }
 
 function distance(
@@ -390,4 +589,36 @@ function attachLocalTracks(connection: RTCPeerConnection, stream: MediaStream) {
       connection.addTrack(track, stream);
     }
   });
+}
+
+function resolveIceServers(): RTCIceServer[] {
+  const env = import.meta.env as Record<string, string | undefined>;
+  const json = env.VITE_ICE_SERVERS_JSON;
+  if (json) {
+    try {
+      const parsed = JSON.parse(json);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed as RTCIceServer[];
+      }
+      console.warn("[voice] VITE_ICE_SERVERS_JSON is set but not a non-empty array");
+    } catch (err) {
+      console.warn("[voice] failed to parse VITE_ICE_SERVERS_JSON", err);
+    }
+  }
+
+  const turnUrl = env.VITE_TURN_URL;
+  const turnUsername = env.VITE_TURN_USERNAME;
+  const turnCredential = env.VITE_TURN_CREDENTIAL;
+  if (turnUrl && turnUsername && turnCredential) {
+    return [
+      ...DEFAULT_ICE_SERVERS,
+      {
+        urls: turnUrl,
+        username: turnUsername,
+        credential: turnCredential,
+      },
+    ];
+  }
+
+  return DEFAULT_ICE_SERVERS;
 }
