@@ -9,9 +9,12 @@ import type { RemotePlayer } from "../types";
 const CONNECT_RANGE = 7;
 const DISCONNECT_RANGE = 9;
 const SPEAKING_THRESHOLD = 20;
-const MAX_PLAYBACK_VOLUME = 0.7; // Cap volume to reduce feedback
+const MAX_PLAYBACK_VOLUME = 1.0;
+const MIN_PLAYBACK_VOLUME = 0.2;
+const MOBILE_PLAYBACK_BOOST = 1.25;
 const MAX_ACTIVE_PEERS = 8; // admission control for dense crowds
 const TELEMETRY_EVERY_MS = 15000;
+const DISCONNECTED_GRACE_MS = 6000;
 const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
 ];
@@ -68,6 +71,7 @@ export function useProximityVoice(
   const connectingPeers = useRef<Set<string>>(new Set());
   const hangupSent = useRef<Set<string>>(new Set());
   const pendingAudioPlay = useRef<Map<string, HTMLAudioElement>>(new Map());
+  const disconnectTimers = useRef<Map<string, number>>(new Map());
   const telemetry = useRef<Telemetry>({
     negotiationAttempts: 0,
     negotiationFailures: 0,
@@ -138,6 +142,8 @@ export function useProximityVoice(
       peers.current.clear();
       connectingPeers.current.clear();
       pendingAudioPlay.current.clear();
+      disconnectTimers.current.forEach((timer) => window.clearTimeout(timer));
+      disconnectTimers.current.clear();
       localStream.current?.getTracks().forEach((track) => track.stop());
       void ctx.close();
     };
@@ -202,6 +208,7 @@ export function useProximityVoice(
           console.warn(`[rtc] failed to apply answer from ${from}`, err);
           closePeer(from, {
             emitHangup: true,
+            socket,
             reason: "answer application failed",
           });
         }
@@ -305,22 +312,23 @@ export function useProximityVoice(
           }
         } else if (
           connected &&
-          (!preferred || dist > DISCONNECT_RANGE)
+          dist > DISCONNECT_RANGE
         ) {
           closePeer(id, {
             emitHangup: true,
             socket,
-            reason: "out of range or outside top-k",
+            reason: "out of range",
           });
         } else if (connected) {
           const entry = peers.current.get(id);
           if (!entry) return;
 
-          // Volume via audio element — cap to reduce feedback/screeching.
-          entry.audio.volume = Math.min(
-            MAX_PLAYBACK_VOLUME,
-            Math.max(0, 1 - dist / DISCONNECT_RANGE),
-          );
+          // Keep mobile/larger groups audible: gentler attenuation + mobile boost.
+          const normalized = Math.min(1, Math.max(0, dist / DISCONNECT_RANGE));
+          const attenuation = 1 - Math.pow(normalized, 1.6);
+          const targetVolume =
+            attenuation * MAX_PLAYBACK_VOLUME * (isMobileDevice() ? MOBILE_PLAYBACK_BOOST : 1);
+          entry.audio.volume = Math.min(1, Math.max(MIN_PLAYBACK_VOLUME, targetVolume));
 
           // Speaking detection via analyser.
           entry.analyser.getByteFrequencyData(dataArray);
@@ -394,9 +402,31 @@ export function useProximityVoice(
 
       if (state === "connected") {
         connectingPeers.current.delete(peerId);
+        const timer = disconnectTimers.current.get(peerId);
+        if (timer) {
+          window.clearTimeout(timer);
+          disconnectTimers.current.delete(peerId);
+        }
       }
 
-      if (state === "failed" || state === "disconnected" || state === "closed") {
+      if (state === "disconnected") {
+        if (!disconnectTimers.current.has(peerId)) {
+          const timer = window.setTimeout(() => {
+            disconnectTimers.current.delete(peerId);
+            const current = peers.current.get(peerId)?.connection.connectionState;
+            if (current === "disconnected") {
+              closePeer(peerId, {
+                emitHangup: true,
+                socket: signalSocket,
+                reason: "disconnected timeout",
+              });
+            }
+          }, DISCONNECTED_GRACE_MS);
+          disconnectTimers.current.set(peerId, timer);
+        }
+      }
+
+      if (state === "failed" || state === "closed") {
         closePeer(peerId, {
           emitHangup: state !== "closed",
           socket: signalSocket,
@@ -484,6 +514,11 @@ export function useProximityVoice(
     peers.current.delete(peerId);
     connectingPeers.current.delete(peerId);
     pendingAudioPlay.current.delete(peerId);
+    const timer = disconnectTimers.current.get(peerId);
+    if (timer) {
+      window.clearTimeout(timer);
+      disconnectTimers.current.delete(peerId);
+    }
 
     if (entry.analyserSource) {
       entry.analyserSource.disconnect();
@@ -621,4 +656,9 @@ function resolveIceServers(): RTCIceServer[] {
   }
 
   return DEFAULT_ICE_SERVERS;
+}
+
+function isMobileDevice() {
+  if (typeof navigator === "undefined") return false;
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 }
