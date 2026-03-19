@@ -87,7 +87,7 @@ interface RemoteEntry {
   participant: RemoteParticipant;
   track: RemoteAudioTrack;
   audio: HTMLAudioElement;
-  analyser: AnalyserNode;
+  analyser: AnalyserNode | null;
   analyserSource: MediaStreamAudioSourceNode | null;
 }
 
@@ -489,6 +489,19 @@ export function useLiveKitVoice(
 
     const identity = socket.id;
     let room: Room | null = null;
+    const cleanupRemoteEntry = (participantIdentity: string) => {
+      const entry = remoteEntries.current.get(participantIdentity);
+      if (!entry) return;
+      if (entry.analyserSource) entry.analyserSource.disconnect();
+      entry.track.detach().forEach((el) => el.remove());
+      entry.audio.remove();
+      remoteEntries.current.delete(participantIdentity);
+    };
+    const cleanupAllRemoteEntries = () => {
+      [...remoteEntries.current.keys()].forEach((participantIdentity) =>
+        cleanupRemoteEntry(participantIdentity),
+      );
+    };
 
     async function connect() {
       try {
@@ -512,58 +525,51 @@ export function useLiveKitVoice(
           adaptiveStream: false,
           dynacast: false,
           singlePeerConnection: true, // Helps Firefox↔Chromium; some setups fail with dual PC
+          webAudioMix: false, // Use HTMLAudioElement for playback — required for AEC, more reliable Firefox→Chromium
           audioCaptureDefaults: { echoCancellation: true },
         });
+        (
+          room as Room & {
+            setMaxListeners?: (listenerCount: number) => void;
+          }
+        ).setMaxListeners?.(32);
 
         room.on(RoomEvent.TrackSubscribed, (track, _publication, participant) => {
           if (track.kind !== Track.Kind.Audio) return;
           const ctx = audioCtx.current;
           if (!ctx) return;
 
-          const audio = new Audio();
+          cleanupRemoteEntry(participant.identity);
+          const audioTrack = track as RemoteAudioTrack;
+          // Use LiveKit's attach() — more reliable Firefox→Chromium than custom Web Audio pipeline
+          const audio = audioTrack.attach();
           audio.autoplay = true;
           audio.setAttribute("playsinline", "true");
-          audio.volume = MIN_GAIN_FLOOR;
-
-          const audioTrack = track as RemoteAudioTrack;
-          const stream = new MediaStream([audioTrack.mediaStreamTrack]);
-          const analyser = ctx.createAnalyser();
-          analyser.fftSize = 256;
-          const source = ctx.createMediaStreamSource(stream);
-          const stereoMerger = ctx.createChannelMerger(2);
-          const gainDest = ctx.createMediaStreamDestination();
-          source.connect(stereoMerger, 0, 0);
-          source.connect(stereoMerger, 0, 1);
-          stereoMerger.connect(gainDest);
-          source.connect(analyser);
-
-          audio.srcObject = gainDest.stream;
-          void audio.play().catch(() => {});
+          audio.style.display = "none"; // In DOM so Chromium plays; hidden
+          document.body.appendChild(audio);
+          audioTrack.setVolume(MIN_GAIN_FLOOR);
 
           remoteEntries.current.set(participant.identity, {
             participant,
             track: audioTrack,
             audio,
-            analyser,
-            analyserSource: source,
+            analyser: null,
+            analyserSource: null,
           });
           setPeerConnectionState(participant.identity, "connected");
+
+          void audio.play().catch(() => {
+            setAudioBlocked(true); // User must tap to enable playback
+          });
         });
 
         room.on(RoomEvent.TrackUnsubscribed, (_track, _publication, participant) => {
-          const entry = remoteEntries.current.get(participant.identity);
-          if (!entry) return;
-          if (entry.analyserSource) {
-            entry.analyserSource.disconnect();
-          }
-          entry.audio.pause();
-          entry.audio.srcObject = null;
-          remoteEntries.current.delete(participant.identity);
+          cleanupRemoteEntry(participant.identity);
           setPeerConnectionState(participant.identity, null);
         });
 
         room.on(RoomEvent.ParticipantDisconnected, (participant) => {
-          remoteEntries.current.delete(participant.identity);
+          cleanupRemoteEntry(participant.identity);
           setPeerConnectionState(participant.identity, null);
         });
 
@@ -576,7 +582,7 @@ export function useLiveKitVoice(
         room.on(RoomEvent.Disconnected, () => {
           setRoomReady(false);
           roomRef.current = null;
-          remoteEntries.current.clear();
+          cleanupAllRemoteEntries();
           subscribedIdentities.current.clear();
           setConnectedPeers(new Set());
           setPeerConnectionStates({});
@@ -659,12 +665,7 @@ export function useLiveKitVoice(
         room.disconnect();
         roomRef.current = null;
       }
-      remoteEntries.current.forEach((entry) => {
-        if (entry.analyserSource) entry.analyserSource.disconnect();
-        entry.audio.pause();
-        entry.audio.srcObject = null;
-      });
-      remoteEntries.current.clear();
+      cleanupAllRemoteEntries();
       subscribedIdentities.current.clear();
     };
   }, [socket?.id, isMicReady, playerName]);
@@ -753,7 +754,7 @@ export function useLiveKitVoice(
           const normalized = Math.min(1, Math.max(0, dist / DISCONNECT_RANGE));
           const distanceFactor = 1 - normalized ** rolloffRef.current;
           const targetGain = Math.max(MIN_GAIN_FLOOR, distanceFactor * userGain);
-          entry.audio.volume = Math.min(1, targetGain);
+          entry.track.setVolume(Math.min(1, targetGain));
 
           // Use LiveKit's server-side isSpeaking — more reliable across Mac/PC than our RMS
           if (entry.participant.isSpeaking) nextSpeaking.add(id);
