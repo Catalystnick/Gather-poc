@@ -1,7 +1,7 @@
 // Phase 2 — fixed 2D chat overlay in the bottom-left corner
 
 import { useState, useRef, useEffect } from 'react'
-import type { ChatMessage } from '../hooks/useChat'
+import type { ChatMessage } from '../types'
 
 interface Props {
   messages: ChatMessage[]
@@ -28,8 +28,8 @@ export default function ChatPanel({ messages, onSend }: Props) {
   return (
     <div style={styles.panel}>
       <div ref={logRef} style={styles.log}>
-        {messages.map((m, i) => (
-          <div key={i} style={styles.message}>
+        {messages.map((m) => (
+          <div key={`${m.id}-${m.timestamp}`} style={styles.message}>
             <span style={styles.sender}>{m.name}: </span>
             <span>{m.text}</span>
           </div>

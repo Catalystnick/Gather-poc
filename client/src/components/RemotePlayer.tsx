@@ -4,7 +4,7 @@ import { Text } from '@react-three/drei'
 import { Vector3, type Group } from 'three'
 import AvatarMesh from './AvatarMesh'
 import ChatBubble from './ChatBubble'
-import type { Avatar } from '../App'
+import type { Avatar } from '../types'
 
 interface Props {
   id: string

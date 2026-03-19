@@ -9,7 +9,7 @@ export default function VoiceControls({ muted, onToggle }: Props) {
   return (
     <div style={styles.wrapper}>
       <button style={styles.btn} onClick={onToggle} title={muted ? 'Unmute' : 'Mute'}>
-        {muted ? '🎤 Muted' : '🎤 Live'}
+        {muted ? '🔇 Muted' : '🎤 Live'}
       </button>
     </div>
   )

@@ -12,6 +12,16 @@ const io = new Server(httpServer, {
   cors: { origin: '*' }
 })
 
+// Validation helpers
+const SHAPES = ['capsule', 'box', 'sphere']
+const isValidAvatar = (a) =>
+  a && typeof a === 'object' &&
+  SHAPES.includes(a.shape) &&
+  typeof a.color === 'string' && a.color.length <= 32
+const isValidPosition = (p) =>
+  p && typeof p === 'object' &&
+  typeof p.x === 'number' && typeof p.y === 'number' && typeof p.z === 'number'
+
 // In-memory room state
 // { [socketId]: { id, name, avatar: { shape, color }, x, y, z } }
 const players = {}
@@ -20,15 +30,18 @@ io.on('connection', (socket) => {
   console.log(`[connect] ${socket.id}`)
 
   socket.on('player:join', ({ name, avatar }) => {
-    players[socket.id] = { id: socket.id, name, avatar, x: 0, y: 0.5, z: 0 }
+    const trimmed = typeof name === 'string' ? name.trim() : ''
+    if (!trimmed || trimmed.length > 24 || !isValidAvatar(avatar)) {
+      console.warn(`[join] invalid payload from ${socket.id}`)
+      return
+    }
+    players[socket.id] = { id: socket.id, name: trimmed, avatar, x: 0, y: 0.5, z: 0 }
 
-    // Send existing players to the new client (excluding self)
     const others = Object.values(players)
       .filter(p => p.id !== socket.id)
       .map(({ id, name, avatar, x, y, z }) => ({ id, name, avatar, position: { x, y, z } }))
     socket.emit('room:state', others)
 
-    // Notify everyone else of the new player
     const { id, x, y, z } = players[socket.id]
     socket.broadcast.emit('player:joined', {
       id, name, avatar, position: { x, y, z }
@@ -39,7 +52,7 @@ io.on('connection', (socket) => {
 
   socket.on('player:move', ({ x, y, z }) => {
     const player = players[socket.id]
-    if (!player) return
+    if (!player || !isValidPosition({ x, y, z })) return
     player.x = x
     player.y = y
     player.z = z
@@ -49,29 +62,37 @@ io.on('connection', (socket) => {
   // --- Chat (Phase 2) ---
   socket.on('chat:message', ({ text }) => {
     const player = players[socket.id]
-    if (!player) return
+    const trimmed = typeof text === 'string' ? text.trim() : ''
+    if (!player || !trimmed || trimmed.length > 500) return
     io.emit('chat:message', {
       id: socket.id,
       name: player.name,
-      text,
+      text: trimmed,
       timestamp: Date.now(),
     })
   })
 
   // --- Signaling relay (Phase 2 voice) ---
   socket.on('rtc:offer', ({ to, offer }) => {
+    if (typeof to !== 'string' || !offer) return
+    console.log(`[rtc] offer ${socket.id} → ${to}`)
     io.to(to).emit('rtc:offer', { from: socket.id, offer })
   })
 
   socket.on('rtc:answer', ({ to, answer }) => {
+    if (typeof to !== 'string' || !answer) return
+    console.log(`[rtc] answer ${socket.id} → ${to}`)
     io.to(to).emit('rtc:answer', { from: socket.id, answer })
   })
 
   socket.on('rtc:ice-candidate', ({ to, candidate }) => {
+    if (typeof to !== 'string') return
     io.to(to).emit('rtc:ice-candidate', { from: socket.id, candidate })
   })
 
   socket.on('rtc:hangup', ({ to }) => {
+    if (typeof to !== 'string') return
+    console.log(`[rtc] hangup ${socket.id} → ${to}`)
     io.to(to).emit('rtc:hangup', { from: socket.id })
   })
 
@@ -85,5 +106,7 @@ io.on('connection', (socket) => {
   })
 })
 
-const PORT = 3001
-httpServer.listen(PORT, '0.0.0.0', () => console.log(`Server running on http://localhost:${PORT}`))
+const PORT = process.env.PORT || 3001
+httpServer.listen(PORT, '0.0.0.0', () =>
+  console.log(`Server running on port ${PORT}`)
+)

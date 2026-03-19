@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { Avatar, Player } from '../App'
+import type { Avatar, Player } from '../types'
 
 const COLORS = [
   '#e74c3c', '#e67e22', '#f1c40f', '#2ecc71',

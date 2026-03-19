@@ -1,0 +1,15 @@
+---
+description: Documentation must be written to the docs folder
+globs: "**/*.md"
+alwaysApply: true
+---
+
+# Documentation Location
+
+All project documentation (`.md` files) must be created in the `docs/` folder.
+
+- **Correct:** `docs/DEPLOY.md`, `docs/README.md`, `docs/API.md`
+- **Incorrect:** `DEPLOY.md`, `API.md` at project root
+- **Exception:** `README.md` at project root is allowed for GitHub repo display
+
+When creating or moving documentation, use the `docs/` directory.

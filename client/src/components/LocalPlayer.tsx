@@ -3,7 +3,7 @@ import { useFrame } from '@react-three/fiber'
 import { useKeyboardControls } from '@react-three/drei'
 import type { Group } from 'three'
 import AvatarMesh from './AvatarMesh'
-import type { Player } from '../App'
+import type { Player } from '../types'
 
 const SPEED = 5
 

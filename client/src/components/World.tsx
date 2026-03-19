@@ -9,7 +9,7 @@ import CameraRig from './CameraRig'
 import { useSocket } from '../hooks/useSocket'
 import { useChat } from '../hooks/useChat'
 import { useProximityVoice } from '../hooks/useProximityVoice'
-import type { Player } from '../App'
+import type { Player } from '../types'
 
 const keyMap = [
   { name: 'forward',  keys: ['ArrowUp',    'KeyW'] },

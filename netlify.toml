@@ -1,0 +1,13 @@
+# Netlify config for Gather PoC client
+# Server must be deployed separately (Render, Railway, etc.)
+
+[build]
+  base = "client"
+  command = "npm run build"
+  publish = "dist"
+
+# SPA: serve index.html for all routes
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

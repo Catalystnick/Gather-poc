@@ -1,16 +1,9 @@
 import { useState } from 'react'
 import AvatarSelect from './components/AvatarSelect'
 import World from './components/World'
+import type { Player } from './types'
 
-export interface Avatar {
-  shape: 'capsule' | 'box' | 'sphere'
-  color: string
-}
-
-export interface Player {
-  name: string
-  avatar: Avatar
-}
+export type { Avatar, Player } from './types'
 
 const STORAGE_KEY = 'gather_poc_avatar'
 

@@ -1,15 +1,13 @@
 import { useEffect, useState } from 'react'
 import { io, type Socket } from 'socket.io-client'
-import type { Avatar, Player } from '../App'
+import type { Player, RemotePlayer } from '../types'
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL ?? 'http://localhost:3001'
+// VITE_SERVER_URL in .env.local overrides (e.g. for ngrok).
+// Otherwise connect to current origin — Vite proxies /socket.io to the backend,
+// avoiding mixed-content errors when the page is served over HTTPS.
+const SERVER_URL = import.meta.env.VITE_SERVER_URL || undefined
 
-export interface RemotePlayer {
-  id: string
-  name: string
-  avatar: Avatar
-  position: { x: number; y: number; z: number }
-}
+export type { RemotePlayer } from '../types'
 
 export function useSocket(player: Player) {
   const [socket, setSocket] = useState<Socket | null>(null)

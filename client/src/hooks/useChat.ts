@@ -2,13 +2,9 @@
 
 import { useEffect, useState } from 'react'
 import type { Socket } from 'socket.io-client'
+import type { ChatMessage } from '../types'
 
-export interface ChatMessage {
-  id: string
-  name: string
-  text: string
-  timestamp: number
-}
+export type { ChatMessage } from '../types'
 
 export function useChat(socket: Socket | null) {
   const [messages, setMessages] = useState<ChatMessage[]>([])

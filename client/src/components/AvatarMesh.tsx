@@ -1,5 +1,5 @@
 import { Capsule, Box, Sphere } from '@react-three/drei'
-import type { Avatar } from '../App'
+import type { Avatar } from '../types'
 
 interface Props {
   avatar: Avatar
