@@ -753,53 +753,6 @@ export function useLiveKitVoice(
     }
   }
 
-  function toggleRnnoise() {
-    const next = !rnnoiseEnabledRef.current;
-    setRnnoiseEnabledState(next);
-    try {
-      localStorage.setItem(RNNOISE_STORAGE_KEY, next ? "1" : "0");
-    } catch {
-      /* ignore */
-    }
-    const ctx = audioCtx.current;
-    const gate = noiseGateNode.current;
-    const micSource = micSourceRef.current;
-    if (!ctx || !gate || !micSource) return;
-    micSource.disconnect();
-    if (next) {
-      let rnnoiseNode = rnnoiseNodeRef.current;
-      if (!rnnoiseNode) {
-        rnnoiseNode = new AudioWorkletNode(ctx, NoiseSuppressorWorklet_Name);
-        rnnoiseNodeRef.current = rnnoiseNode;
-      }
-      micSource.connect(rnnoiseNode).connect(gate);
-    } else {
-      micSource.connect(gate);
-      const rnnoiseNode = rnnoiseNodeRef.current;
-      if (rnnoiseNode) rnnoiseNode.disconnect();
-    }
-  }
-
-  function updateGateThreshold(value: number) {
-    const next = Math.max(0, value);
-    setGateThresholdState(next);
-    const ctx = audioCtx.current;
-    const gate = noiseGateNode.current;
-    if (next === 0) {
-      if (ctx && gate) gate.gain.setTargetAtTime(1, ctx.currentTime, GATE_ATTACK_TC);
-    } else {
-      vadRef.current?.setOptions({
-        positiveSpeechThreshold: next / 100,
-        negativeSpeechThreshold: Math.max(0.01, next / 100 - 0.15),
-      });
-    }
-    try {
-      localStorage.setItem(GATE_STORAGE_KEY, String(next));
-    } catch {
-      /* ignore */
-    }
-  }
-
   function updateRolloff(value: number) {
     const next = Math.max(0.1, value);
     setRolloffState(next);
@@ -838,12 +791,8 @@ export function useLiveKitVoice(
     toggleAgc,
     echoCancelEnabled,
     toggleEchoCancel,
-    rnnoiseEnabled,
-    toggleRnnoise,
     headphonePrompt,
     confirmHeadphones,
-    gateThreshold,
-    setGateThreshold: updateGateThreshold,
     audioBlocked,
     audioInterrupted,
   };

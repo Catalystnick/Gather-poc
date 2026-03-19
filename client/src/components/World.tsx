@@ -45,12 +45,8 @@ export default function World({ player }: Props) {
     toggleAgc,
     echoCancelEnabled,
     toggleEchoCancel,
-    rnnoiseEnabled,
-    toggleRnnoise,
     headphonePrompt,
     confirmHeadphones,
-    gateThreshold,
-    setGateThreshold,
     audioBlocked,
     audioInterrupted,
   } = useLiveKitVoice(socket, player.name, localPositionRef, remotePlayers)
@@ -99,12 +95,8 @@ export default function World({ player }: Props) {
         onAgcToggle={toggleAgc}
         echoCancelEnabled={echoCancelEnabled}
         onEchoCancelToggle={toggleEchoCancel}
-        rnnoiseEnabled={rnnoiseEnabled}
-        onRnnoiseToggle={toggleRnnoise}
         headphonePrompt={headphonePrompt}
         onHeadphonesConfirm={confirmHeadphones}
-        gateThreshold={gateThreshold}
-        onGateThresholdChange={setGateThreshold}
         audioBlocked={audioBlocked}
         audioInterrupted={audioInterrupted}
       />

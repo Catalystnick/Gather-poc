@@ -86,15 +86,11 @@ interface Props {
   onEchoCancelToggle: () => void
   headphonePrompt: string | null
   onHeadphonesConfirm: (accept: boolean) => void
-  gateThreshold: number
-  onGateThresholdChange: (v: number) => void
-  rnnoiseEnabled: boolean
-  onRnnoiseToggle: () => void
   audioBlocked?: boolean
   audioInterrupted?: boolean
 }
 
-export default function VoiceControls({ muted, onToggle, remoteGain, onGainChange, micGain, onMicGainChange, rolloff, onRolloffChange, agcEnabled, onAgcToggle, echoCancelEnabled, onEchoCancelToggle, rnnoiseEnabled, onRnnoiseToggle, headphonePrompt, onHeadphonesConfirm, gateThreshold, onGateThresholdChange, audioBlocked, audioInterrupted }: Props) {
+export default function VoiceControls({ muted, onToggle, remoteGain, onGainChange, micGain, onMicGainChange, rolloff, onRolloffChange, agcEnabled, onAgcToggle, echoCancelEnabled, onEchoCancelToggle, headphonePrompt, onHeadphonesConfirm, audioBlocked, audioInterrupted }: Props) {
   return (
     <>
       {audioInterrupted && (
@@ -140,16 +136,6 @@ export default function VoiceControls({ muted, onToggle, remoteGain, onGainChang
           step={0.1}
           title="Distance attenuation curve. 0.5 = gradual, 1.0 = linear, 1.4 = default, 2.0 = inverse-square, 3+ = sharp cutoff"
         />
-        <GainControl
-          label="🔇 Noise gate"
-          value={gateThreshold}
-          onChange={onGateThresholdChange}
-          min={0}
-          sliderMax={80}
-          step={1}
-          unit="%"
-          title="Noise gate (Silero VAD): mic is silenced when no speech is detected. 0 = default/off for natural sound. 30 = lenient, 50 = moderate, 70 = strict. Higher = requires more confidence of speech before opening the gate."
-        />
         <div style={styles.toggleRow}>
           <button
             style={{ ...styles.btn, ...styles.agcBtn, background: agcEnabled ? 'rgba(34,197,94,0.25)' : 'rgba(0,0,0,0.7)' }}
@@ -161,16 +147,9 @@ export default function VoiceControls({ muted, onToggle, remoteGain, onGainChang
           <button
             style={{ ...styles.btn, ...styles.agcBtn, background: echoCancelEnabled ? 'rgba(34,197,94,0.25)' : 'rgba(0,0,0,0.7)' }}
             onClick={onEchoCancelToggle}
-            title="Echo Cancellation removes your speaker output from your mic signal. Disable when using headphones — no echo risk and better simultaneous-speech quality."
+            title="Echo Cancellation removes your speaker output from your mic signal. Disable when using headphones."
           >
             AEC {echoCancelEnabled ? 'ON' : 'OFF'}
-          </button>
-          <button
-            style={{ ...styles.btn, ...styles.agcBtn, background: rnnoiseEnabled ? 'rgba(34,197,94,0.25)' : 'rgba(0,0,0,0.7)' }}
-            onClick={onRnnoiseToggle}
-            title="RNnoise noise suppression: removes background noise (keyboard, fans, etc.) from your mic. Disable for raw/unfiltered audio."
-          >
-            RNnoise {rnnoiseEnabled ? 'ON' : 'OFF'}
           </button>
         </div>
       </div>
