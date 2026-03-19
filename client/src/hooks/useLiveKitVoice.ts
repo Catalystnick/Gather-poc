@@ -18,7 +18,9 @@ import { NoiseSuppressorWorklet_Name } from "@timephy/rnnoise-wasm";
 
 const CONNECT_RANGE = 7;
 const DISCONNECT_RANGE = 9;
-const SPEAKING_THRESHOLD = 20;
+const SPEAKING_THRESHOLD = 35; // Raised from 20 — Mac mics often have higher noise floor
+const SPEAKING_HYSTERESIS_UP = 2;   // frames above threshold before showing green
+const SPEAKING_HYSTERESIS_DOWN = 5; // frames below threshold before hiding green
 const MIN_GAIN_FLOOR = 0.15;
 const MAX_ACTIVE_PEERS = 8;
 const GAIN_STORAGE_KEY = "gather_poc_remote_gain";
@@ -37,6 +39,35 @@ const ROOM_NAME = "gather-world";
 const IS_MOBILE = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
   typeof navigator !== "undefined" ? navigator.userAgent : "",
 );
+const IS_FIREFOX = /Firefox\//i.test(
+  typeof navigator !== "undefined" ? navigator.userAgent : "",
+);
+
+const DEFAULT_ICE_SERVERS: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
+
+function resolveIceServersForFirefox(): RTCIceServer[] {
+  const env = import.meta.env as Record<string, string | undefined>;
+  const json = env.VITE_ICE_SERVERS_JSON;
+  if (json) {
+    try {
+      const parsed = JSON.parse(json);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed as RTCIceServer[];
+    } catch {
+      /* fall through */
+    }
+  }
+  const turnUrl = env.VITE_TURN_URL;
+  const turnUsername = env.VITE_TURN_USERNAME;
+  const turnCredential = env.VITE_TURN_CREDENTIAL;
+  if (turnUrl && turnUsername && turnCredential) {
+    return [...DEFAULT_ICE_SERVERS, { urls: turnUrl, username: turnUsername, credential: turnCredential }];
+  }
+  console.warn(
+    "[voice] Firefox detected. Firefox↔Chromium audio may fail without TURN. " +
+      "Set VITE_TURN_URL, VITE_TURN_USERNAME, VITE_TURN_CREDENTIAL (or VITE_ICE_SERVERS_JSON).",
+  );
+  return DEFAULT_ICE_SERVERS;
+}
 
 const AUDIO_CONSTRAINTS: MediaStreamConstraints = {
   audio: {
@@ -194,6 +225,7 @@ export function useLiveKitVoice(
   const subscribedIdentities = useRef<Set<string>>(new Set());
   const wasLocalSpeaking = useRef(false);
   const wasSpeakingPeers = useRef(new Set<string>());
+  const localSpeakingFrames = useRef(0); // hysteresis: consecutive frames above/below threshold
   const prevOutputDeviceIdsRef = useRef<Set<string>>(new Set());
   const headphoneDeviceIdRef = useRef<string | null>(null);
 
@@ -479,6 +511,7 @@ export function useLiveKitVoice(
         room = new Room({
           adaptiveStream: false,
           dynacast: false,
+          singlePeerConnection: true, // Helps Firefox↔Chromium; some setups fail with dual PC
           audioCaptureDefaults: { echoCancellation: true },
         });
 
@@ -549,9 +582,13 @@ export function useLiveKitVoice(
           setPeerConnectionStates({});
         });
 
-        await room.connect(url, token, {
+        const connectOpts: { autoSubscribe: boolean; rtcConfig?: RTCConfiguration } = {
           autoSubscribe: false,
-        });
+        };
+        if (IS_FIREFOX) {
+          connectOpts.rtcConfig = { iceServers: resolveIceServersForFirefox() };
+        }
+        await room.connect(url, token, connectOpts);
 
         roomRef.current = room;
         setRoomReady(true);
@@ -576,6 +613,13 @@ export function useLiveKitVoice(
         room.on(RoomEvent.TrackPublished, handleTrackPublished);
 
         // Publish our processed mic track
+        // Safari on Mac keeps AudioContext suspended until user gesture — resume before publish
+        // so the processing chain (gate, gain) actually flows audio. Without this, Mac sends silence.
+        const ctx = audioCtx.current;
+        if (ctx?.state === "suspended") {
+          setAudioBlocked(true); // Show "Tap to enable" so user knows to interact
+          await ctx.resume().catch(() => {});
+        }
         const micTrack = localStream.current!.getAudioTracks()[0];
         if (micTrack) {
           await room.localParticipant.publishTrack(micTrack, {
@@ -638,13 +682,25 @@ export function useLiveKitVoice(
       const remote = remotePlayersRef.current;
       const ctx = audioCtx.current;
 
-      // Local speaking
+      // Local speaking with hysteresis — avoids Mac false positives from mic noise floor
       if (localAnalyser.current) {
         localAnalyser.current.getByteFrequencyData(dataArray);
-        const speaking = rmsOf(dataArray) > SPEAKING_THRESHOLD;
-        if (speaking !== wasLocalSpeaking.current) {
-          wasLocalSpeaking.current = speaking;
+        const above = rmsOf(dataArray) > SPEAKING_THRESHOLD;
+        if (above) {
+          localSpeakingFrames.current = Math.min(
+            SPEAKING_HYSTERESIS_UP,
+            localSpeakingFrames.current + 1,
+          );
+        } else {
+          localSpeakingFrames.current = Math.max(
+            -SPEAKING_HYSTERESIS_DOWN,
+            localSpeakingFrames.current - 1,
+          );
         }
+        const speaking =
+          localSpeakingFrames.current >= SPEAKING_HYSTERESIS_UP ||
+          (wasLocalSpeaking.current && localSpeakingFrames.current > -SPEAKING_HYSTERESIS_DOWN);
+        wasLocalSpeaking.current = speaking;
         setIsLocalSpeaking(speaking);
       }
 
@@ -699,8 +755,8 @@ export function useLiveKitVoice(
           const targetGain = Math.max(MIN_GAIN_FLOOR, distanceFactor * userGain);
           entry.audio.volume = Math.min(1, targetGain);
 
-          entry.analyser.getByteFrequencyData(dataArray);
-          if (rmsOf(dataArray) > SPEAKING_THRESHOLD) nextSpeaking.add(id);
+          // Use LiveKit's server-side isSpeaking — more reliable across Mac/PC than our RMS
+          if (entry.participant.isSpeaking) nextSpeaking.add(id);
         }
       });
 
