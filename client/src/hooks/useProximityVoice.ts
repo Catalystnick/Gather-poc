@@ -5,11 +5,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Socket } from "socket.io-client";
 import type { RemotePlayer } from "../types";
-// RNNoise WebAssembly noise suppression — processes the mic stream through a
-// deep-learning model before sending over WebRTC. The ?worker&url modifier is
-// Vite-specific and creates a bundled AudioWorklet script at build time.
-import NoiseSuppressorWorkletUrl from "@timephy/rnnoise-wasm/NoiseSuppressorWorklet?worker&url";
-import { NoiseSuppressorWorklet_Name } from "@timephy/rnnoise-wasm";
 import { MicVAD } from "@ricky0123/vad-web";
 
 const CONNECT_RANGE = 7;
@@ -25,7 +20,6 @@ const MIC_GAIN_STORAGE_KEY = "gather_poc_mic_gain";
 const ROLLOFF_STORAGE_KEY = "gather_poc_rolloff";
 const DEFAULT_ROLLOFF = 1.4; // exponent applied to normalised distance (0–1)
 const HPF_STORAGE_KEY = "gather_poc_hpf_freq";
-const DEFAULT_HPF_FREQ = 60; // Hz — trims rumble but preserves more low-mid voice body
 const GATE_STORAGE_KEY = "gather_poc_gate_threshold";
 const DEFAULT_GATE_THRESHOLD = 0; // speech probability ×100 (0–100); 0 = off (natural baseline)
 const AUDIO_SETTINGS_VERSION_KEY = "gather_poc_audio_settings_version";
@@ -54,16 +48,12 @@ const IS_FIREFOX = /Firefox\//i.test(
 const AUDIO_CONSTRAINTS: MediaStreamConstraints = {
   audio: {
     echoCancellation: true,
-    // RNNoise already performs strong denoising in the worklet pipeline.
-    // Keep browser noise suppression off on desktop to avoid the "hollow/metallic"
-    // tone from stacked suppressors. Mobile keeps it on for speakerphone resilience.
-    noiseSuppression: IS_MOBILE,
+    // Keep capture unfiltered by default; VAD gate handles muting logic.
+    noiseSuppression: false,
     // AGC: enabled on mobile so the OS normalises mic input levels — without it,
     // mobile mics send a quiet raw signal and the receiving side hears low volume.
     // Disabled on desktop where headset hardware manages gain staging.
     autoGainControl: IS_MOBILE,
-    // Chrome-only: cuts low-freq rumble that feeds back.
-    ...(IS_MOBILE ? {} : { googHighpassFilter: true }),
   } as MediaTrackConstraints,
   video: false,
 };
@@ -83,13 +73,11 @@ interface PeerEntry {
   // Ref: https://stackoverflow.com/questions/55703316
   audio: HTMLAudioElement;
   // Processing chain:
-  //   source → hpfNode → gainNode
+  //   source → gainNode
   // Playback differs by platform:
   //   mobile  → stereoMerger → gainDest → outputAudio (media pipeline/loudspeaker)
   //   desktop → AudioContext.destination (native Web Audio output path)
-  // hpfNode: highpass filter — cuts sub-bass / bassy artefacts from incoming voice.
   // gainNode: distance attenuation + user slider (not capped at 1.0).
-  hpfNode: BiquadFilterNode;
   gainNode: GainNode;
   stereoMerger: ChannelMergerNode | null;
   gainDest: MediaStreamAudioDestinationNode | null;
@@ -121,7 +109,6 @@ export function useProximityVoice(
   const [remoteGain, setRemoteGain] = useState(loadRemoteGain());
   const [micGain, setMicGainState] = useState(loadMicGain());
   const [rolloff, setRolloffState] = useState(loadRolloff());
-  const [hpfFreq, setHpfFreqState] = useState(loadHpfFreq());
   const [gateThreshold, setGateThresholdState] = useState(loadGateThreshold());
   // AGC default matches the AUDIO_CONSTRAINTS constant (on for mobile, off for desktop).
   const [agcEnabled, setAgcEnabledState] = useState<boolean>(IS_MOBILE);
@@ -167,8 +154,6 @@ export function useProximityVoice(
   remoteGainRef.current = remoteGain;
   const rolloffRef = useRef(rolloff);
   rolloffRef.current = rolloff;
-  const hpfFreqRef = useRef(hpfFreq);
-  hpfFreqRef.current = hpfFreq;
   const gateThresholdRef = useRef(gateThreshold);
   gateThresholdRef.current = gateThreshold;
   const echoCancelEnabledRef = useRef(echoCancelEnabled);
@@ -236,16 +221,12 @@ export function useProximityVoice(
         .getUserMedia(AUDIO_CONSTRAINTS)
         .then(async (rawStream) => {
           // Keep the raw hardware stream separate so we can stop the mic
-          // tracks on cleanup regardless of whether RNNoise is active.
+          // tracks on cleanup.
           rawMicStream.current = rawStream;
 
-          // Apply RNNoise noise suppression. On failure the raw stream is
-          // returned as a transparent fallback so voice still works.
-          const processedStream = await applyNoiseSuppression(ctx, rawStream);
-
-          // Mic gain stage — sits after RNNoise so we amplify clean speech only.
+          // Mic gain stage with optional VAD gating.
           // Signal graph:
-          //   RNNoise output → noiseGateNode → GainNode → MediaStreamDestination → WebRTC
+          //   raw mic → noiseGateNode → GainNode → MediaStreamDestination → WebRTC
           // noiseGateNode holds at 1.0 (pass-through) when threshold is 0 (disabled).
           const gateNode = ctx.createGain();
           gateNode.gain.value = 1;
@@ -253,7 +234,7 @@ export function useProximityVoice(
           const gainNode = ctx.createGain();
           gainNode.gain.value = loadMicGain();
           micGainNode.current = gainNode;
-          const micSource = ctx.createMediaStreamSource(processedStream);
+          const micSource = ctx.createMediaStreamSource(rawStream);
           const micDest = ctx.createMediaStreamDestination();
           micSource.connect(gateNode).connect(gainNode).connect(micDest);
           localStream.current = micDest.stream;
@@ -287,17 +268,16 @@ export function useProximityVoice(
           // ignored; the gesture handlers above are the reliable resume path.
           void ctx.resume().catch(() => {/* will resume on next gesture */});
 
-          // Connect the processed stream to the speaking-detection analyser.
-          // Using the denoised signal reduces false-positives from background noise.
+          // Connect raw stream to speaking-detection analyser.
           const analyser = ctx.createAnalyser();
           analyser.fftSize = 256;
-          ctx.createMediaStreamSource(processedStream).connect(analyser);
+          ctx.createMediaStreamSource(rawStream).connect(analyser);
           localAnalyser.current = analyser;
 
           // Noise gate — Silero VAD (ML-based) with RMS fallback.
           //
           // Primary: MicVAD (Silero VAD v5/legacy model via ONNX) runs its own
-          //   AudioWorklet inside our AudioContext, reading from processedStream.
+          //   AudioWorklet inside our AudioContext, reading from rawStream.
           //   onSpeechStart/onSpeechEnd open/close the noiseGateNode with the same
           //   GATE_ATTACK_TC / GATE_RELEASE_TC time constants.
           //
@@ -331,13 +311,13 @@ export function useProximityVoice(
 
           // --- Silero VAD (primary) ---
           // Initialised asynchronously; on success it cancels the RMS interval.
-          // We pass our existing AudioContext and processedStream so the VAD worklet
+          // We pass our existing AudioContext and rawStream so the VAD worklet
           // lives in the same audio graph without a second getUserMedia call.
           // pauseStream/resumeStream are no-ops — we own the stream lifecycle.
           const posThresh = Math.max(0.01, gateThresholdRef.current / 100);
           MicVAD.new({
             audioContext: ctx,
-            getStream: async () => processedStream,
+            getStream: async () => rawStream,
             pauseStream: async () => {},
             resumeStream: async (stream) => stream,
             startOnLoad: false,
@@ -385,7 +365,7 @@ export function useProximityVoice(
           // socketRef.current — NOT the closure-captured `socket` — ensures we
           // always use the live socket even though this effect has [] deps.
           peers.current.forEach(({ connection }, peerId) => {
-            attachLocalTracks(connection, processedStream);
+            attachLocalTracks(connection, localStream.current ?? rawStream);
             const liveSocket = socketRef.current;
             if (liveSocket) {
               void renegotiatePeer(peerId, liveSocket);
@@ -416,17 +396,16 @@ export function useProximityVoice(
       connectingPeers.current.clear();
       disconnectTimers.current.forEach((timerId) => window.clearTimeout(timerId));
       disconnectTimers.current.clear();
-      // Stop the raw hardware mic tracks (not the processed stream, which
-      // is a synthetic MediaStreamDestinationNode output with no hardware).
+      // Stop the raw hardware mic tracks.
       rawMicStream.current?.getTracks().forEach((track) => track.stop());
       if (gateIntervalIdRef.current !== null) {
         window.clearInterval(gateIntervalIdRef.current);
         gateIntervalIdRef.current = null;
       }
-      // Pause (not destroy) the VAD — destroy() would stop our shared processedStream tracks.
+      // Pause (not destroy) the VAD — we own the stream lifecycle here.
       void vadRef.current?.pause();
       vadRef.current = null;
-      // Closing the AudioContext also destroys the RNNoise worklet and all nodes.
+      // Closing the AudioContext also destroys all nodes in this graph.
       void ctx.close();
     };
   }, []);
@@ -750,14 +729,8 @@ export function useProximityVoice(
     // Mobile and desktop use different playback targets:
     // - mobile: HTMLMediaElement output path for reliable loudspeaker routing
     // - desktop: direct Web Audio output for a cleaner, lower-complexity path
-    const hpfNode = ctx.createBiquadFilter();
-    hpfNode.type = "highpass";
-    hpfNode.frequency.value = hpfFreqRef.current;
-    hpfNode.Q.value = 0.7; // Butterworth-ish — smooth rolloff, no resonance peak
-
     const gainNode = ctx.createGain();
     gainNode.gain.value = MIN_GAIN_FLOOR;
-    hpfNode.connect(gainNode);
     const stereoMerger = ctx.createChannelMerger(2);
     let gainDest: MediaStreamAudioDestinationNode | null = null;
     let outputAudio: HTMLAudioElement | null = null;
@@ -850,10 +823,10 @@ export function useProximityVoice(
 
       if (!entry.analyserSource) {
         // Step 2 — Web Audio graph:
-        //   source → hpfNode → gainNode → gainDest  (filtered + volume-controlled)
-        //   source → analyser                        (speaking detection, no output)
+        //   source → gainNode   (volume-controlled playback)
+        //   source → analyser   (speaking detection, no output)
         const source = ctx.createMediaStreamSource(stream);
-        source.connect(entry.hpfNode);
+        source.connect(entry.gainNode);
         source.connect(entry.analyser);
         entry.analyserSource = source;
       }
@@ -869,7 +842,6 @@ export function useProximityVoice(
     peers.current.set(peerId, {
       connection: pc,
       audio,
-      hpfNode,
       gainNode,
       stereoMerger,
       gainDest,
@@ -924,7 +896,6 @@ export function useProximityVoice(
       entry.analyserSource.disconnect();
       entry.analyserSource = null;
     }
-    entry.hpfNode.disconnect();
     entry.gainNode.disconnect();
     entry.stereoMerger?.disconnect();
     entry.gainDest?.disconnect();
@@ -1084,18 +1055,6 @@ export function useProximityVoice(
     void applyEchoCancel(!echoCancelEnabledRef.current);
   }
 
-  function updateHpfFreq(value: number) {
-    const freq = Math.max(20, value);
-    setHpfFreqState(freq);
-    const ctx = audioCtx.current;
-    if (ctx) {
-      peers.current.forEach((entry) => {
-        entry.hpfNode.frequency.setValueAtTime(freq, ctx.currentTime);
-      });
-    }
-    try { localStorage.setItem(HPF_STORAGE_KEY, String(freq)); } catch { /* storage unavailable */ }
-  }
-
   function updateGateThreshold(value: number) {
     const next = Math.max(0, value);
     setGateThresholdState(next);
@@ -1155,8 +1114,6 @@ export function useProximityVoice(
     setMicGain: updateMicGain,
     rolloff,
     setRolloff: updateRolloff,
-    hpfFreq,
-    setHpfFreq: updateHpfFreq,
     agcEnabled,
     toggleAgc,
     echoCancelEnabled,
@@ -1168,32 +1125,6 @@ export function useProximityVoice(
     audioBlocked,
     audioInterrupted,
   };
-}
-
-// Loads the RNNoise AudioWorklet into the given AudioContext and routes the
-// raw mic stream through it, returning a new processed MediaStream.
-// Signal graph:
-//   raw mic source → NoiseSuppressorWorkletNode → MediaStreamDestinationNode
-//                                                         ↓
-//                                               processed .stream (→ WebRTC)
-// Falls back to the raw stream transparently if the worklet fails to load
-// (e.g. browser blocks WASM, or very old Safari).
-async function applyNoiseSuppression(
-  ctx: AudioContext,
-  rawStream: MediaStream,
-): Promise<MediaStream> {
-  try {
-    await ctx.audioWorklet.addModule(NoiseSuppressorWorkletUrl);
-    const source = ctx.createMediaStreamSource(rawStream);
-    const rnnoiseNode = new AudioWorkletNode(ctx, NoiseSuppressorWorklet_Name);
-    const destination = ctx.createMediaStreamDestination();
-    source.connect(rnnoiseNode).connect(destination);
-    console.log("[voice] RNNoise noise suppression active");
-    return destination.stream;
-  } catch (err) {
-    console.warn("[voice] RNNoise worklet failed — using raw mic stream:", err);
-    return rawStream;
-  }
 }
 
 function rmsOf(data: Uint8Array): number {
@@ -1320,19 +1251,6 @@ function loadMicGain(): number {
     return Math.max(0, parsed);
   } catch {
     return IS_MOBILE ? 2.0 : 1;
-  }
-}
-
-function loadHpfFreq(): number {
-  ensureAudioSettingsMigration();
-  try {
-    const raw = localStorage.getItem(HPF_STORAGE_KEY);
-    if (!raw) return DEFAULT_HPF_FREQ;
-    const parsed = Number(raw);
-    if (Number.isNaN(parsed)) return DEFAULT_HPF_FREQ;
-    return Math.max(20, parsed);
-  } catch {
-    return DEFAULT_HPF_FREQ;
   }
 }
 

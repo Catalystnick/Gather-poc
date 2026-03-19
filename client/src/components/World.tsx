@@ -41,8 +41,6 @@ export default function World({ player }: Props) {
     setMicGain,
     rolloff,
     setRolloff,
-    hpfFreq,
-    setHpfFreq,
     agcEnabled,
     toggleAgc,
     echoCancelEnabled,
@@ -95,8 +93,6 @@ export default function World({ player }: Props) {
         onMicGainChange={setMicGain}
         rolloff={rolloff}
         onRolloffChange={setRolloff}
-        hpfFreq={hpfFreq}
-        onHpfFreqChange={setHpfFreq}
         agcEnabled={agcEnabled}
         onAgcToggle={toggleAgc}
         echoCancelEnabled={echoCancelEnabled}

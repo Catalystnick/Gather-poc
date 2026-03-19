@@ -80,8 +80,6 @@ interface Props {
   onMicGainChange: (value: number) => void
   rolloff: number
   onRolloffChange: (value: number) => void
-  hpfFreq: number
-  onHpfFreqChange: (value: number) => void
   agcEnabled: boolean
   onAgcToggle: () => void
   echoCancelEnabled: boolean
@@ -94,7 +92,7 @@ interface Props {
   audioInterrupted?: boolean
 }
 
-export default function VoiceControls({ muted, onToggle, remoteGain, onGainChange, micGain, onMicGainChange, rolloff, onRolloffChange, hpfFreq, onHpfFreqChange, agcEnabled, onAgcToggle, echoCancelEnabled, onEchoCancelToggle, headphonePrompt, onHeadphonesConfirm, gateThreshold, onGateThresholdChange, audioBlocked, audioInterrupted }: Props) {
+export default function VoiceControls({ muted, onToggle, remoteGain, onGainChange, micGain, onMicGainChange, rolloff, onRolloffChange, agcEnabled, onAgcToggle, echoCancelEnabled, onEchoCancelToggle, headphonePrompt, onHeadphonesConfirm, gateThreshold, onGateThresholdChange, audioBlocked, audioInterrupted }: Props) {
   return (
     <>
       {audioInterrupted && (
@@ -131,16 +129,6 @@ export default function VoiceControls({ muted, onToggle, remoteGain, onGainChang
         </button>
         <GainControl label="🔊 Speaker" value={remoteGain} onChange={onGainChange} />
         <GainControl label="🎙 Mic"     value={micGain}    onChange={onMicGainChange} />
-        <GainControl
-          label="🎚 Bass cut"
-          value={hpfFreq}
-          onChange={onHpfFreqChange}
-          min={20}
-          sliderMax={1000}
-          step={10}
-          unit="Hz"
-          title="Highpass filter cutoff. 20Hz = off, 80Hz = remove rumble, 200–400Hz = cut bassy voice, 800Hz+ = very thin"
-        />
         <GainControl
           label="📉 Rolloff"
           value={rolloff}
