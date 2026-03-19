@@ -225,11 +225,19 @@ export function useProximityVoice(
 
     if (navigator.mediaDevices) {
       const workletUrl = `${window.location.origin}/NoiseSuppressorWorklet.js`;
-      Promise.all([
-        navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS),
-        ctx.audioWorklet.addModule(workletUrl),
-      ])
-        .then(async ([rawStream]) => {
+      // Load worklet in parallel; if it fails (COEP, module resolution, etc.) we
+      // still proceed without RNnoise so the mic works.
+      const workletReady = ctx.audioWorklet
+        .addModule(workletUrl)
+        .then(() => true)
+        .catch((err) => {
+          console.warn("[voice] RNnoise worklet failed to load — noise suppression disabled:", err);
+          return false;
+        });
+      navigator.mediaDevices
+        .getUserMedia(AUDIO_CONSTRAINTS)
+        .then(async (rawStream) => {
+          const rnnoiseAvailable = await workletReady;
           // Keep the raw hardware stream separate so we can stop the mic
           // tracks on cleanup.
           rawMicStream.current = rawStream;
@@ -248,7 +256,7 @@ export function useProximityVoice(
           micSourceRef.current = micSource;
           const micDest = ctx.createMediaStreamDestination();
 
-          const useRnnoise = loadRnnoiseEnabled();
+          const useRnnoise = loadRnnoiseEnabled() && rnnoiseAvailable;
           if (useRnnoise) {
             const rnnoiseNode = new AudioWorkletNode(ctx, NoiseSuppressorWorklet_Name);
             rnnoiseNodeRef.current = rnnoiseNode;
