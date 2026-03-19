@@ -37,6 +37,7 @@ export default function World({ player }: Props) {
     peerConnectionStates,
     remoteGain,
     setRemoteGain,
+    audioBlocked,
   } = useProximityVoice(socket, localPositionRef, remotePlayers)
 
   return (
@@ -75,6 +76,7 @@ export default function World({ player }: Props) {
         onToggle={toggleMute}
         remoteGain={remoteGain}
         onGainChange={setRemoteGain}
+        audioBlocked={audioBlocked}
       />
       <VoiceConnectionsPanel
         rows={Array.from(remotePlayers.values()).map((player) => ({

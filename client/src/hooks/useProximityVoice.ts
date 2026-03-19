@@ -9,32 +9,42 @@ import type { RemotePlayer } from "../types";
 const CONNECT_RANGE = 7;
 const DISCONNECT_RANGE = 9;
 const SPEAKING_THRESHOLD = 20;
-const MAX_PLAYBACK_VOLUME = 1.0; // Full volume; mobile needs headroom
-const MIN_PLAYBACK_VOLUME = 0.2; // Louder floor for distant players
+// GainNode.gain is not capped at 1.0 — the slider's full 0.5–5× range works.
+const MIN_GAIN_FLOOR = 0.05; // never fully silent even at the edge of range
 const MAX_ACTIVE_PEERS = 8; // admission control for dense crowds
 const TELEMETRY_EVERY_MS = 15000;
 const GAIN_STORAGE_KEY = "gather_poc_remote_gain";
 const DISCONNECTED_GRACE_MS = 5000;
-const PLAYBACK_RETRY_MS = 1500;
 const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
 ];
 const ICE_SERVERS = resolveIceServers();
+
+// iOS Safari requires autoGainControl for audible mic levels;
+// on desktop, AGC can amplify feedback so we leave it off.
+const IS_MOBILE = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+  typeof navigator !== "undefined" ? navigator.userAgent : "",
+);
 const AUDIO_CONSTRAINTS: MediaStreamConstraints = {
   audio: {
     echoCancellation: true,
     noiseSuppression: true,
-    autoGainControl: false, // AGC can amplify feedback and cause screeching
-    // Chrome: cuts low-freq rumble that feeds back (ignored by other browsers)
-    googHighpassFilter: true,
+    autoGainControl: IS_MOBILE,
+    // Chrome-only: cuts low-freq rumble that feeds back.
+    ...(IS_MOBILE ? {} : { googHighpassFilter: true }),
   } as MediaTrackConstraints,
   video: false,
 };
 
 interface PeerEntry {
   connection: RTCPeerConnection;
-  audio: HTMLAudioElement; // reliable playback on mobile; volume capped at 1.0
-  analyser: AnalyserNode; // used only for speaking detection
+  // Remote audio is routed entirely through Web Audio:
+  //   MediaStreamAudioSourceNode → gainNode → ctx.destination   (playback)
+  //   MediaStreamAudioSourceNode → analyser                     (speaking detection)
+  // Using GainNode instead of HTMLAudioElement.volume allows gain values > 1.0,
+  // which is required for the 0.5–5× slider to have any effect.
+  gainNode: GainNode;
+  analyser: AnalyserNode;
   analyserSource: MediaStreamAudioSourceNode | null;
   pendingCandidates: RTCIceCandidateInit[];
 }
@@ -43,8 +53,6 @@ interface Telemetry {
   negotiationAttempts: number;
   negotiationFailures: number;
   cleanupCount: number;
-  autoplayFailures: number;
-  autoplayRecovered: number;
   activePeerPeak: number;
 }
 
@@ -61,6 +69,9 @@ export function useProximityVoice(
     Record<string, string>
   >({});
   const [remoteGain, setRemoteGain] = useState(loadRemoteGain());
+  // True when AudioContext is suspended (iOS autoplay policy) AND peers are connected.
+  // Clears automatically once the user taps (which resumes the context).
+  const [audioBlocked, setAudioBlocked] = useState(false);
 
   const localStream = useRef<MediaStream | null>(null);
   const audioCtx = useRef<AudioContext | null>(null);
@@ -69,14 +80,11 @@ export function useProximityVoice(
   const [isMicReady, setIsMicReady] = useState(false);
   const connectingPeers = useRef<Set<string>>(new Set());
   const hangupSent = useRef<Set<string>>(new Set());
-  const pendingAudioPlay = useRef<Map<string, HTMLAudioElement>>(new Map());
   const disconnectTimers = useRef<Map<string, number>>(new Map());
   const telemetry = useRef<Telemetry>({
     negotiationAttempts: 0,
     negotiationFailures: 0,
     cleanupCount: 0,
-    autoplayFailures: 0,
-    autoplayRecovered: 0,
     activePeerPeak: 0,
   });
 
@@ -90,8 +98,19 @@ export function useProximityVoice(
 
   // Acquire mic and set up local speaking analyser.
   useEffect(() => {
+    // AudioContext must be created eagerly so ICE/peer setup can reference it,
+    // but iOS Safari keeps it suspended until a user-gesture resume() call.
+    // We try an immediate resume (works on desktop) and rely on the gesture
+    // handlers below for iOS.
     const ctx = new AudioContext();
     audioCtx.current = ctx;
+    void ctx.resume().catch(() => {/* ignored — will retry on gesture */});
+
+    ctx.onstatechange = () => {
+      // Clear the banner as soon as the context resumes; show it if it
+      // suspends again while peers are connected.
+      setAudioBlocked(ctx.state === "suspended" && peers.current.size > 0);
+    };
 
     const resumeOnGesture = () => {
       void ctx.resume();
@@ -103,7 +122,9 @@ export function useProximityVoice(
         .then((stream) => {
           localStream.current = stream;
           setIsMicReady(true);
-          void ctx.resume();
+          // ctx.resume() here is outside a user-gesture on iOS and is silently
+          // ignored; the gesture handlers above are the reliable path.
+          void ctx.resume().catch(() => {/* will resume on next gesture */});
 
           const analyser = ctx.createAnalyser();
           analyser.fftSize = 256;
@@ -128,7 +149,7 @@ export function useProximityVoice(
 
     window.addEventListener("pointerdown", resumeOnGesture);
     window.addEventListener("keydown", resumeOnGesture);
-    window.addEventListener("touchstart", resumeOnGesture);
+    window.addEventListener("touchstart", resumeOnGesture, { passive: true });
 
     return () => {
       window.removeEventListener("pointerdown", resumeOnGesture);
@@ -139,7 +160,6 @@ export function useProximityVoice(
       });
       peers.current.clear();
       connectingPeers.current.clear();
-      pendingAudioPlay.current.clear();
       disconnectTimers.current.forEach((timerId) => window.clearTimeout(timerId));
       disconnectTimers.current.clear();
       localStream.current?.getTracks().forEach((track) => track.stop());
@@ -154,19 +174,9 @@ export function useProximityVoice(
         ...telemetry.current,
         connected: peers.current.size,
         connecting: connectingPeers.current.size,
-        pendingAudioPlay: pendingAudioPlay.current.size,
+        audioCtxState: audioCtx.current?.state,
       });
     }, TELEMETRY_EVERY_MS);
-    return () => clearInterval(interval);
-  }, []);
-
-  // Retry blocked audio playback for late-joining peers (e.g. autoplay policy).
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (pendingAudioPlay.current.size > 0) {
-        retryPendingAudioPlayback();
-      }
-    }, PLAYBACK_RETRY_MS);
     return () => clearInterval(interval);
   }, []);
 
@@ -260,6 +270,7 @@ export function useProximityVoice(
     const interval = setInterval(() => {
       const local = localPositionRef.current;
       const remote = remotePlayersRef.current;
+      const ctx = audioCtx.current;
       const nextSpeaking = new Set<string>();
 
       // Local speaking detection
@@ -293,7 +304,7 @@ export function useProximityVoice(
         }
       }
 
-      // Proximity + remote speaking detection.
+      // Proximity + remote gain + speaking detection.
       remote.forEach((player, id) => {
         const dist = distance(local, player.position);
         const connected = peers.current.has(id);
@@ -322,16 +333,16 @@ export function useProximityVoice(
           });
         } else if (connected) {
           const entry = peers.current.get(id);
-          if (!entry) return;
+          if (!entry || !ctx) return;
 
-          // Volume via audio element (capped at 1.0; reliable on mobile).
-          const gain = remoteGainRef.current;
+          // GainNode.gain has no 1.0 ceiling — the full 0.5–5× slider range works.
+          const userGain = remoteGainRef.current;
           const normalized = Math.min(1, Math.max(0, dist / DISCONNECT_RANGE));
           const distanceFactor = 1 - normalized ** 1.4;
-          entry.audio.volume = Math.min(
-            1,
-            Math.max(MIN_PLAYBACK_VOLUME, distanceFactor * MAX_PLAYBACK_VOLUME * gain),
-          );
+          const targetGain = Math.max(MIN_GAIN_FLOOR, distanceFactor * userGain);
+          // setTargetAtTime with a short time constant smooths gain changes to
+          // avoid audible clicks when distance or slider value changes.
+          entry.gainNode.gain.setTargetAtTime(targetGain, ctx.currentTime, 0.05);
 
           // Speaking detection via analyser.
           entry.analyser.getByteFrequencyData(dataArray);
@@ -356,6 +367,11 @@ export function useProximityVoice(
       wasSpeakingPeers.current = nextSpeaking;
       setSpeakingPeers(nextSpeaking);
       setConnectedPeers(new Set(peers.current.keys()));
+      // Keep audioBlocked in sync with context state (onstatechange handles it too,
+      // but this catches cases where the context suspends between state events).
+      setAudioBlocked(
+        (audioCtx.current?.state === "suspended") && peers.current.size > 0,
+      );
     }, 100);
 
     return () => clearInterval(interval);
@@ -380,12 +396,12 @@ export function useProximityVoice(
       throw new Error("Audio context is not ready");
     }
 
-    const audio = new Audio();
-    audio.autoplay = true;
-    audio.setAttribute("playsinline", "true");
-    audio.volume = MIN_PLAYBACK_VOLUME;
+    // GainNode controls both distance-based attenuation and the user's slider.
+    // Unlike HTMLAudioElement.volume, GainNode.gain can exceed 1.0 for true amplification.
+    const gainNode = ctx.createGain();
+    gainNode.gain.value = MIN_GAIN_FLOOR;
+    gainNode.connect(ctx.destination);
 
-    // Analyser for speaking detection only — NOT connected to audio destination.
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 256;
 
@@ -447,19 +463,26 @@ export function useProximityVoice(
       if (!stream.getAudioTracks().length) return;
 
       console.log(`[rtc] received audio track from ${peerId}`);
-      audio.srcObject = stream;
-      void tryPlayAudio(peerId, audio);
 
       const entry = peers.current.get(peerId);
-      if (entry && !entry.analyserSource) {
-        entry.analyserSource = ctx.createMediaStreamSource(stream);
-        entry.analyserSource.connect(entry.analyser);
+      if (!entry) return;
+
+      if (!entry.analyserSource) {
+        // Route the stream through the Web Audio graph:
+        //   source → gainNode → ctx.destination  (audible output)
+        //   source → analyser                    (speaking detection, no output)
+        // Both uses share the same source node so the stream is only "consumed" once,
+        // which avoids the iOS Safari bug where multiple consumers silence each other.
+        const source = ctx.createMediaStreamSource(stream);
+        source.connect(entry.gainNode);
+        source.connect(entry.analyser);
+        entry.analyserSource = source;
       }
     };
 
     peers.current.set(peerId, {
       connection: pc,
-      audio,
+      gainNode,
       analyser,
       analyserSource: null,
       pendingCandidates: [],
@@ -491,26 +514,6 @@ export function useProximityVoice(
     getOrCreatePeer(peerId, signalSocket, true);
   }
 
-  async function tryPlayAudio(peerId: string, audio: HTMLAudioElement) {
-    try {
-      await audio.play();
-      if (pendingAudioPlay.current.has(peerId)) {
-        telemetry.current.autoplayRecovered += 1;
-      }
-      pendingAudioPlay.current.delete(peerId);
-    } catch (err) {
-      telemetry.current.autoplayFailures += 1;
-      pendingAudioPlay.current.set(peerId, audio);
-      console.warn(`[voice] audio play blocked for ${peerId}; waiting for gesture`, err);
-    }
-  }
-
-  function retryPendingAudioPlayback() {
-    pendingAudioPlay.current.forEach((audio, peerId) => {
-      void tryPlayAudio(peerId, audio);
-    });
-  }
-
   function closePeer(
     peerId: string,
     opts?: { emitHangup?: boolean; socket?: Socket; reason?: string },
@@ -520,7 +523,6 @@ export function useProximityVoice(
 
     peers.current.delete(peerId);
     connectingPeers.current.delete(peerId);
-    pendingAudioPlay.current.delete(peerId);
     const timer = disconnectTimers.current.get(peerId);
     if (timer) {
       window.clearTimeout(timer);
@@ -531,6 +533,8 @@ export function useProximityVoice(
       entry.analyserSource.disconnect();
       entry.analyserSource = null;
     }
+    entry.gainNode.disconnect();
+    entry.analyser.disconnect();
 
     entry.connection.onconnectionstatechange = null;
     entry.connection.onicecandidate = null;
@@ -538,8 +542,6 @@ export function useProximityVoice(
     if (entry.connection.signalingState !== "closed") {
       entry.connection.close();
     }
-    entry.audio.pause();
-    entry.audio.srcObject = null;
     setPeerConnectionState(peerId, "closed");
     telemetry.current.cleanupCount += 1;
 
@@ -649,6 +651,7 @@ export function useProximityVoice(
     peerConnectionStates,
     remoteGain,
     setRemoteGain: updateRemoteGain,
+    audioBlocked,
   };
 }
 
@@ -710,18 +713,14 @@ function resolveIceServers(): RTCIceServer[] {
   return DEFAULT_ICE_SERVERS;
 }
 
-function isMobile(): boolean {
-  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-}
-
 function loadRemoteGain(): number {
   try {
     const raw = localStorage.getItem(GAIN_STORAGE_KEY);
-    if (!raw) return isMobile() ? 1.5 : 1; // Higher default on mobile
+    if (!raw) return IS_MOBILE ? 1.5 : 1; // Higher default on mobile
     const parsed = Number(raw);
-    if (Number.isNaN(parsed)) return isMobile() ? 1.5 : 1;
+    if (Number.isNaN(parsed)) return IS_MOBILE ? 1.5 : 1;
     return Math.min(5, Math.max(0.5, parsed));
   } catch {
-    return isMobile() ? 1.5 : 1;
+    return IS_MOBILE ? 1.5 : 1;
   }
 }

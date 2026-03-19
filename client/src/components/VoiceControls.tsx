@@ -5,27 +5,35 @@ interface Props {
   onToggle: () => void
   remoteGain: number
   onGainChange: (value: number) => void
+  audioBlocked?: boolean
 }
 
-export default function VoiceControls({ muted, onToggle, remoteGain, onGainChange }: Props) {
+export default function VoiceControls({ muted, onToggle, remoteGain, onGainChange, audioBlocked }: Props) {
   return (
-    <div style={styles.wrapper}>
-      <button style={styles.btn} onClick={onToggle} title={muted ? 'Unmute' : 'Mute'}>
-        {muted ? '🔇 Muted' : '🎤 Live'}
-      </button>
-      <label style={styles.gainLabel}>
-        Voice gain: {remoteGain.toFixed(1)}x
-      </label>
-      <input
-        type="range"
-        min={0.5}
-        max={5}
-        step={0.1}
-        value={remoteGain}
-        onChange={(e) => onGainChange(Number(e.target.value))}
-        style={styles.slider}
-      />
-    </div>
+    <>
+      {audioBlocked && (
+        <div style={styles.blockedBanner}>
+          Tap anywhere to enable voice audio
+        </div>
+      )}
+      <div style={styles.wrapper}>
+        <button style={styles.btn} onClick={onToggle} title={muted ? 'Unmute' : 'Mute'}>
+          {muted ? '🔇 Muted' : '🎤 Live'}
+        </button>
+        <label style={styles.gainLabel}>
+          Voice gain: {remoteGain.toFixed(1)}x
+        </label>
+        <input
+          type="range"
+          min={0.5}
+          max={5}
+          step={0.1}
+          value={remoteGain}
+          onChange={(e) => onGainChange(Number(e.target.value))}
+          style={styles.slider}
+        />
+      </div>
+    </>
   )
 }
 
@@ -53,5 +61,21 @@ const styles: Record<string, React.CSSProperties> = {
   slider: {
     width: 180,
     accentColor: '#3498db',
+  },
+  blockedBanner: {
+    position: 'fixed',
+    top: 16,
+    left: '50%',
+    transform: 'translateX(-50%)',
+    background: 'rgba(220, 38, 38, 0.92)',
+    color: '#fff',
+    padding: '10px 20px',
+    borderRadius: 12,
+    fontSize: 14,
+    fontWeight: 600,
+    pointerEvents: 'none',
+    zIndex: 9999,
+    whiteSpace: 'nowrap',
+    boxShadow: '0 2px 12px rgba(0,0,0,0.4)',
   },
 }
