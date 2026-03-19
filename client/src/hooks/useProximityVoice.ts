@@ -758,15 +758,15 @@ export function useProximityVoice(
     const gainNode = ctx.createGain();
     gainNode.gain.value = MIN_GAIN_FLOOR;
     hpfNode.connect(gainNode);
-    let stereoMerger: ChannelMergerNode | null = null;
+    const stereoMerger = ctx.createChannelMerger(2);
     let gainDest: MediaStreamAudioDestinationNode | null = null;
     let outputAudio: HTMLAudioElement | null = null;
+    // Duplicate mono voice to both channels before final playback/output.
+    // This avoids browser-specific mono panning quirks (left-only output).
+    gainNode.connect(stereoMerger, 0, 0);
+    gainNode.connect(stereoMerger, 0, 1);
     if (IS_MOBILE) {
-      stereoMerger = ctx.createChannelMerger(2);
       gainDest = ctx.createMediaStreamDestination();
-      // Duplicate mono voice to both channels before HTMLMediaElement playback.
-      gainNode.connect(stereoMerger, 0, 0);
-      gainNode.connect(stereoMerger, 0, 1);
       stereoMerger.connect(gainDest);
 
       outputAudio = new Audio();
@@ -774,7 +774,7 @@ export function useProximityVoice(
       outputAudio.setAttribute("playsinline", "true");
       outputAudio.volume = 1;
     } else {
-      gainNode.connect(ctx.destination);
+      stereoMerger.connect(ctx.destination);
     }
 
     const analyser = ctx.createAnalyser();
