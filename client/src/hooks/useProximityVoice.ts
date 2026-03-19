@@ -224,7 +224,8 @@ export function useProximityVoice(
     }
 
     if (navigator.mediaDevices) {
-      const workletUrl = `${window.location.origin}/NoiseSuppressorWorklet.js`;
+      const base = (import.meta as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? "/";
+      const workletUrl = new URL("NoiseSuppressorWorklet.js", window.location.origin + base).href;
       // Load worklet in parallel; if it fails (COEP, module resolution, etc.) we
       // still proceed without RNnoise so the mic works.
       const workletReady = ctx.audioWorklet

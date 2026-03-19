@@ -36,9 +36,16 @@ const vadAssets = viteStaticCopy({
       dest: './',
     },
     // @timephy/rnnoise-wasm: worklet and deps for RNnoise noise suppression (COEP-safe).
+    // Transform adds .js to import paths — browsers require extensions for ESM resolution.
     {
       src: 'node_modules/@timephy/rnnoise-wasm/dist/NoiseSuppressorWorklet.js',
       dest: './',
+      transform: (content: string | Buffer) => {
+        const str = typeof content === 'string' ? content : content.toString('utf-8');
+        return str.replace(/"\.\/([^"]+)"/g, (_, path) =>
+          path.endsWith('.js') ? `"./${path}"` : `"./${path}.js"`
+        );
+      },
     },
     {
       src: 'node_modules/@timephy/rnnoise-wasm/dist/polyfills.js',
@@ -50,6 +57,10 @@ const vadAssets = viteStaticCopy({
     },
     {
       src: 'node_modules/@timephy/rnnoise-wasm/dist/index.js',
+      dest: './',
+    },
+    {
+      src: 'node_modules/@timephy/rnnoise-wasm/dist/math.js',
       dest: './',
     },
     {
