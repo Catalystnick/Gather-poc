@@ -82,6 +82,8 @@ export function useProximityVoice(
 
   const remotePlayersRef = useRef(remotePlayers);
   remotePlayersRef.current = remotePlayers;
+  const remoteGainRef = useRef(remoteGain);
+  remoteGainRef.current = remoteGain;
 
   const wasLocalSpeaking = useRef(false);
   const wasSpeakingPeers = useRef(new Set<string>());
@@ -325,13 +327,14 @@ export function useProximityVoice(
 
           // Volume via audio element.
           // Use a gentler falloff and a user-controlled gain multiplier for testing.
+          const gain = remoteGainRef.current;
           const normalized = Math.min(1, Math.max(0, dist / DISCONNECT_RANGE));
           const distanceFactor = 1 - normalized ** 1.4;
           entry.audio.volume = Math.min(
             1,
             Math.max(
               MIN_PLAYBACK_VOLUME,
-              distanceFactor * MAX_PLAYBACK_VOLUME * remoteGain,
+              distanceFactor * MAX_PLAYBACK_VOLUME * gain,
             ),
           );
 
