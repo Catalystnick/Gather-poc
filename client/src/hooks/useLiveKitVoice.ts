@@ -13,7 +13,6 @@ import {
   type RemoteTrackPublication,
   type RemoteAudioTrack,
 } from "livekit-client";
-import { KrispNoiseFilter, isKrispNoiseFilterSupported } from "@livekit/krisp-noise-filter";
 
 const CONNECT_RANGE = 7;
 const DISCONNECT_RANGE = 9;
@@ -70,7 +69,7 @@ function resolveIceServersForFirefox(): RTCIceServer[] {
 const AUDIO_CONSTRAINTS: MediaStreamConstraints = {
   audio: {
     echoCancellation: true,
-    noiseSuppression: false, // Krisp handles noise cancellation — browser NC off to avoid double-processing and constraint conflicts
+    noiseSuppression: true,
     autoGainControl: DEFAULT_AGC_ENABLED,
   } as MediaTrackConstraints,
   video: false,
@@ -534,20 +533,10 @@ export function useLiveKitVoice(
         }
         const micTrack = localStream.current!.getAudioTracks()[0];
         if (micTrack) {
-          const publication = await room.localParticipant.publishTrack(micTrack, {
+          await room.localParticipant.publishTrack(micTrack, {
             source: Track.Source.Microphone,
             name: "mic",
           });
-          if (publication.track && isKrispNoiseFilterSupported()) {
-            try {
-              const krisp = KrispNoiseFilter();
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              await publication.track.setProcessor(krisp as any);
-              console.log("[voice] Krisp noise filter enabled");
-            } catch (krispErr) {
-              console.warn("[voice] Krisp noise filter failed to initialize (LiveKit Cloud required):", krispErr);
-            }
-          }
         }
 
         // Subscribe to existing participants in range (will be updated by proximity loop)
