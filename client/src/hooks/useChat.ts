@@ -1,10 +1,10 @@
-// Phase 2 — chat message state and send
-
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { Socket } from 'socket.io-client'
 import type { ChatMessage } from '../types'
 
 export type { ChatMessage } from '../types'
+
+const MAX_MESSAGES = 200
 
 export function useChat(socket: Socket | null) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -14,7 +14,10 @@ export function useChat(socket: Socket | null) {
     if (!socket) return
 
     socket.on('chat:message', (msg: ChatMessage) => {
-      setMessages(prev => [...prev, msg])
+      setMessages(prev => {
+        const next = [...prev, msg]
+        return next.length > MAX_MESSAGES ? next.slice(-MAX_MESSAGES) : next
+      })
 
       setBubbles(prev => new Map(prev).set(msg.id, msg.text))
       setTimeout(() => {
@@ -29,9 +32,10 @@ export function useChat(socket: Socket | null) {
     return () => { socket.off('chat:message') }
   }, [socket])
 
-  function sendMessage(socket: Socket, text: string) {
-    socket.emit('chat:message', { text })
-  }
+  // Closes over socket from state — no need to pass it as a parameter.
+  const sendMessage = useCallback((text: string) => {
+    socket?.emit('chat:message', { text })
+  }, [socket])
 
   return { messages, bubbles, sendMessage }
 }

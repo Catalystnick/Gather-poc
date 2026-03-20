@@ -1,6 +1,5 @@
-// Phase 2 — mute/unmute toggle for proximity voice
-
 import { useState, useEffect } from 'react'
+import { useVoice } from '../contexts/VoiceContext'
 
 const IS_MOBILE = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 const IS_IOS    = /iPhone|iPad|iPod/i.test(navigator.userAgent);
@@ -71,26 +70,26 @@ function GainControl({ label, value, onChange, min = 0, sliderMax = SLIDER_MAX, 
   )
 }
 
-interface Props {
-  muted: boolean
-  onToggle: () => void
-  remoteGain: number
-  onGainChange: (value: number) => void
-  micGain: number
-  onMicGainChange: (value: number) => void
-  rolloff: number
-  onRolloffChange: (value: number) => void
-  agcEnabled: boolean
-  onAgcToggle: () => void
-  echoCancelEnabled: boolean
-  onEchoCancelToggle: () => void
-  headphonePrompt: string | null
-  onHeadphonesConfirm: (accept: boolean) => void
-  audioBlocked?: boolean
-  audioInterrupted?: boolean
-}
+export default function VoiceControls() {
+  const {
+    muted,
+    toggleMute,
+    remoteGain,
+    setRemoteGain,
+    micGain,
+    setMicGain,
+    rolloff,
+    setRolloff,
+    agcEnabled,
+    toggleAgc,
+    echoCancelEnabled,
+    toggleEchoCancel,
+    headphonePrompt,
+    confirmHeadphones,
+    audioBlocked,
+    audioInterrupted,
+  } = useVoice()
 
-export default function VoiceControls({ muted, onToggle, remoteGain, onGainChange, micGain, onMicGainChange, rolloff, onRolloffChange, agcEnabled, onAgcToggle, echoCancelEnabled, onEchoCancelToggle, headphonePrompt, onHeadphonesConfirm, audioBlocked, audioInterrupted }: Props) {
   return (
     <>
       {audioInterrupted && (
@@ -107,10 +106,10 @@ export default function VoiceControls({ muted, onToggle, remoteGain, onGainChang
         <div style={styles.headphoneBanner}>
           <span>🎧 <strong>{headphonePrompt}</strong> detected — disable echo cancellation for better quality?</span>
           <div style={styles.headphoneBannerBtns}>
-            <button style={styles.headphoneBtn} onClick={() => onHeadphonesConfirm(true)}>
+            <button style={styles.headphoneBtn} onClick={() => confirmHeadphones(true)}>
               Yes, disable AEC
             </button>
-            <button style={{ ...styles.headphoneBtn, ...styles.headphoneBtnDismiss }} onClick={() => onHeadphonesConfirm(false)}>
+            <button style={{ ...styles.headphoneBtn, ...styles.headphoneBtnDismiss }} onClick={() => confirmHeadphones(false)}>
               No, keep it
             </button>
           </div>
@@ -122,15 +121,15 @@ export default function VoiceControls({ muted, onToggle, remoteGain, onGainChang
             📱 {PLATFORM_LABEL}
           </div>
         )}
-        <button style={styles.btn} onClick={onToggle} title={muted ? 'Unmute' : 'Mute'}>
+        <button style={styles.btn} onClick={toggleMute} title={muted ? 'Unmute' : 'Mute'}>
           {muted ? '🔇 Muted' : '🎤 Live'}
         </button>
-        <GainControl label="🔊 Speaker" value={remoteGain} onChange={onGainChange} />
-        <GainControl label="🎙 Mic"     value={micGain}    onChange={onMicGainChange} />
+        <GainControl label="🔊 Speaker" value={remoteGain} onChange={setRemoteGain} />
+        <GainControl label="🎙 Mic"     value={micGain}    onChange={setMicGain} />
         <GainControl
           label="📉 Rolloff"
           value={rolloff}
-          onChange={onRolloffChange}
+          onChange={setRolloff}
           min={0.1}
           sliderMax={4}
           step={0.1}
@@ -139,14 +138,14 @@ export default function VoiceControls({ muted, onToggle, remoteGain, onGainChang
         <div style={styles.toggleRow}>
           <button
             style={{ ...styles.btn, ...styles.agcBtn, background: agcEnabled ? 'rgba(34,197,94,0.25)' : 'rgba(0,0,0,0.7)' }}
-            onClick={onAgcToggle}
+            onClick={toggleAgc}
             title="Automatic Gain Control normalises your mic volume. Disable if you prefer manual control via the Mic slider."
           >
             AGC {agcEnabled ? 'ON' : 'OFF'}
           </button>
           <button
             style={{ ...styles.btn, ...styles.agcBtn, background: echoCancelEnabled ? 'rgba(34,197,94,0.25)' : 'rgba(0,0,0,0.7)' }}
-            onClick={onEchoCancelToggle}
+            onClick={toggleEchoCancel}
             title="Echo Cancellation removes your speaker output from your mic signal. Disable when using headphones."
           >
             AEC {echoCancelEnabled ? 'ON' : 'OFF'}

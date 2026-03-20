@@ -1,8 +1,10 @@
 import { useRef } from "react";
 import { useFrame } from "@react-three/fiber";
-import { useKeyboardControls, Text } from "@react-three/drei";
+import { useKeyboardControls } from "@react-three/drei";
 import type { Group } from "three";
 import AvatarMesh from "./AvatarMesh";
+import PlayerLabel from "./PlayerLabel";
+import StatusRing from "./StatusRing";
 import type { Direction, Player } from "../types";
 
 const SPEED = 5;
@@ -55,24 +57,8 @@ export default function LocalPlayer({ player, onMove, positionRef, isSpeaking }:
   return (
     <group ref={ref} position={[0, 0.5, 0]}>
       <AvatarMesh avatar={player.avatar} directionRef={directionRef} isMovingRef={isMovingRef} />
-      <Text
-        position={[0, 0.5, -1.6]}
-        rotation={[-Math.PI / 2, 0, 0]}
-        fontSize={0.3}
-        color="#ffffff"
-        anchorX="center"
-        anchorY="middle"
-        outlineWidth={0.03}
-        outlineColor="#000000"
-      >
-        {player.name}
-      </Text>
-      {isSpeaking && (
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.48, 0]}>
-          <ringGeometry args={[0.58, 0.72, 32]} />
-          <meshBasicMaterial color="#2ecc71" transparent opacity={0.8} />
-        </mesh>
-      )}
+      <PlayerLabel name={player.name} />
+      <StatusRing speaking={isSpeaking} />
     </group>
   );
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { io, type Socket } from 'socket.io-client'
 import type { Player, RemotePlayer } from '../types'
 
@@ -13,25 +13,31 @@ export function useSocket(player: Player) {
   const [socket, setSocket] = useState<Socket | null>(null)
   const [remotePlayers, setRemotePlayers] = useState<Map<string, RemotePlayer>>(new Map())
 
+  // Keep a stable ref to the latest player data so the connect handler
+  // always sends the current name/avatar without triggering a reconnect.
+  const playerRef = useRef(player)
+  playerRef.current = player
+
+  const socketRef = useRef<Socket | null>(null)
+
   useEffect(() => {
     const s = io(SERVER_URL)
+    socketRef.current = s
     setSocket(s)
 
     s.on('connect', () => {
-      s.emit('player:join', { name: player.name, avatar: player.avatar })
+      s.emit('player:join', { name: playerRef.current.name, avatar: playerRef.current.avatar })
     })
 
-    const socket = s
-
-    socket.on('room:state', (players: RemotePlayer[]) => {
+    s.on('room:state', (players: RemotePlayer[]) => {
       setRemotePlayers(new Map(players.map(p => [p.id, p])))
     })
 
-    socket.on('player:joined', (p: RemotePlayer) => {
+    s.on('player:joined', (p: RemotePlayer) => {
       setRemotePlayers(prev => new Map(prev).set(p.id, p))
     })
 
-    socket.on('player:updated', ({ id, position }: { id: string; position: RemotePlayer['position'] }) => {
+    s.on('player:updated', ({ id, position }: { id: string; position: RemotePlayer['position'] }) => {
       setRemotePlayers(prev => {
         const next = new Map(prev)
         const p = next.get(id)
@@ -40,7 +46,7 @@ export function useSocket(player: Player) {
       })
     })
 
-    socket.on('player:left', ({ id }: { id: string }) => {
+    s.on('player:left', ({ id }: { id: string }) => {
       setRemotePlayers(prev => {
         const next = new Map(prev)
         next.delete(id)
@@ -48,12 +54,17 @@ export function useSocket(player: Player) {
       })
     })
 
-    return () => { s.disconnect() }
-  }, [player.name, player.avatar])
+    return () => {
+      socketRef.current = null
+      s.disconnect()
+    }
+  }, []) // connect once — player data is read from ref on 'connect'
 
-  function emitMove(position: { x: number; y: number; z: number }) {
-    socket?.emit('player:move', position)
-  }
+  // Stable function reference — reads socket from ref, so LocalPlayer's
+  // useFrame closure always calls the current socket without a prop re-capture.
+  const emitMove = useCallback((position: { x: number; y: number; z: number }) => {
+    socketRef.current?.emit('player:move', position)
+  }, [])
 
   return { socket, remotePlayers, emitMove }
 }
