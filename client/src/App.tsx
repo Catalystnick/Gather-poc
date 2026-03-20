@@ -11,13 +11,12 @@ function loadSaved(): Player | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return null
-    const p = JSON.parse(raw) as { name?: string; avatar?: { shirt?: string; skirt?: string } }
+    const p = JSON.parse(raw) as { name?: string; avatar?: { shirt?: string } }
     if (
       typeof p?.name !== 'string' ||
-      typeof p?.avatar?.shirt !== 'string' ||
-      typeof p?.avatar?.skirt !== 'string'
+      typeof p?.avatar?.shirt !== 'string'
     ) return null
-    return { name: p.name, avatar: { shirt: p.avatar.shirt, skirt: p.avatar.skirt } }
+    return { name: p.name, avatar: { shirt: p.avatar.shirt } }
   } catch {
     return null
   }

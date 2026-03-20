@@ -4,7 +4,6 @@ export type Direction = 'down' | 'up' | 'right' | 'left'
 
 export interface Avatar {
   shirt: string   // hex colour for shirt layer
-  skirt: string   // hex colour for skirt/pants layer
 }
 
 export interface Player {

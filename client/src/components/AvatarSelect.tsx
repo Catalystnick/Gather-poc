@@ -12,9 +12,8 @@ const SPRITE_DISPLAY = 140
 const SHEET_COLS = 8
 const SHEET_ROWS = 12
 
-/** Dominant hue of each clothing layer (used for CSS hue-rotate preview). */
+/** Dominant hue of the shirt layer (used for CSS hue-rotate preview). */
 const SHIRT_BASE_HUE = 0    // ShirtRed.png is red ~0°
-const SKIRT_BASE_HUE = 220  // SkirtNavy.png is navy ~220°
 
 function hexToHue(hex: string): number {
   const r = parseInt(hex.slice(1, 3), 16) / 255
@@ -45,9 +44,8 @@ function spriteLayer(url: string, filter?: string): React.CSSProperties {
   }
 }
 
-function CharacterPreview({ shirt, skirt }: { shirt: string; skirt: string }) {
+function CharacterPreview({ shirt }: { shirt: string }) {
   const shirtFilter = `hue-rotate(${hexToHue(shirt) - SHIRT_BASE_HUE}deg) saturate(1.15)`
-  const skirtFilter = `hue-rotate(${hexToHue(skirt) - SKIRT_BASE_HUE}deg) saturate(1.15)`
 
   return (
     <div style={{ position: 'relative', width: SPRITE_DISPLAY, height: SPRITE_DISPLAY }}>
@@ -61,7 +59,6 @@ function CharacterPreview({ shirt, skirt }: { shirt: string; skirt: string }) {
       {/* Stacked sprite layers */}
       <span style={spriteLayer('/avatars/template.png')} />
       <span style={spriteLayer('/avatars/shoes.png')} />
-      <span style={spriteLayer('/avatars/skirt.png', skirtFilter)} />
       <span style={spriteLayer('/avatars/shirt.png', shirtFilter)} />
     </div>
   )
@@ -75,12 +72,11 @@ interface Props {
 export default function AvatarSelect({ initial, onJoin }: Props) {
   const [name,  setName]  = useState(initial?.name ?? '')
   const [shirt, setShirt] = useState(initial?.avatar.shirt ?? '#3498db')
-  const [skirt, setSkirt] = useState(initial?.avatar.skirt ?? '#2ecc71')
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!name.trim()) return
-    onJoin({ name: name.trim(), avatar: { shirt, skirt } })
+    onJoin({ name: name.trim(), avatar: { shirt } })
   }
 
   return (
@@ -96,7 +92,7 @@ export default function AvatarSelect({ initial, onJoin }: Props) {
           {/* ── Left — character + name ── */}
           <div style={styles.leftCol}>
             <div style={styles.stage}>
-              <CharacterPreview shirt={shirt} skirt={skirt} />
+              <CharacterPreview shirt={shirt} />
             </div>
             <p style={styles.label}>Your Name</p>
             <input
@@ -125,25 +121,11 @@ export default function AvatarSelect({ initial, onJoin }: Props) {
               </div>
             </div>
 
-            <div>
-              <p style={styles.label}>Skirt / Pants Colour</p>
-              <div style={styles.colorGrid}>
-                {COLORS.map(c => (
-                  <button key={c} type="button" onClick={() => setSkirt(c)} style={{
-                    ...styles.swatch, background: c,
-                    boxShadow: skirt === c ? `0 0 0 2px #1a1a1a, 0 0 0 4px ${c}` : 'none',
-                    transform:  skirt === c ? 'scale(1.08)' : 'scale(1)',
-                  }} />
-                ))}
-              </div>
-            </div>
-
             <button
               type="submit"
               disabled={!name.trim()}
               style={{
                 ...styles.joinBtn,
-                background: shirt,
                 opacity: name.trim() ? 1 : 0.35,
                 cursor:  name.trim() ? 'pointer' : 'not-allowed',
               }}
@@ -215,5 +197,6 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: 'auto', color: '#fff', border: 'none',
     borderRadius: 8, padding: '11px 0',
     fontSize: 15, fontWeight: 700, cursor: 'pointer',
+    background: '#3498db',
   },
 }

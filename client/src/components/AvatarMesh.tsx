@@ -60,7 +60,7 @@ let _matId = 0;
 export default function AvatarMesh({ avatar, directionRef, isMovingRef }: Props) {
   // All 4 textures loaded once — shared across instances (drei cache).
   // No offset/repeat set here; frame selection is done via uvOffset uniform.
-  const [templateTex, shoesTex, skirtTex, shirtTex] = useTexture(["/avatars/template.png", "/avatars/shoes.png", "/avatars/skirt.png", "/avatars/shirt.png"], (textures) => {
+  const [templateTex, shoesTex, shirtTex] = useTexture(["/avatars/template.png", "/avatars/shoes.png", "/avatars/shirt.png"], (textures) => {
     for (const tex of textures) {
       tex.colorSpace = SRGBColorSpace;
       tex.magFilter = NearestFilter;
@@ -72,7 +72,6 @@ export default function AvatarMesh({ avatar, directionRef, isMovingRef }: Props)
 
   // Per-instance uniforms — never shared between players.
   const shirtTintU = useRef({ value: new Color(avatar.shirt) });
-  const skirtTintU = useRef({ value: new Color(avatar.skirt) });
   const uvOffsetU = useRef({ value: new Vector2(0, (SHEET_ROWS - 1) / SHEET_ROWS) });
   // Shirt has a different row layout; needs its own UV row offset.
   const uvOffsetShirtU = useRef({ value: new Vector2(0, (SHEET_ROWS - 1) / SHEET_ROWS) });
@@ -92,10 +91,8 @@ export default function AvatarMesh({ avatar, directionRef, isMovingRef }: Props)
 
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.shoesMap = { value: shoesTex };
-      shader.uniforms.skirtMap = { value: skirtTex };
       shader.uniforms.shirtMap = { value: shirtTex };
       shader.uniforms.shirtTint = shirtTintU.current;
-      shader.uniforms.skirtTint = skirtTintU.current;
       shader.uniforms.uvOffset = uvOffsetU.current;
       shader.uniforms.uvOffsetShirt = uvOffsetShirtU.current;
 
@@ -103,10 +100,8 @@ export default function AvatarMesh({ avatar, directionRef, isMovingRef }: Props)
       shader.fragmentShader =
         /* glsl */ `
         uniform sampler2D shoesMap;
-        uniform sampler2D skirtMap;
         uniform sampler2D shirtMap;
         uniform vec3      shirtTint;
-        uniform vec3      skirtTint;
         uniform vec2      uvOffset;
         uniform vec2      uvOffsetShirt;
 
@@ -146,10 +141,6 @@ export default function AvatarMesh({ avatar, directionRef, isMovingRef }: Props)
 
           col = over(col, texture2D(shoesMap, fuv));
 
-          vec4 skirtPx = texture2D(skirtMap, fuv);
-          if (skirtPx.a > 0.01) skirtPx.rgb = applyTint(skirtPx.rgb, skirtTint);
-          col = over(col, skirtPx);
-
           vec4 shirtPx = texture2D(shirtMap, shirtFuv);
           if (shirtPx.a > 0.01) shirtPx.rgb = applyTint(shirtPx.rgb, shirtTint);
           col = over(col, shirtPx);
@@ -163,11 +154,10 @@ export default function AvatarMesh({ avatar, directionRef, isMovingRef }: Props)
     };
 
     return mat;
-  }, [templateTex, shoesTex, skirtTex, shirtTex]);
+  }, [templateTex, shoesTex, shirtTex]);
 
   // Reactively update tint uniforms without recompiling.
   shirtTintU.current.value.set(avatar.shirt);
-  skirtTintU.current.value.set(avatar.skirt);
 
   useEffect(
     () => () => {
