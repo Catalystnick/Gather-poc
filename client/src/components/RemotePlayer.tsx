@@ -4,7 +4,7 @@ import { Text } from "@react-three/drei";
 import { Vector3, type Group } from "three";
 import AvatarMesh from "./AvatarMesh";
 import ChatBubble from "./ChatBubble";
-import type { Avatar } from "../types";
+import type { Avatar, Direction } from "../types";
 
 interface Props {
   id: string;
@@ -19,19 +19,37 @@ interface Props {
 const target = new Vector3();
 
 export default function RemotePlayer({ name, avatar, position, bubble, inRange, isSpeaking }: Props) {
-  const ref = useRef<Group>(null);
+  const ref          = useRef<Group>(null);
+  const directionRef = useRef<Direction>('down');
+  const isMovingRef  = useRef(false);
 
   useFrame(() => {
     if (!ref.current) return;
+
+    const prevX = ref.current.position.x;
+    const prevZ = ref.current.position.z;
+
     target.set(position.x, position.y, position.z);
     ref.current.position.lerp(target, 0.15);
+
+    const dx = ref.current.position.x - prevX;
+    const dz = ref.current.position.z - prevZ;
+    const moving = Math.abs(dx) + Math.abs(dz) > 0.001;
+
+    isMovingRef.current = moving;
+    if (moving) {
+      if (Math.abs(dx) >= Math.abs(dz)) {
+        directionRef.current = dx > 0 ? 'right' : 'left';
+      } else {
+        directionRef.current = dz > 0 ? 'down' : 'up';
+      }
+    }
   });
 
   return (
     <group ref={ref} position={[position.x, position.y, position.z]}>
-      <AvatarMesh avatar={avatar} />
+      <AvatarMesh avatar={avatar} directionRef={directionRef} isMovingRef={isMovingRef} />
 
-      {/* Voice range indicator — blue ring when in range, green when speaking */}
       {inRange && !isSpeaking && (
         <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.48, 0]}>
           <ringGeometry args={[0.58, 0.72, 32]} />
@@ -45,7 +63,16 @@ export default function RemotePlayer({ name, avatar, position, bubble, inRange, 
         </mesh>
       )}
 
-      <Text position={[0, 0.5, -1.6]} rotation={[-Math.PI / 2, 0, 0]} fontSize={0.3} color="#ffffff" anchorX="center" anchorY="middle" outlineWidth={0.03} outlineColor="#000000">
+      <Text
+        position={[0, 0.5, -1.6]}
+        rotation={[-Math.PI / 2, 0, 0]}
+        fontSize={0.3}
+        color="#ffffff"
+        anchorX="center"
+        anchorY="middle"
+        outlineWidth={0.03}
+        outlineColor="#000000"
+      >
         {name}
       </Text>
 

@@ -3,7 +3,7 @@ import { useFrame } from "@react-three/fiber";
 import { useKeyboardControls, Text } from "@react-three/drei";
 import type { Group } from "three";
 import AvatarMesh from "./AvatarMesh";
-import type { Player } from "../types";
+import type { Direction, Player } from "../types";
 
 const SPEED = 5;
 
@@ -15,9 +15,11 @@ interface Props {
 }
 
 export default function LocalPlayer({ player, onMove, positionRef, isSpeaking }: Props) {
-  const ref = useRef<Group>(null);
-  const lastEmit = useRef(0);
-  const [, getKeys] = useKeyboardControls();
+  const ref          = useRef<Group>(null);
+  const lastEmit     = useRef(0);
+  const directionRef = useRef<Direction>('down');
+  const isMovingRef  = useRef(false);
+  const [, getKeys]  = useKeyboardControls();
 
   useFrame((_, delta) => {
     if (!ref.current) return;
@@ -29,12 +31,20 @@ export default function LocalPlayer({ player, onMove, positionRef, isSpeaking }:
     ref.current.position.x += dx * SPEED * delta;
     ref.current.position.z += dz * SPEED * delta;
 
-    const { x, y, z } = ref.current.position;
+    isMovingRef.current = dx !== 0 || dz !== 0;
+    if (dx !== 0 || dz !== 0) {
+      if (Math.abs(dx) >= Math.abs(dz)) {
+        directionRef.current = dx > 0 ? 'right' : 'left';
+      } else {
+        // dz > 0 = moving +Z = screen-down = facing down
+        // dz < 0 = moving -Z = screen-up   = facing up
+        directionRef.current = dz > 0 ? 'down' : 'up';
+      }
+    }
 
-    // Keep shared ref in sync for proximity voice
+    const { x, y, z } = ref.current.position;
     positionRef.current = { x, y, z };
 
-    // Throttle emit to ~20Hz
     const now = performance.now();
     if (now - lastEmit.current > 50) {
       lastEmit.current = now;
@@ -44,8 +54,17 @@ export default function LocalPlayer({ player, onMove, positionRef, isSpeaking }:
 
   return (
     <group ref={ref} position={[0, 0.5, 0]}>
-      <AvatarMesh avatar={player.avatar} />
-      <Text position={[0, 0.5, -1.6]} rotation={[-Math.PI / 2, 0, 0]} fontSize={0.3} color="#ffffff" anchorX="center" anchorY="middle" outlineWidth={0.03} outlineColor="#000000">
+      <AvatarMesh avatar={player.avatar} directionRef={directionRef} isMovingRef={isMovingRef} />
+      <Text
+        position={[0, 0.5, -1.6]}
+        rotation={[-Math.PI / 2, 0, 0]}
+        fontSize={0.3}
+        color="#ffffff"
+        anchorX="center"
+        anchorY="middle"
+        outlineWidth={0.03}
+        outlineColor="#000000"
+      >
         {player.name}
       </Text>
       {isSpeaking && (
