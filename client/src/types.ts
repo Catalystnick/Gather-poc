@@ -1,8 +1,8 @@
 // Shared domain types for the Gather PoC
 
 export interface Avatar {
-  shape: 'swordsman' | 'box' | 'sphere'
-  color: string
+  shirt: string   // hex colour for shirt layer
+  skirt: string   // hex colour for skirt/pants layer
 }
 
 export interface Player {

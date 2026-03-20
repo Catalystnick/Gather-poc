@@ -7,17 +7,17 @@ export type { Avatar, Player } from './types'
 
 const STORAGE_KEY = 'gather_poc_avatar'
 
-const SHAPES = new Set<Player['avatar']['shape']>(['swordsman', 'box', 'sphere'])
-
 function loadSaved(): Player | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return null
-    const p = JSON.parse(raw) as { name?: string; avatar?: { shape?: string; color?: string } }
-    if (typeof p?.name !== 'string' || !p.avatar || typeof p.avatar.color !== 'string') return null
-    let shape = p.avatar.shape === 'capsule' ? 'swordsman' : p.avatar.shape
-    if (typeof shape !== 'string' || !SHAPES.has(shape as Player['avatar']['shape'])) return null
-    return { name: p.name, avatar: { shape: shape as Player['avatar']['shape'], color: p.avatar.color } }
+    const p = JSON.parse(raw) as { name?: string; avatar?: { shirt?: string; skirt?: string } }
+    if (
+      typeof p?.name !== 'string' ||
+      typeof p?.avatar?.shirt !== 'string' ||
+      typeof p?.avatar?.skirt !== 'string'
+    ) return null
+    return { name: p.name, avatar: { shirt: p.avatar.shirt, skirt: p.avatar.skirt } }
   } catch {
     return null
   }

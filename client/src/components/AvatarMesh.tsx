@@ -1,19 +1,31 @@
 import { useEffect, useMemo, useRef } from "react";
-import { Box, Sphere, useTexture } from "@react-three/drei";
-import { ClampToEdgeWrapping, Color, MeshBasicMaterial, NearestFilter, SRGBColorSpace } from "three";
+import { useTexture } from "@react-three/drei";
+import {
+  ClampToEdgeWrapping, Color, MeshBasicMaterial,
+  NearestFilter, SRGBColorSpace, type Texture,
+} from "three";
 import type { Avatar } from "../types";
 
 interface Props {
   avatar: Avatar;
 }
 
-/** Idle PNG is 768×256px → 12×4 grid of 64×64 frames. */
-const SWORDSMAN_IDLE_COLS = 12;
-const SWORDSMAN_IDLE_ROWS = 4;
-/** XZ plane size in world units (matches scale of box/sphere avatars better). */
-const SWORDSMAN_PLANE_SIZE = 4.28;
+/** 512×768 sheet — 8 cols × 12 rows of 64×64 frames. */
+const SHEET_COLS = 8;
+const SHEET_ROWS = 12;
+const PLANE_SIZE = 4.28;
 
-/** HSV conversion helpers injected into the fragment shader. */
+function setupTex(tex: Texture) {
+  tex.colorSpace = SRGBColorSpace;
+  tex.magFilter  = NearestFilter;
+  tex.minFilter  = NearestFilter;
+  tex.wrapS      = ClampToEdgeWrapping;
+  tex.wrapT      = ClampToEdgeWrapping;
+  tex.repeat.set(1 / SHEET_COLS, 1 / SHEET_ROWS);
+  // Row 0 of the PNG is the top — UV y=0 is bottom, so offset to top row.
+  tex.offset.set(0, (SHEET_ROWS - 1) / SHEET_ROWS);
+}
+
 const HSV_GLSL = /* glsl */`
   vec3 rgb2hsv(vec3 c) {
     vec4 K = vec4(0.0, -1.0/3.0, 2.0/3.0, -1.0);
@@ -30,98 +42,79 @@ const HSV_GLSL = /* glsl */`
   }
 `;
 
-/** Each instance needs its own program so per-player tint uniforms don't stomp each other. */
 let _matId = 0;
 
-function SwordsmanPlane({ color }: { color: string }) {
-  const texture = useTexture("/avatars/swordsman-idle.png", (tex) => {
-    tex.colorSpace = SRGBColorSpace;
-    tex.magFilter = NearestFilter;
-    tex.minFilter = NearestFilter;
-    tex.wrapS = ClampToEdgeWrapping;
-    tex.wrapT = ClampToEdgeWrapping;
-    tex.repeat.set(1 / SWORDSMAN_IDLE_COLS, 1 / SWORDSMAN_IDLE_ROWS);
-    tex.offset.set(0, (SWORDSMAN_IDLE_ROWS - 1) / SWORDSMAN_IDLE_ROWS);
-  });
+/** A flat layer without colour tinting — used for template and shoes. */
+function UntintedLayer({ url, yOffset, order }: {
+  url: string; yOffset: number; order: number;
+}) {
+  const texture = useTexture(url, setupTex);
+  return (
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, yOffset, 0]} renderOrder={order}>
+      <planeGeometry args={[PLANE_SIZE, PLANE_SIZE]} />
+      <meshBasicMaterial map={texture} transparent depthWrite={false} toneMapped={false} />
+    </mesh>
+  );
+}
 
-  // Uniform object shared by reference — update .value to retint without recompile.
+/** A flat layer with HSV hue-shift tinting — used for shirt and skirt. */
+function TintedLayer({ url, color, yOffset, order }: {
+  url: string; color: string; yOffset: number; order: number;
+}) {
+  const texture    = useTexture(url, setupTex);
   const tintUniform = useRef({ value: new Color(color) });
 
   const material = useMemo(() => {
-    const id = ++_matId;
+    const id  = ++_matId;
     const mat = new MeshBasicMaterial({
-      map: texture,
-      transparent: true,
-      depthWrite: false,
-      toneMapped: false,
+      map: texture, transparent: true, depthWrite: false, toneMapped: false,
     });
 
-    // Unique key per instance so players with different colors each get their own
-    // WebGL program and uniforms don't bleed across instances.
-    mat.customProgramCacheKey = () => `swordsman-tint-${id}`;
+    mat.customProgramCacheKey = () => `tinted-layer-${id}`;
 
     mat.onBeforeCompile = (shader) => {
-      // Bind this instance's uniform into the program.
       shader.uniforms.tintColor = tintUniform.current;
-
-      // Prepend helpers before the existing fragment shader.
       shader.fragmentShader =
         `uniform vec3 tintColor;\n${HSV_GLSL}\n` + shader.fragmentShader;
-
-      // Replace the standard map sampling chunk with our tinted version.
       shader.fragmentShader = shader.fragmentShader.replace(
         "#include <map_fragment>",
         /* glsl */`
         #ifdef USE_MAP
           vec4 sampledDiffuseColor = texture2D(map, vMapUv);
-
           vec3 hsv     = rgb2hsv(sampledDiffuseColor.rgb);
           vec3 tintHsv = rgb2hsv(tintColor);
-
-          // shift = 0 for near-grey pixels (linework, shadows) → they are untouched.
-          // shift = 1 for fully-saturated pixels → full hue replacement.
-          float shift = smoothstep(0.12, 0.45, hsv.y);
+          float shift  = smoothstep(0.12, 0.45, hsv.y);
           hsv.x = mix(hsv.x, tintHsv.x, shift);
           hsv.y = mix(hsv.y, tintHsv.y, shift * 0.8);
-
           sampledDiffuseColor.rgb = hsv2rgb(hsv);
           diffuseColor *= sampledDiffuseColor;
         #endif
         `
       );
     };
-
     return mat;
   }, [texture]);
 
-  // Reactively update the tint — no shader recompile needed, just a uniform upload.
+  // Update tint colour without recompiling the shader.
   tintUniform.current.value.set(color);
 
-  // Dispose material when component unmounts.
   useEffect(() => () => { material.dispose(); }, [material]);
 
   return (
-    <mesh rotation={[-Math.PI / 2, 0, 0]}>
-      <planeGeometry args={[SWORDSMAN_PLANE_SIZE, SWORDSMAN_PLANE_SIZE]} />
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, yOffset, 0]} renderOrder={order}>
+      <planeGeometry args={[PLANE_SIZE, PLANE_SIZE]} />
       <primitive object={material} attach="material" />
     </mesh>
   );
 }
 
 export default function AvatarMesh({ avatar }: Props) {
-  const material = <meshStandardMaterial color={avatar.color} />;
-
-  if (avatar.shape === "swordsman") {
-    return <SwordsmanPlane color={avatar.color} />;
-  }
-
-  if (avatar.shape === "box") {
-    return <Box args={[0.6, 1, 0.6]}>{material}</Box>;
-  }
-
-  if (avatar.shape === "sphere") {
-    return <Sphere args={[0.5, 16, 16]}>{material}</Sphere>;
-  }
-
-  return null;
+  return (
+    <group>
+      <UntintedLayer url="/avatars/template.png" yOffset={0}     order={0} />
+      <UntintedLayer url="/avatars/shoes.png"    yOffset={0.001} order={1} />
+      <TintedLayer   url="/avatars/skirt.png"    yOffset={0.002} order={2} color={avatar.skirt} />
+      <TintedLayer   url="/avatars/shirt.png"    yOffset={0.003} order={3} color={avatar.shirt} />
+    </group>
+  );
 }
