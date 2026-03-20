@@ -7,6 +7,9 @@ server/node_modules
 dist
 client/dist
 
+# Assets (binary/sprites; keep out of git)
+assets
+
 # Environment variables
 .env
 .env.local

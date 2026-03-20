@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { io, type Socket } from 'socket.io-client'
 import type { Player, RemotePlayer } from '../types'
 
-// VITE_SERVER_URL in .env.local overrides (e.g. for ngrok).
+// VITE_SERVER_URL overrides for deployed builds (e.g. Netlify → Render/Railway server).
 // Otherwise connect to current origin — Vite proxies /socket.io to the backend,
 // avoiding mixed-content errors when the page is served over HTTPS.
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || undefined
