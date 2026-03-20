@@ -293,8 +293,9 @@ export function useLiveKitVoice(
         stereoMerger.connect(micDest);
 
         if (rnnoiseAvailable) {
-          const rnnoiseNode = new AudioWorkletNode(ctx, NoiseSuppressorWorklet_Name);
-          micSource.connect(rnnoiseNode).connect(gainNode);
+          const rnnoise1 = new AudioWorkletNode(ctx, NoiseSuppressorWorklet_Name);
+          const rnnoise2 = new AudioWorkletNode(ctx, NoiseSuppressorWorklet_Name);
+          micSource.connect(rnnoise1).connect(rnnoise2).connect(gainNode);
         } else {
           micSource.connect(gainNode);
         }
@@ -517,6 +518,9 @@ export function useLiveKitVoice(
         await room.connect(url, token, connectOpts);
 
         roomRef.current = room;
+        if (audioCtx.current?.state === "running") {
+          void room.startAudio().catch(() => {});
+        }
         setRoomReady(true);
 
         // TrackPublished: subscribe only when a new participant publishes (must be registered
@@ -619,9 +623,10 @@ export function useLiveKitVoice(
             localSpeakingFrames.current - 1,
           );
         }
-        const speaking =
+        const speaking = !mutedRef.current && (
           localSpeakingFrames.current >= SPEAKING_HYSTERESIS_UP ||
-          (wasLocalSpeaking.current && localSpeakingFrames.current > -SPEAKING_HYSTERESIS_DOWN);
+          (wasLocalSpeaking.current && localSpeakingFrames.current > -SPEAKING_HYSTERESIS_DOWN)
+        );
         wasLocalSpeaking.current = speaking;
         setIsLocalSpeaking(speaking);
       }
@@ -689,8 +694,9 @@ export function useLiveKitVoice(
       setConnectedPeers(new Set(subscribedIdentities.current));
       const ctxState = audioCtx.current?.state;
       const hasPeers = remoteEntries.current.size > 0;
+      const livekitBlocked = hasPeers && roomRef.current != null && !roomRef.current.canPlaybackAudio;
       setAudioInterrupted(ctxState === "interrupted" && hasPeers);
-      setAudioBlocked(ctxState === "suspended" && hasPeers);
+      setAudioBlocked((ctxState === "suspended" || livekitBlocked) && hasPeers);
     }, 100);
 
     return () => clearInterval(interval);
@@ -715,6 +721,11 @@ export function useLiveKitVoice(
       localStream.current?.getAudioTracks().forEach((t) => {
         t.enabled = !next;
       });
+      if (next) {
+        wasLocalSpeaking.current = false;
+        localSpeakingFrames.current = 0;
+        setIsLocalSpeaking(false);
+      }
       applyEffectiveMicGain(micGainRef.current, micDuckedRef.current);
       return next;
     });
