@@ -50,14 +50,13 @@ const io = new Server(httpServer, {
 // Validation helpers
 const isValidAvatar = (a) =>
   a && typeof a === 'object' &&
-  typeof a.shirt === 'string' && a.shirt.length <= 32 &&
-  typeof a.skirt === 'string' && a.skirt.length <= 32
+  typeof a.shirt === 'string' && a.shirt.length <= 32
 const isValidPosition = (p) =>
   p && typeof p === 'object' &&
   typeof p.x === 'number' && typeof p.y === 'number' && typeof p.z === 'number'
 
 // In-memory room state
-// { [socketId]: { id, name, avatar: { shirt, skirt }, x, y, z } }
+// { [socketId]: { id, name, avatar: { shirt }, x, y, z } }
 const players = {}
 
 io.on('connection', (socket) => {
