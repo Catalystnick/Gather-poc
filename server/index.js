@@ -3,17 +3,33 @@ import { createServer } from 'http'
 import { Server } from 'socket.io'
 import cors from 'cors'
 import { AccessToken } from 'livekit-server-sdk'
+import rateLimit from 'express-rate-limit'
 
 const app = express()
-app.use(cors())
+
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
+  : null
+
+app.use(cors({
+  origin: allowedOrigins ?? '*',
+}))
 app.use(express.json())
+
+const tokenLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later.' },
+})
 
 // LiveKit token endpoint — requires LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET
 const LIVEKIT_URL = process.env.LIVEKIT_URL || 'ws://localhost:7880'
 const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || ''
 const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || ''
 
-app.post('/livekit/token', async (req, res) => {
+app.post('/livekit/token', tokenLimiter, async (req, res) => {
   const { roomName = 'gather-world', identity, name } = req.body || {}
   if (!identity || typeof identity !== 'string') {
     return res.status(400).json({ error: 'identity required' })
@@ -44,16 +60,17 @@ app.post('/livekit/token', async (req, res) => {
 
 const httpServer = createServer(app)
 const io = new Server(httpServer, {
-  cors: { origin: '*' }
+  cors: { origin: allowedOrigins ?? '*' }
 })
 
 // Validation helpers
 const isValidAvatar = (a) =>
   a && typeof a === 'object' &&
-  typeof a.shirt === 'string' && a.shirt.length <= 32
+  typeof a.shirt === 'string' && /^#[0-9A-Fa-f]{6}$/.test(a.shirt)
 const isValidPosition = (p) =>
   p && typeof p === 'object' &&
-  typeof p.x === 'number' && typeof p.y === 'number' && typeof p.z === 'number'
+  Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z) &&
+  Math.abs(p.x) <= 10000 && Math.abs(p.y) <= 10000 && Math.abs(p.z) <= 10000
 
 // In-memory room state
 // { [socketId]: { id, name, avatar: { shirt }, x, y, z } }
