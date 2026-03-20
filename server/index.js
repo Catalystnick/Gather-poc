@@ -48,7 +48,7 @@ const io = new Server(httpServer, {
 })
 
 // Validation helpers
-const SHAPES = ['capsule', 'box', 'sphere']
+const SHAPES = ['swordsman', 'box', 'sphere']
 const isValidAvatar = (a) =>
   a && typeof a === 'object' &&
   SHAPES.includes(a.shape) &&

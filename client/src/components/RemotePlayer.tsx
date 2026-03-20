@@ -33,14 +33,14 @@ export default function RemotePlayer({ name, avatar, position, bubble, inRange, 
 
       {/* Voice range indicator — blue ring when in range, green when speaking */}
       {inRange && !isSpeaking && (
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.45, 0]}>
-          <ringGeometry args={[0.55, 0.65, 32]} />
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.48, 0]}>
+          <ringGeometry args={[0.58, 0.72, 32]} />
           <meshBasicMaterial color="#3498db" transparent opacity={0.5} />
         </mesh>
       )}
       {isSpeaking && (
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.45, 0]}>
-          <ringGeometry args={[0.55, 0.65, 32]} />
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.48, 0]}>
+          <ringGeometry args={[0.58, 0.72, 32]} />
           <meshBasicMaterial color="#2ecc71" transparent opacity={0.8} />
         </mesh>
       )}

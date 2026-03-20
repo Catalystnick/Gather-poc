@@ -1,7 +1,7 @@
 // Shared domain types for the Gather PoC
 
 export interface Avatar {
-  shape: 'capsule' | 'box' | 'sphere'
+  shape: 'swordsman' | 'box' | 'sphere'
   color: string
 }
 
