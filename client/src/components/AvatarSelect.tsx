@@ -10,6 +10,23 @@ const SHAPES: Avatar['shape'][] = ['swordsman', 'box', 'sphere']
 
 const SPRITE_DISPLAY = 140
 
+/** Approximate dominant hue of the swordsman sprite art (warm brown/skin tones ~25°). */
+const SPRITE_BASE_HUE = 25
+
+function hexToHue(hex: string): number {
+  const r = parseInt(hex.slice(1, 3), 16) / 255
+  const g = parseInt(hex.slice(3, 5), 16) / 255
+  const b = parseInt(hex.slice(5, 7), 16) / 255
+  const max = Math.max(r, g, b), min = Math.min(r, g, b)
+  if (max === min) return 0
+  const d = max - min
+  let h = 0
+  if (max === r)      h = ((g - b) / d + (g < b ? 6 : 0)) / 6
+  else if (max === g) h = ((b - r) / d + 2) / 6
+  else                h = ((r - g) / d + 4) / 6
+  return Math.round(h * 360)
+}
+
 interface Props {
   initial: Player | null
   onJoin: (player: Player) => void
@@ -17,6 +34,7 @@ interface Props {
 
 function CharacterPreview({ shape, color }: { shape: Avatar['shape']; color: string }) {
   if (shape === 'swordsman') {
+    const hueRotate = hexToHue(color) - SPRITE_BASE_HUE
     return (
       <div style={{ position: 'relative', width: SPRITE_DISPLAY, height: SPRITE_DISPLAY }}>
         {/* Coloured glow shadow under feet */}
@@ -29,6 +47,7 @@ function CharacterPreview({ shape, color }: { shape: Avatar['shape']; color: str
           filter: 'blur(14px)',
           opacity: 0.8,
         }} />
+        {/* Sprite — filter applies only to this element's pixels, not the background */}
         <span style={{
           display: 'block',
           width: SPRITE_DISPLAY, height: SPRITE_DISPLAY,
@@ -37,6 +56,7 @@ function CharacterPreview({ shape, color }: { shape: Avatar['shape']; color: str
           backgroundPosition: '0 0',
           imageRendering: 'pixelated',
           position: 'relative', zIndex: 1,
+          filter: `hue-rotate(${hueRotate}deg) saturate(1.15)`,
         }} />
       </div>
     )
