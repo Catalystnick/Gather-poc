@@ -10,7 +10,13 @@ const STORAGE_KEY = 'gather_poc_avatar'
 function loadSaved(): Player | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    return raw ? JSON.parse(raw) : null
+    if (!raw) return null
+    const p = JSON.parse(raw) as { name?: string; avatar?: { shirt?: string } }
+    if (
+      typeof p?.name !== 'string' ||
+      typeof p?.avatar?.shirt !== 'string'
+    ) return null
+    return { name: p.name, avatar: { shirt: p.avatar.shirt } }
   } catch {
     return null
   }

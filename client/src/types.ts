@@ -1,8 +1,9 @@
 // Shared domain types for the Gather PoC
 
+export type Direction = 'down' | 'up' | 'right' | 'left'
+
 export interface Avatar {
-  shape: 'capsule' | 'box' | 'sphere'
-  color: string
+  shirt: string   // hex colour for shirt layer
 }
 
 export interface Player {

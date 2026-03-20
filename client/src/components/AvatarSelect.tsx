@@ -6,7 +6,63 @@ const COLORS = [
   '#1abc9c', '#3498db', '#9b59b6', '#ecf0f1',
 ]
 
-const SHAPES: Avatar['shape'][] = ['capsule', 'box', 'sphere']
+/** Preview sprite display size (px). */
+const SPRITE_DISPLAY = 140
+/** Sheet constants — must match AvatarMesh. */
+const SHEET_COLS = 8
+const SHEET_ROWS = 12
+
+/** Dominant hue of the shirt layer (used for CSS hue-rotate preview). */
+const SHIRT_BASE_HUE = 0    // ShirtRed.png is red ~0°
+
+function hexToHue(hex: string): number {
+  const r = parseInt(hex.slice(1, 3), 16) / 255
+  const g = parseInt(hex.slice(3, 5), 16) / 255
+  const b = parseInt(hex.slice(5, 7), 16) / 255
+  const max = Math.max(r, g, b), min = Math.min(r, g, b)
+  if (max === min) return 0
+  const d = max - min
+  let h = 0
+  if (max === r)      h = ((g - b) / d + (g < b ? 6 : 0)) / 6
+  else if (max === g) h = ((b - r) / d + 2) / 6
+  else                h = ((r - g) / d + 4) / 6
+  return Math.round(h * 360)
+}
+
+const bgSize = `${SPRITE_DISPLAY * SHEET_COLS}px ${SPRITE_DISPLAY * SHEET_ROWS}px`
+
+function spriteLayer(url: string, filter?: string): React.CSSProperties {
+  return {
+    display: 'block',
+    position: 'absolute',
+    inset: 0,
+    backgroundImage: `url(${url})`,
+    backgroundSize: bgSize,
+    backgroundPosition: '0 0',
+    imageRendering: 'pixelated',
+    filter,
+  }
+}
+
+function CharacterPreview({ shirt }: { shirt: string }) {
+  const shirtFilter = `hue-rotate(${hexToHue(shirt) - SHIRT_BASE_HUE}deg) saturate(1.15)`
+
+  return (
+    <div style={{ position: 'relative', width: SPRITE_DISPLAY, height: SPRITE_DISPLAY }}>
+      {/* Colour glow under feet */}
+      <div style={{
+        position: 'absolute', bottom: 2, left: '50%',
+        transform: 'translateX(-50%)',
+        width: 80, height: 18, borderRadius: '50%',
+        background: shirt, filter: 'blur(12px)', opacity: 0.7,
+      }} />
+      {/* Stacked sprite layers */}
+      <span style={spriteLayer('/avatars/template.png')} />
+      <span style={spriteLayer('/avatars/shoes.png')} />
+      <span style={spriteLayer('/avatars/shirt.png', shirtFilter)} />
+    </div>
+  )
+}
 
 interface Props {
   initial: Player | null
@@ -14,75 +70,71 @@ interface Props {
 }
 
 export default function AvatarSelect({ initial, onJoin }: Props) {
-  const [name, setName] = useState(initial?.name ?? '')
-  const [shape, setShape] = useState<Avatar['shape']>(initial?.avatar.shape ?? 'capsule')
-  const [color, setColor] = useState(initial?.avatar.color ?? '#3498db')
+  const [name,  setName]  = useState(initial?.name ?? '')
+  const [shirt, setShirt] = useState(initial?.avatar.shirt ?? '#3498db')
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!name.trim()) return
-    onJoin({ name: name.trim(), avatar: { shape, color } })
+    onJoin({ name: name.trim(), avatar: { shirt } })
   }
 
   return (
     <div style={styles.overlay}>
       <form style={styles.card} onSubmit={handleSubmit}>
-        <h1 style={styles.title}>Gather PoC</h1>
 
-        <label style={styles.label}>Display name</label>
-        <input
-          style={styles.input}
-          value={name}
-          onChange={e => setName(e.target.value)}
-          placeholder="Enter your name"
-          maxLength={24}
-          autoFocus
-        />
+        <div style={styles.topBar}>
+          <span style={styles.topBarTitle}>Gather PoC</span>
+        </div>
 
-        <label style={styles.label}>Shape</label>
-        <div style={styles.row}>
-          {SHAPES.map(s => (
+        <div style={styles.body}>
+
+          {/* ── Left — character + name ── */}
+          <div style={styles.leftCol}>
+            <div style={styles.stage}>
+              <CharacterPreview shirt={shirt} />
+            </div>
+            <p style={styles.label}>Your Name</p>
+            <input
+              style={styles.input}
+              value={name}
+              onChange={e => setName(e.target.value)}
+              placeholder="Enter your name"
+              maxLength={24}
+              autoFocus
+            />
+          </div>
+
+          {/* ── Right — colours + join ── */}
+          <div style={styles.rightCol}>
+
+            <div>
+              <p style={styles.label}>Shirt Colour</p>
+              <div style={styles.colorGrid}>
+                {COLORS.map(c => (
+                  <button key={c} type="button" onClick={() => setShirt(c)} style={{
+                    ...styles.swatch, background: c,
+                    boxShadow: shirt === c ? `0 0 0 2px #1a1a1a, 0 0 0 4px ${c}` : 'none',
+                    transform:  shirt === c ? 'scale(1.08)' : 'scale(1)',
+                  }} />
+                ))}
+              </div>
+            </div>
+
             <button
-              key={s}
-              type="button"
-              onClick={() => setShape(s)}
+              type="submit"
+              disabled={!name.trim()}
               style={{
-                ...styles.shapeBtn,
-                outline: shape === s ? `2px solid ${color}` : '2px solid transparent',
+                ...styles.joinBtn,
+                opacity: name.trim() ? 1 : 0.35,
+                cursor:  name.trim() ? 'pointer' : 'not-allowed',
               }}
             >
-              {s}
+              Join →
             </button>
-          ))}
-        </div>
 
-        <label style={styles.label}>Colour</label>
-        <div style={styles.row}>
-          {COLORS.map(c => (
-            <button
-              key={c}
-              type="button"
-              onClick={() => setColor(c)}
-              style={{
-                ...styles.swatch,
-                background: c,
-                outline: color === c ? '3px solid #fff' : '3px solid transparent',
-              }}
-            />
-          ))}
+          </div>
         </div>
-
-        <button
-          type="submit"
-          disabled={!name.trim()}
-          style={{
-            ...styles.joinBtn,
-            opacity: name.trim() ? 1 : 0.4,
-            cursor: name.trim() ? 'pointer' : 'not-allowed',
-          }}
-        >
-          Join
-        </button>
       </form>
     </div>
   )
@@ -92,30 +144,59 @@ const styles: Record<string, React.CSSProperties> = {
   overlay: {
     width: '100vw', height: '100vh',
     display: 'flex', alignItems: 'center', justifyContent: 'center',
-    background: '#0f0f0f',
+    background: '#0c0c0c',
   },
   card: {
-    background: '#1a1a1a', borderRadius: 12, padding: 32,
-    display: 'flex', flexDirection: 'column', gap: 12,
-    width: 320, border: '1px solid #2a2a2a',
+    background: '#1a1a1a', border: '1px solid #2a2a2a',
+    borderRadius: 16, width: 560, overflow: 'hidden',
+    display: 'flex', flexDirection: 'column',
   },
-  title: { fontSize: 22, fontWeight: 700, marginBottom: 8 },
-  label: { fontSize: 12, color: '#888', textTransform: 'uppercase', letterSpacing: 1 },
+  topBar: {
+    padding: '16px 24px', borderBottom: '1px solid #252525', background: '#141414',
+  },
+  topBarTitle: { fontSize: 18, fontWeight: 700, color: '#fff', letterSpacing: -0.3 },
+  body: { display: 'flex' },
+
+  leftCol: {
+    width: 210, flexShrink: 0,
+    borderRight: '1px solid #252525',
+    padding: '24px 20px',
+    display: 'flex', flexDirection: 'column', gap: 10,
+  },
+  stage: {
+    background: '#0f0f0f', border: '1px solid #222', borderRadius: 12,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    height: 190, marginBottom: 6,
+  },
+
+  rightCol: {
+    flex: 1, padding: '24px 22px',
+    display: 'flex', flexDirection: 'column', gap: 20,
+  },
+
+  label: {
+    fontSize: 11, fontWeight: 600, color: '#555',
+    textTransform: 'uppercase', letterSpacing: 0.8,
+    margin: '0 0 8px 0',
+  },
   input: {
-    background: '#0f0f0f', border: '1px solid #333', borderRadius: 6,
-    color: '#fff', padding: '8px 12px', fontSize: 15, outline: 'none',
+    background: '#111', border: '1px solid #2e2e2e', borderRadius: 7,
+    color: '#fff', padding: '8px 11px', fontSize: 14, outline: 'none',
+    width: '100%', boxSizing: 'border-box',
   },
-  row: { display: 'flex', gap: 8, flexWrap: 'wrap' },
-  shapeBtn: {
-    background: '#0f0f0f', border: '1px solid #333', borderRadius: 6,
-    color: '#fff', padding: '6px 14px', fontSize: 13, cursor: 'pointer',
-    textTransform: 'capitalize',
+
+  colorGrid: {
+    display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8,
   },
   swatch: {
-    width: 28, height: 28, borderRadius: '50%', border: 'none', cursor: 'pointer',
+    aspectRatio: '1', borderRadius: 8, border: 'none', cursor: 'pointer',
+    transition: 'transform 0.1s, box-shadow 0.1s',
   },
+
   joinBtn: {
-    marginTop: 8, background: '#3498db', color: '#fff', border: 'none',
-    borderRadius: 6, padding: '10px 0', fontSize: 15, fontWeight: 600,
+    marginTop: 'auto', color: '#fff', border: 'none',
+    borderRadius: 8, padding: '11px 0',
+    fontSize: 15, fontWeight: 700, cursor: 'pointer',
+    background: '#3498db',
   },
 }

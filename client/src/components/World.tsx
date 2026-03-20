@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { Suspense, useRef } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { Grid, Environment, KeyboardControls } from '@react-three/drei'
 import LocalPlayer from './LocalPlayer'
@@ -55,26 +55,28 @@ export default function World({ player }: Props) {
     <>
       <KeyboardControls map={keyMap}>
         <Canvas orthographic style={{ cursor: 'grab' }}>
-          <CameraRig targetRef={localPositionRef} />
-          <Environment preset="city" />
-          <Grid
-            infiniteGrid
-            cellSize={1}
-            cellThickness={0.5}
-            sectionSize={5}
-            sectionThickness={1}
-            fadeDistance={50}
-          />
-          <LocalPlayer player={player} onMove={emitMove} positionRef={localPositionRef} isSpeaking={isLocalSpeaking} />
-          {Array.from(remotePlayers.values()).map(p => (
-            <RemotePlayer
-              key={p.id}
-              {...p}
-              bubble={bubbles.get(p.id)}
-              inRange={connectedPeers.has(p.id)}
-              isSpeaking={speakingPeers.has(p.id)}
+          <Suspense fallback={null}>
+            <CameraRig targetRef={localPositionRef} />
+            <Environment preset="city" />
+            <Grid
+              infiniteGrid
+              cellSize={1}
+              cellThickness={0.5}
+              sectionSize={5}
+              sectionThickness={1}
+              fadeDistance={50}
             />
-          ))}
+            <LocalPlayer player={player} onMove={emitMove} positionRef={localPositionRef} isSpeaking={isLocalSpeaking} />
+            {Array.from(remotePlayers.values()).map(p => (
+              <RemotePlayer
+                key={p.id}
+                {...p}
+                bubble={bubbles.get(p.id)}
+                inRange={connectedPeers.has(p.id)}
+                isSpeaking={speakingPeers.has(p.id)}
+              />
+            ))}
+          </Suspense>
         </Canvas>
       </KeyboardControls>
 

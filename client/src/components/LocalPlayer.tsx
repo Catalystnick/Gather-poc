@@ -1,56 +1,78 @@
-import { useRef } from 'react'
-import { useFrame } from '@react-three/fiber'
-import { useKeyboardControls } from '@react-three/drei'
-import type { Group } from 'three'
-import AvatarMesh from './AvatarMesh'
-import type { Player } from '../types'
+import { useRef } from "react";
+import { useFrame } from "@react-three/fiber";
+import { useKeyboardControls, Text } from "@react-three/drei";
+import type { Group } from "three";
+import AvatarMesh from "./AvatarMesh";
+import type { Direction, Player } from "../types";
 
-const SPEED = 5
+const SPEED = 5;
 
 interface Props {
-  player: Player
-  onMove: (position: { x: number; y: number; z: number }) => void
-  positionRef: React.MutableRefObject<{ x: number; y: number; z: number }>
-  isSpeaking?: boolean
+  player: Player;
+  onMove: (position: { x: number; y: number; z: number }) => void;
+  positionRef: React.MutableRefObject<{ x: number; y: number; z: number }>;
+  isSpeaking?: boolean;
 }
 
 export default function LocalPlayer({ player, onMove, positionRef, isSpeaking }: Props) {
-  const ref = useRef<Group>(null)
-  const lastEmit = useRef(0)
-  const [, getKeys] = useKeyboardControls()
+  const ref          = useRef<Group>(null);
+  const lastEmit     = useRef(0);
+  const directionRef = useRef<Direction>('down');
+  const isMovingRef  = useRef(false);
+  const [, getKeys]  = useKeyboardControls();
 
   useFrame((_, delta) => {
-    if (!ref.current) return
-    const { forward, backward, left, right } = getKeys()
+    if (!ref.current) return;
+    const { forward, backward, left, right } = getKeys();
 
-    const dx = (right ? 1 : 0) - (left ? 1 : 0)
-    const dz = (backward ? 1 : 0) - (forward ? 1 : 0)
+    const dx = (right ? 1 : 0) - (left ? 1 : 0);
+    const dz = (backward ? 1 : 0) - (forward ? 1 : 0);
 
-    ref.current.position.x += dx * SPEED * delta
-    ref.current.position.z += dz * SPEED * delta
+    ref.current.position.x += dx * SPEED * delta;
+    ref.current.position.z += dz * SPEED * delta;
 
-    const { x, y, z } = ref.current.position
-
-    // Keep shared ref in sync for proximity voice
-    positionRef.current = { x, y, z }
-
-    // Throttle emit to ~20Hz
-    const now = performance.now()
-    if (now - lastEmit.current > 50) {
-      lastEmit.current = now
-      onMove({ x, y, z })
+    isMovingRef.current = dx !== 0 || dz !== 0;
+    if (dx !== 0 || dz !== 0) {
+      if (Math.abs(dx) >= Math.abs(dz)) {
+        directionRef.current = dx > 0 ? 'right' : 'left';
+      } else {
+        // dz > 0 = moving +Z = screen-down = facing down
+        // dz < 0 = moving -Z = screen-up   = facing up
+        directionRef.current = dz > 0 ? 'down' : 'up';
+      }
     }
-  })
+
+    const { x, y, z } = ref.current.position;
+    positionRef.current = { x, y, z };
+
+    const now = performance.now();
+    if (now - lastEmit.current > 50) {
+      lastEmit.current = now;
+      onMove({ x, y, z });
+    }
+  });
 
   return (
     <group ref={ref} position={[0, 0.5, 0]}>
-      <AvatarMesh avatar={player.avatar} />
+      <AvatarMesh avatar={player.avatar} directionRef={directionRef} isMovingRef={isMovingRef} />
+      <Text
+        position={[0, 0.5, -1.6]}
+        rotation={[-Math.PI / 2, 0, 0]}
+        fontSize={0.3}
+        color="#ffffff"
+        anchorX="center"
+        anchorY="middle"
+        outlineWidth={0.03}
+        outlineColor="#000000"
+      >
+        {player.name}
+      </Text>
       {isSpeaking && (
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.45, 0]}>
-          <ringGeometry args={[0.55, 0.65, 32]} />
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.48, 0]}>
+          <ringGeometry args={[0.58, 0.72, 32]} />
           <meshBasicMaterial color="#2ecc71" transparent opacity={0.8} />
         </mesh>
       )}
     </group>
-  )
+  );
 }
