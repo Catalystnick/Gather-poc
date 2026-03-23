@@ -10,6 +10,7 @@ const SERVER_URL = import.meta.env.VITE_SERVER_URL || undefined
 export function useSocket(player: Player) {
   const [socket, setSocket] = useState<Socket | null>(null)
   const [remotePlayers, setRemotePlayers] = useState<Map<string, RemotePlayer>>(new Map())
+  const [spawnPosition, setSpawnPosition] = useState<{ x: number; y: number; z: number } | null>(null)
 
   // Keep a stable ref to the latest player data so the connect handler
   // always sends the current name/avatar without triggering a reconnect.
@@ -24,7 +25,9 @@ export function useSocket(player: Player) {
     setSocket(s)
 
     s.on('connect', () => {
-      s.emit('player:join', { name: playerRef.current.name, avatar: playerRef.current.avatar })
+      s.emit('player:join', { name: playerRef.current.name, avatar: playerRef.current.avatar }, ({ position }: { position: { x: number; y: number; z: number } }) => {
+        setSpawnPosition(position)
+      })
     })
 
     s.on('room:state', (players: RemotePlayer[]) => {
@@ -35,11 +38,11 @@ export function useSocket(player: Player) {
       setRemotePlayers(prev => new Map(prev).set(p.id, p))
     })
 
-    s.on('player:updated', ({ id, position }: { id: string; position: RemotePlayer['position'] }) => {
+    s.on('player:updated', ({ id, position, direction, moving }: Pick<RemotePlayer, 'direction' | 'moving'> & { id: string; position: RemotePlayer['position'] }) => {
       setRemotePlayers(prev => {
         const next = new Map(prev)
         const p = next.get(id)
-        if (p) next.set(id, { ...p, position })
+        if (p) next.set(id, { ...p, position, direction, moving })
         return next
       })
     })
@@ -60,9 +63,9 @@ export function useSocket(player: Player) {
 
   // Stable function reference — reads socket from ref, so LocalPlayer's
   // useFrame closure always calls the current socket without a prop re-capture.
-  const emitMove = useCallback((position: { x: number; y: number; z: number }) => {
-    socketRef.current?.emit('player:move', position)
+  const emitMove = useCallback((state: { x: number; y: number; z: number; direction: string; moving: boolean }) => {
+    socketRef.current?.emit('player:move', state)
   }, [])
 
-  return { socket, remotePlayers, emitMove }
+  return { socket, remotePlayers, emitMove, spawnPosition }
 }

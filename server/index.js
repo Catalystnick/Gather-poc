@@ -71,6 +71,17 @@ const io = new Server(httpServer, {
   cors: { origin: allowedOrigins ?? '*' }
 })
 
+const SPAWN_RADIUS = 2
+// Client SPEED = 5 u/s. 1.5× tolerance covers network jitter and frame-rate variation.
+const MAX_SPEED = 7.5
+// Minimum ms between chat messages per player (2 messages/second).
+const CHAT_MIN_INTERVAL = 500
+
+function randomSpawn() {
+  const angle = Math.random() * Math.PI * 2
+  return { x: Math.cos(angle) * SPAWN_RADIUS, y: 0.5, z: Math.sin(angle) * SPAWN_RADIUS }
+}
+
 // Validation helpers
 const isValidAvatar = (a) =>
   a && typeof a === 'object' &&
@@ -80,6 +91,9 @@ const isValidPosition = (p) =>
   Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z) &&
   Math.abs(p.x) <= 10000 && Math.abs(p.y) <= 10000 && Math.abs(p.z) <= 10000
 
+const VALID_DIRECTIONS = new Set(['down', 'up', 'left', 'right'])
+const isValidDirection = (d) => typeof d === 'string' && VALID_DIRECTIONS.has(d)
+
 // In-memory room state
 // { [socketId]: { id, name, avatar: { shirt }, x, y, z } }
 const players = {}
@@ -87,34 +101,54 @@ const players = {}
 io.on('connection', (socket) => {
   console.log(`[connect] ${socket.id}`)
 
-  socket.on('player:join', ({ name, avatar }) => {
+  socket.on('player:join', ({ name, avatar }, ack) => {
     const trimmed = typeof name === 'string' ? name.trim() : ''
     if (!trimmed || trimmed.length > 24 || !isValidAvatar(avatar)) {
       console.warn(`[join] invalid payload from ${socket.id}`)
       return
     }
-    players[socket.id] = { id: socket.id, name: trimmed, avatar, x: 0, y: 0.5, z: 0 }
+    const pos = randomSpawn()
+    players[socket.id] = { id: socket.id, name: trimmed, avatar, x: pos.x, y: pos.y, z: pos.z, direction: 'down', moving: false }
 
     const others = Object.values(players)
       .filter(p => p.id !== socket.id)
-      .map(({ id, name, avatar, x, y, z }) => ({ id, name, avatar, position: { x, y, z } }))
+      .map(({ id, name, avatar, x, y, z, direction, moving }) => ({ id, name, avatar, position: { x, y, z }, direction, moving }))
     socket.emit('room:state', others)
 
-    const { id, x, y, z } = players[socket.id]
+    if (typeof ack === 'function') ack({ position: pos })
+
+    const { id, x, y, z, direction, moving } = players[socket.id]
     socket.broadcast.emit('player:joined', {
-      id, name, avatar, position: { x, y, z }
+      id, name, avatar, position: { x, y, z }, direction, moving
     })
 
     console.log(`[join] ${name} (${socket.id})`)
   })
 
-  socket.on('player:move', ({ x, y, z }) => {
+  socket.on('player:move', ({ x, y, z, direction, moving }) => {
     const player = players[socket.id]
     if (!player || !isValidPosition({ x, y, z })) return
+    if (!isValidDirection(direction) || typeof moving !== 'boolean') return
+
+    const now = Date.now()
+    if (player.lastMoveTime !== undefined) {
+      const elapsed = (now - player.lastMoveTime) / 1000
+      const dx = x - player.x
+      const dz = z - player.z
+      const speed = Math.sqrt(dx * dx + dz * dz) / elapsed
+      if (speed > MAX_SPEED) {
+        console.warn(`[move] speed violation from ${socket.id}: ${speed.toFixed(1)} u/s`)
+        return
+      }
+    }
+
     player.x = x
     player.y = y
     player.z = z
-    socket.broadcast.emit('player:updated', { id: socket.id, position: { x, y, z } })
+    player.direction = direction
+    player.moving = moving
+    player.lastMoveTime = now
+    socket.broadcast.emit('player:updated', { id: socket.id, position: { x, y, z }, direction, moving })
   })
 
   // --- Chat (Phase 2) ---
@@ -122,11 +156,19 @@ io.on('connection', (socket) => {
     const player = players[socket.id]
     const trimmed = typeof text === 'string' ? text.trim() : ''
     if (!player || !trimmed || trimmed.length > 500) return
+
+    const now = Date.now()
+    if (player.lastChatTime !== undefined && now - player.lastChatTime < CHAT_MIN_INTERVAL) {
+      console.warn(`[chat] rate limit from ${socket.id}`)
+      return
+    }
+
+    player.lastChatTime = now
     io.emit('chat:message', {
       id: socket.id,
       name: player.name,
       text: trimmed,
-      timestamp: Date.now(),
+      timestamp: now,
     })
   })
 
