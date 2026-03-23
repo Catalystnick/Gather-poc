@@ -18,22 +18,22 @@ interface Props {
 }
 
 export default function LocalPlayer({ player, onMove, positionRef, spawnPosition, isSpeaking }: Props) {
-  const ref          = useRef<Group>(null);
-  const lastEmit     = useRef(0);
-  const directionRef = useRef<Direction>('down');
-  const isMovingRef  = useRef(false);
-  const [, getKeys]  = useKeyboardControls();
+  const ref = useRef<Group>(null);
+  const lastEmit = useRef(0);
+  const directionRef = useRef<Direction>("down");
+  const isMovingRef = useRef(false);
+  const [, getKeys] = useKeyboardControls();
 
   useLayoutEffect(() => {
     if (ref.current && spawnPosition) {
-      ref.current.position.set(spawnPosition.x, spawnPosition.y, spawnPosition.z)
+      ref.current.position.set(spawnPosition.x, spawnPosition.y, spawnPosition.z);
     }
-  }, [])
+  }, [spawnPosition]);
 
   useFrame((_, delta) => {
     if (!ref.current) return;
-    const tag = (document.activeElement as HTMLElement)?.tagName
-    if (tag === 'INPUT' || tag === 'TEXTAREA') return
+    const tag = (document.activeElement as HTMLElement)?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA") return;
     const { forward, backward, left, right } = getKeys();
 
     const dx = (right ? 1 : 0) - (left ? 1 : 0);
@@ -45,11 +45,11 @@ export default function LocalPlayer({ player, onMove, positionRef, spawnPosition
     isMovingRef.current = dx !== 0 || dz !== 0;
     if (dx !== 0 || dz !== 0) {
       if (Math.abs(dx) >= Math.abs(dz)) {
-        directionRef.current = dx > 0 ? 'right' : 'left';
+        directionRef.current = dx > 0 ? "right" : "left";
       } else {
         // dz > 0 = moving +Z = screen-down = facing down
         // dz < 0 = moving -Z = screen-up   = facing up
-        directionRef.current = dz > 0 ? 'down' : 'up';
+        directionRef.current = dz > 0 ? "down" : "up";
       }
     }
 
