@@ -11,12 +11,6 @@ export interface VoiceState {
   setRemoteGain: (v: number) => void
   micGain: number
   setMicGain: (v: number) => void
-  rolloff: number
-  setRolloff: (v: number) => void
-  agcEnabled: boolean
-  toggleAgc: () => void
-  echoCancelEnabled: boolean
-  toggleEchoCancel: () => void
   headphonePrompt: string | null
   confirmHeadphones: (accept: boolean) => void
   audioBlocked?: boolean

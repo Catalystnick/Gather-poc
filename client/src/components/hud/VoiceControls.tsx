@@ -78,12 +78,6 @@ export default function VoiceControls() {
     setRemoteGain,
     micGain,
     setMicGain,
-    rolloff,
-    setRolloff,
-    agcEnabled,
-    toggleAgc,
-    echoCancelEnabled,
-    toggleEchoCancel,
     headphonePrompt,
     confirmHeadphones,
     audioBlocked,
@@ -126,31 +120,6 @@ export default function VoiceControls() {
         </button>
         <GainControl label="🔊 Speaker" value={remoteGain} onChange={setRemoteGain} />
         <GainControl label="🎙 Mic"     value={micGain}    onChange={setMicGain} />
-        <GainControl
-          label="📉 Rolloff"
-          value={rolloff}
-          onChange={setRolloff}
-          min={0.1}
-          sliderMax={4}
-          step={0.1}
-          title="Distance attenuation curve. 0.5 = gradual, 1.0 = linear, 1.4 = default, 2.0 = inverse-square, 3+ = sharp cutoff"
-        />
-        <div style={styles.toggleRow}>
-          <button
-            style={{ ...styles.btn, ...styles.agcBtn, background: agcEnabled ? 'rgba(34,197,94,0.25)' : 'rgba(0,0,0,0.7)' }}
-            onClick={toggleAgc}
-            title="Automatic Gain Control normalises your mic volume. Disable if you prefer manual control via the Mic slider."
-          >
-            AGC {agcEnabled ? 'ON' : 'OFF'}
-          </button>
-          <button
-            style={{ ...styles.btn, ...styles.agcBtn, background: echoCancelEnabled ? 'rgba(34,197,94,0.25)' : 'rgba(0,0,0,0.7)' }}
-            onClick={toggleEchoCancel}
-            title="Echo Cancellation removes your speaker output from your mic signal. Disable when using headphones."
-          >
-            AEC {echoCancelEnabled ? 'ON' : 'OFF'}
-          </button>
-        </div>
       </div>
     </>
   )
@@ -201,15 +170,6 @@ const styles: Record<string, React.CSSProperties> = {
   gainUnit: {
     fontSize: 12,
     color: '#aaa',
-  },
-  agcBtn: {
-    fontSize: 12,
-    padding: '4px 14px',
-    border: '1px solid #555',
-    borderRadius: 20,
-    cursor: 'pointer',
-    color: '#fff',
-    transition: 'background 0.15s',
   },
   mobileBadge: {
     fontSize: 11,
@@ -274,10 +234,5 @@ const styles: Record<string, React.CSSProperties> = {
   headphoneBtnDismiss: {
     background: 'transparent',
     fontWeight: 400,
-  },
-  toggleRow: {
-    display: 'flex',
-    flexDirection: 'row' as const,
-    gap: 8,
   },
 }

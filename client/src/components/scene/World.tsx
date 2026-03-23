@@ -1,8 +1,9 @@
-import { Suspense, useMemo, useRef } from 'react'
+import { Suspense, useEffect, useMemo, useRef } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { Environment, KeyboardControls } from '@react-three/drei'
 import FloorMap from './FloorMap'
 import Vegetation from './Vegetation'
+import Campfire from './Campfire'
 import LocalPlayer from '../player/LocalPlayer'
 import RemotePlayer from '../player/RemotePlayer'
 import ChatPanel from '../hud/ChatPanel'
@@ -27,9 +28,12 @@ interface Props {
 }
 
 export default function World({ player }: Props) {
+  const { socket, remotePlayers, emitMove, spawnPosition } = useSocket(player)
   const localPositionRef = useRef({ x: 0, y: 0.5, z: 0 })
 
-  const { socket, remotePlayers, emitMove } = useSocket(player)
+  useEffect(() => {
+    if (spawnPosition) localPositionRef.current = spawnPosition
+  }, [spawnPosition])
   const { messages, bubbles, sendMessage } = useChat(socket)
   const voice = useLiveKitVoice(socket, player.name, localPositionRef, remotePlayers)
 
@@ -54,10 +58,12 @@ export default function World({ player }: Props) {
             <Environment preset="city" />
             <FloorMap />
             <Vegetation />
+            <Campfire />
             <LocalPlayer
               player={player}
               onMove={emitMove}
               positionRef={localPositionRef}
+              spawnPosition={spawnPosition ?? undefined}
               isSpeaking={voice.isLocalSpeaking}
             />
             {Array.from(remotePlayers.values()).map(p => (

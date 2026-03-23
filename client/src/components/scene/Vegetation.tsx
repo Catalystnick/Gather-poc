@@ -1,6 +1,7 @@
 import { useTexture } from '@react-three/drei'
 import { useMemo } from 'react'
 import * as THREE from 'three'
+import { MAP, GRASS_IDS } from '../scene/FloorMap'
 
 // Must match FloorMap constants
 const TILE_SIZE = 1
@@ -26,13 +27,13 @@ const DEFS: VegDef[] = [
   { key: 'b4', src: '/floor map/2 Objects/9 Bush/4.png', w: PX(39), h: PX(25) },
   { key: 'b5', src: '/floor map/2 Objects/9 Bush/5.png', w: PX(41), h: PX(25) },
   { key: 'b6', src: '/floor map/2 Objects/9 Bush/6.png', w: PX(40), h: PX(26) },
-  // Grass tufts (6 variants)
-  { key: 'g1', src: '/floor map/2 Objects/5 Grass/1.png', w: PX(5),  h: PX(6)  },
-  { key: 'g2', src: '/floor map/2 Objects/5 Grass/2.png', w: PX(9),  h: PX(6)  },
-  { key: 'g3', src: '/floor map/2 Objects/5 Grass/3.png', w: PX(5),  h: PX(7)  },
-  { key: 'g4', src: '/floor map/2 Objects/5 Grass/4.png', w: PX(8),  h: PX(5)  },
-  { key: 'g5', src: '/floor map/2 Objects/5 Grass/5.png', w: PX(6),  h: PX(10) },
-  { key: 'g6', src: '/floor map/2 Objects/5 Grass/6.png', w: PX(5),  h: PX(8)  },
+  // Grass tufts (6 variants) — scaled 3× to be visible from top-down
+  { key: 'g1', src: '/floor map/2 Objects/5 Grass/1.png', w: PX(5)  * 2, h: PX(6)  * 2 },
+  { key: 'g2', src: '/floor map/2 Objects/5 Grass/2.png', w: PX(9)  * 2, h: PX(6)  * 2 },
+  { key: 'g3', src: '/floor map/2 Objects/5 Grass/3.png', w: PX(5)  * 2, h: PX(7)  * 2 },
+  { key: 'g4', src: '/floor map/2 Objects/5 Grass/4.png', w: PX(8)  * 2, h: PX(5)  * 2 },
+  { key: 'g5', src: '/floor map/2 Objects/5 Grass/5.png', w: PX(6)  * 2, h: PX(10) * 2 },
+  { key: 'g6', src: '/floor map/2 Objects/5 Grass/6.png', w: PX(5)  * 2, h: PX(8)  * 2 },
   // Flowers (12 variants)
   { key: 'f1',  src: '/floor map/2 Objects/6 Flower/1.png',  w: PX(6), h: PX(6) },
   { key: 'f2',  src: '/floor map/2 Objects/6 Flower/2.png',  w: PX(6), h: PX(5) },
@@ -89,11 +90,13 @@ function buildVegetation(): VegItem[] {
       const jx = (hash(c, r, 11) - 0.5) * 0.7
       const jz = (hash(c, r, 22) - 0.5) * 0.7
 
+      const isGrassTile = GRASS_IDS.has(MAP[r][c])
+
       if (v < 0.03) {
         // Bush — sparse
         items.push({ id: `b-${r}-${c}`, defKey: pick(BUSH_KEYS, c, r, 99), x: cx + jx, z: cz + jz })
-      } else if (v < 0.10) {
-        // Grass tuft
+      } else if (v < 0.30 && isGrassTile) {
+        // Grass tuft — only on grass-coloured floor tiles
         items.push({ id: `g-${r}-${c}`, defKey: pick(GRASS_KEYS, c, r, 77), x: cx + jx, z: cz + jz })
       } else if (v < 0.14) {
         // Flower

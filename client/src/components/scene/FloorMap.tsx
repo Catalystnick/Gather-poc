@@ -1,5 +1,5 @@
+import { useRef, useMemo, useEffect } from 'react'
 import { useTexture } from '@react-three/drei'
-import { useMemo } from 'react'
 import * as THREE from 'three'
 
 const TILE_SIZE = 1
@@ -22,19 +22,66 @@ function buildMap(): number[][] {
   return Array.from({ length: ROWS }, (_, r) =>
     Array.from({ length: COLS }, (_, c) => {
       const v = hash(c, r)
-      if (v < 0.05) return GRASS
-      if (v < 0.08) return GRASSV
+      if (v < 0.15) return GRASS
+      if (v < 0.25) return GRASSV
       if (v < 0.18) return DIRTV
       return DIRT
     })
   )
 }
 
-const MAP = buildMap()
+export const MAP = buildMap()
+export const GRASS_IDS = new Set([GRASS, GRASSV])
 const UNIQUE_IDS = [...new Set(MAP.flat())]
+
+// Pre-compute per-tile-type positions once at module load.
+// Each entry is [worldX, worldZ] for one instance of that tile type.
+const offsetX = -(COLS * TILE_SIZE) / 2
+const offsetZ = -(ROWS * TILE_SIZE) / 2
+
+const TILE_GROUPS: Record<number, Array<[number, number]>> = {}
+for (const id of UNIQUE_IDS) TILE_GROUPS[id] = []
+MAP.forEach((row, r) =>
+  row.forEach((id, c) => {
+    TILE_GROUPS[id].push([
+      offsetX + c * TILE_SIZE + TILE_SIZE / 2,
+      offsetZ + r * TILE_SIZE + TILE_SIZE / 2,
+    ])
+  })
+)
 
 function tilePath(id: number): string {
   return `/floor map/1 Tiles/FieldsTile_${String(id).padStart(2, '0')}.png`
+}
+
+// Reusable dummy for matrix computation — never rendered.
+const _dummy = new THREE.Object3D()
+_dummy.rotation.x = -Math.PI / 2
+
+interface TileLayerProps {
+  positions: Array<[number, number]>
+  texture: THREE.Texture
+}
+
+function TileLayer({ positions, texture }: TileLayerProps) {
+  const ref = useRef<THREE.InstancedMesh>(null)
+
+  useEffect(() => {
+    if (!ref.current) return
+    positions.forEach(([x, z], i) => {
+      _dummy.position.set(x, 0, z)
+      _dummy.updateMatrix()
+      ref.current!.setMatrixAt(i, _dummy.matrix)
+    })
+    ref.current.instanceMatrix.needsUpdate = true
+  }, [positions])
+
+  return (
+    <instancedMesh ref={ref} args={[undefined, undefined, positions.length]} frustumCulled={false}>
+      <planeGeometry args={[TILE_SIZE, TILE_SIZE]} />
+      <meshBasicMaterial map={texture} />
+    </instancedMesh>
+  )
 }
 
 export default function FloorMap() {
@@ -54,27 +101,15 @@ export default function FloorMap() {
     })
   }, [textures])
 
-  const offsetX = -(COLS * TILE_SIZE) / 2
-  const offsetZ = -(ROWS * TILE_SIZE) / 2
-
   return (
     <group>
-      {MAP.map((row, r) =>
-        row.map((id, c) => (
-          <mesh
-            key={`${r}-${c}`}
-            position={[
-              offsetX + c * TILE_SIZE + TILE_SIZE / 2,
-              0,
-              offsetZ + r * TILE_SIZE + TILE_SIZE / 2,
-            ]}
-            rotation={[-Math.PI / 2, 0, 0]}
-          >
-            <planeGeometry args={[TILE_SIZE, TILE_SIZE]} />
-            <meshBasicMaterial map={textures[String(id)]} />
-          </mesh>
-        ))
-      )}
+      {UNIQUE_IDS.map(id => (
+        <TileLayer
+          key={id}
+          positions={TILE_GROUPS[id]}
+          texture={textures[String(id)]}
+        />
+      ))}
     </group>
   )
 }

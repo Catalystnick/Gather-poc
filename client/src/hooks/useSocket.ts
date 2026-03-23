@@ -10,6 +10,7 @@ const SERVER_URL = import.meta.env.VITE_SERVER_URL || undefined
 export function useSocket(player: Player) {
   const [socket, setSocket] = useState<Socket | null>(null)
   const [remotePlayers, setRemotePlayers] = useState<Map<string, RemotePlayer>>(new Map())
+  const [spawnPosition, setSpawnPosition] = useState<{ x: number; y: number; z: number } | null>(null)
 
   // Keep a stable ref to the latest player data so the connect handler
   // always sends the current name/avatar without triggering a reconnect.
@@ -24,7 +25,9 @@ export function useSocket(player: Player) {
     setSocket(s)
 
     s.on('connect', () => {
-      s.emit('player:join', { name: playerRef.current.name, avatar: playerRef.current.avatar })
+      s.emit('player:join', { name: playerRef.current.name, avatar: playerRef.current.avatar }, ({ position }: { position: { x: number; y: number; z: number } }) => {
+        setSpawnPosition(position)
+      })
     })
 
     s.on('room:state', (players: RemotePlayer[]) => {
@@ -64,5 +67,5 @@ export function useSocket(player: Player) {
     socketRef.current?.emit('player:move', state)
   }, [])
 
-  return { socket, remotePlayers, emitMove }
+  return { socket, remotePlayers, emitMove, spawnPosition }
 }

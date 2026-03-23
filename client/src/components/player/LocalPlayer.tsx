@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useRef, useLayoutEffect } from "react";
 import { useFrame } from "@react-three/fiber";
 import { useKeyboardControls } from "@react-three/drei";
 import type { Group } from "three";
@@ -13,15 +13,22 @@ interface Props {
   player: Player;
   onMove: (state: { x: number; y: number; z: number; direction: Direction; moving: boolean }) => void;
   positionRef: React.MutableRefObject<{ x: number; y: number; z: number }>;
+  spawnPosition?: { x: number; y: number; z: number };
   isSpeaking?: boolean;
 }
 
-export default function LocalPlayer({ player, onMove, positionRef, isSpeaking }: Props) {
+export default function LocalPlayer({ player, onMove, positionRef, spawnPosition, isSpeaking }: Props) {
   const ref          = useRef<Group>(null);
   const lastEmit     = useRef(0);
   const directionRef = useRef<Direction>('down');
   const isMovingRef  = useRef(false);
   const [, getKeys]  = useKeyboardControls();
+
+  useLayoutEffect(() => {
+    if (ref.current && spawnPosition) {
+      ref.current.position.set(spawnPosition.x, spawnPosition.y, spawnPosition.z)
+    }
+  }, [])
 
   useFrame((_, delta) => {
     if (!ref.current) return;
@@ -57,7 +64,7 @@ export default function LocalPlayer({ player, onMove, positionRef, isSpeaking }:
   });
 
   return (
-    <group ref={ref} position={[0, 0.5, 0]}>
+    <group ref={ref}>
       <AvatarMesh avatar={player.avatar} directionRef={directionRef} isMovingRef={isMovingRef} />
       <PlayerLabel name={player.name} />
       <StatusRing speaking={isSpeaking} />

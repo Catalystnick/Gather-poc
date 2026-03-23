@@ -176,8 +176,7 @@ export function useLiveKitVoice(
   const [peerConnectionStates, setPeerConnectionStates] = useState<Record<string, string>>({});
   const [remoteGain, setRemoteGain] = useState(loadRemoteGain());
   const [micGain, setMicGainState] = useState(loadMicGain());
-  const [rolloff, setRolloffState] = useState(loadRolloff());
-  const [agcEnabled, setAgcEnabledState] = useState<boolean>(DEFAULT_AGC_ENABLED);
+  const [rolloff] = useState(loadRolloff());
   const [echoCancelEnabled, setEchoCancelEnabledState] = useState(true);
   const [headphonePrompt, setHeadphonePrompt] = useState<string | null>(null);
   const [audioBlocked, setAudioBlocked] = useState(false);
@@ -761,19 +760,6 @@ export function useLiveKitVoice(
     }
   }
 
-  async function toggleAgc() {
-    const next = !agcEnabled;
-    setAgcEnabledState(next);
-    const track = rawMicStream.current?.getAudioTracks()[0];
-    if (track) {
-      try {
-        await track.applyConstraints({ autoGainControl: next });
-      } catch {
-        /* ignore */
-      }
-    }
-  }
-
   function confirmHeadphones(accept: boolean) {
     setHeadphonePrompt(null);
     if (accept) {
@@ -800,16 +786,6 @@ export function useLiveKitVoice(
     }
   }
 
-  function updateRolloff(value: number) {
-    const next = Math.max(0.1, value);
-    setRolloffState(next);
-    try {
-      localStorage.setItem(ROLLOFF_STORAGE_KEY, String(next));
-    } catch {
-      /* ignore */
-    }
-  }
-
   function updateMicGain(value: number) {
     const next = Math.max(0, value);
     setMicGainState(next);
@@ -832,10 +808,6 @@ export function useLiveKitVoice(
     setRemoteGain: updateRemoteGain,
     micGain,
     setMicGain: updateMicGain,
-    rolloff,
-    setRolloff: updateRolloff,
-    agcEnabled,
-    toggleAgc,
     echoCancelEnabled,
     toggleEchoCancel,
     headphonePrompt,
