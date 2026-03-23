@@ -2,8 +2,6 @@ import { useCallback, useEffect, useState } from 'react'
 import type { Socket } from 'socket.io-client'
 import type { ChatMessage } from '../types'
 
-export type { ChatMessage } from '../types'
-
 const MAX_MESSAGES = 200
 
 export function useChat(socket: Socket | null) {

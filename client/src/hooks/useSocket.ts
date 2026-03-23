@@ -1,13 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { io, type Socket } from 'socket.io-client'
-import type { Player, RemotePlayer } from '../types'
+import type { Player } from '../types'
 
 // VITE_SERVER_URL overrides for deployed builds (e.g. Netlify → Render/Railway server).
 // Otherwise connect to current origin — Vite proxies /socket.io to the backend,
 // avoiding mixed-content errors when the page is served over HTTPS.
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || undefined
-
-export type { RemotePlayer } from '../types'
 
 export function useSocket(player: Player) {
   const [socket, setSocket] = useState<Socket | null>(null)
