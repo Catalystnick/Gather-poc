@@ -1,4 +1,4 @@
-import { Suspense, useRef } from 'react'
+import { Suspense, useMemo, useRef } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { Grid, Environment, KeyboardControls } from '@react-three/drei'
 import LocalPlayer from './LocalPlayer'
@@ -10,6 +10,7 @@ import CameraRig from './CameraRig'
 import { useSocket } from '../hooks/useSocket'
 import { useChat } from '../hooks/useChat'
 import { useLiveKitVoice } from '../hooks/useLiveKitVoice'
+import { VoiceProvider } from '../contexts/VoiceContext'
 import type { Player } from '../types'
 
 const keyMap = [
@@ -28,31 +29,22 @@ export default function World({ player }: Props) {
 
   const { socket, remotePlayers, emitMove } = useSocket(player)
   const { messages, bubbles, sendMessage } = useChat(socket)
-  const {
-    muted,
-    toggleMute,
-    isLocalSpeaking,
-    speakingPeers,
-    connectedPeers,
-    peerConnectionStates,
-    remoteGain,
-    setRemoteGain,
-    micGain,
-    setMicGain,
-    rolloff,
-    setRolloff,
-    agcEnabled,
-    toggleAgc,
-    echoCancelEnabled,
-    toggleEchoCancel,
-    headphonePrompt,
-    confirmHeadphones,
-    audioBlocked,
-    audioInterrupted,
-  } = useLiveKitVoice(socket, player.name, localPositionRef, remotePlayers)
+  const voice = useLiveKitVoice(socket, player.name, localPositionRef, remotePlayers)
+
+  // Derive connection rows once per render rather than inline in JSX.
+  const connectionRows = useMemo(
+    () => Array.from(remotePlayers.values()).map(p => ({
+      id: p.id,
+      name: p.name,
+      connected: voice.connectedPeers.has(p.id),
+      speaking: voice.speakingPeers.has(p.id),
+      state: voice.peerConnectionStates[p.id] ?? (voice.connectedPeers.has(p.id) ? 'connected' : 'idle'),
+    })),
+    [remotePlayers, voice.connectedPeers, voice.speakingPeers, voice.peerConnectionStates],
+  )
 
   return (
-    <>
+    <VoiceProvider value={voice}>
       <KeyboardControls map={keyMap}>
         <Canvas orthographic style={{ cursor: 'grab' }}>
           <Suspense fallback={null}>
@@ -66,51 +58,28 @@ export default function World({ player }: Props) {
               sectionThickness={1}
               fadeDistance={50}
             />
-            <LocalPlayer player={player} onMove={emitMove} positionRef={localPositionRef} isSpeaking={isLocalSpeaking} />
+            <LocalPlayer
+              player={player}
+              onMove={emitMove}
+              positionRef={localPositionRef}
+              isSpeaking={voice.isLocalSpeaking}
+            />
             {Array.from(remotePlayers.values()).map(p => (
               <RemotePlayer
                 key={p.id}
                 {...p}
                 bubble={bubbles.get(p.id)}
-                inRange={connectedPeers.has(p.id)}
-                isSpeaking={speakingPeers.has(p.id)}
+                inRange={voice.connectedPeers.has(p.id)}
+                isSpeaking={voice.speakingPeers.has(p.id)}
               />
             ))}
           </Suspense>
         </Canvas>
       </KeyboardControls>
 
-      <ChatPanel
-        messages={messages}
-        onSend={text => socket && sendMessage(socket, text)}
-      />
-      <VoiceControls
-        muted={muted}
-        onToggle={toggleMute}
-        remoteGain={remoteGain}
-        onGainChange={setRemoteGain}
-        micGain={micGain}
-        onMicGainChange={setMicGain}
-        rolloff={rolloff}
-        onRolloffChange={setRolloff}
-        agcEnabled={agcEnabled}
-        onAgcToggle={toggleAgc}
-        echoCancelEnabled={echoCancelEnabled}
-        onEchoCancelToggle={toggleEchoCancel}
-        headphonePrompt={headphonePrompt}
-        onHeadphonesConfirm={confirmHeadphones}
-        audioBlocked={audioBlocked}
-        audioInterrupted={audioInterrupted}
-      />
-      <VoiceConnectionsPanel
-        rows={Array.from(remotePlayers.values()).map((player) => ({
-          id: player.id,
-          name: player.name,
-          connected: connectedPeers.has(player.id),
-          speaking: speakingPeers.has(player.id),
-          state: peerConnectionStates[player.id] ?? (connectedPeers.has(player.id) ? 'connected' : 'idle'),
-        }))}
-      />
-    </>
+      <ChatPanel messages={messages} onSend={sendMessage} />
+      <VoiceControls />
+      <VoiceConnectionsPanel rows={connectionRows} />
+    </VoiceProvider>
   )
 }

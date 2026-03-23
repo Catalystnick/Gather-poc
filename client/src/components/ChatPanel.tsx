@@ -1,6 +1,5 @@
-// Phase 2 — fixed 2D chat overlay in the bottom-left corner
-
 import { useState, useRef, useEffect } from 'react'
+import HUDPanel from './HUDPanel'
 import type { ChatMessage } from '../types'
 
 interface Props {
@@ -26,7 +25,7 @@ export default function ChatPanel({ messages, onSend }: Props) {
   }
 
   return (
-    <div style={styles.panel}>
+    <HUDPanel style={styles.position}>
       <div ref={logRef} style={styles.log}>
         {messages.map((m) => (
           <div key={`${m.id}-${m.timestamp}`} style={styles.message}>
@@ -45,17 +44,17 @@ export default function ChatPanel({ messages, onSend }: Props) {
         />
         <button style={styles.btn} onClick={handleSend}>Send</button>
       </div>
-    </div>
+    </HUDPanel>
   )
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  panel: {
-    position: 'fixed', bottom: 20, left: 20,
-    width: 280, background: 'rgba(0,0,0,0.7)',
-    borderRadius: 10, overflow: 'hidden',
-    display: 'flex', flexDirection: 'column',
-    border: '1px solid #333',
+  position: {
+    bottom: 20,
+    left: 20,
+    overflow: 'hidden',
+    display: 'flex',
+    flexDirection: 'column',
   },
   log: {
     padding: '8px 10px', maxHeight: 180, overflowY: 'auto',

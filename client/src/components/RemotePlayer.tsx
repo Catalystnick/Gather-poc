@@ -1,9 +1,10 @@
-import { useRef } from "react";
+import { memo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
-import { Text } from "@react-three/drei";
 import { Vector3, type Group } from "three";
 import AvatarMesh from "./AvatarMesh";
 import ChatBubble from "./ChatBubble";
+import PlayerLabel from "./PlayerLabel";
+import StatusRing from "./StatusRing";
 import type { Avatar, Direction } from "../types";
 
 interface Props {
@@ -18,7 +19,7 @@ interface Props {
 
 const target = new Vector3();
 
-export default function RemotePlayer({ name, avatar, position, bubble, inRange, isSpeaking }: Props) {
+function RemotePlayer({ name, avatar, position, bubble, inRange, isSpeaking }: Props) {
   const ref          = useRef<Group>(null);
   const directionRef = useRef<Direction>('down');
   const isMovingRef  = useRef(false);
@@ -49,34 +50,11 @@ export default function RemotePlayer({ name, avatar, position, bubble, inRange, 
   return (
     <group ref={ref} position={[position.x, position.y, position.z]}>
       <AvatarMesh avatar={avatar} directionRef={directionRef} isMovingRef={isMovingRef} />
-
-      {inRange && !isSpeaking && (
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.48, 0]}>
-          <ringGeometry args={[0.58, 0.72, 32]} />
-          <meshBasicMaterial color="#3498db" transparent opacity={0.5} />
-        </mesh>
-      )}
-      {isSpeaking && (
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.48, 0]}>
-          <ringGeometry args={[0.58, 0.72, 32]} />
-          <meshBasicMaterial color="#2ecc71" transparent opacity={0.8} />
-        </mesh>
-      )}
-
-      <Text
-        position={[0, 0.5, -1.6]}
-        rotation={[-Math.PI / 2, 0, 0]}
-        fontSize={0.3}
-        color="#ffffff"
-        anchorX="center"
-        anchorY="middle"
-        outlineWidth={0.03}
-        outlineColor="#000000"
-      >
-        {name}
-      </Text>
-
+      <StatusRing speaking={isSpeaking} inRange={inRange} />
+      <PlayerLabel name={name} />
       {bubble && <ChatBubble text={bubble} />}
     </group>
   );
 }
+
+export default memo(RemotePlayer)

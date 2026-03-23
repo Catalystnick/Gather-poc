@@ -1,7 +1,6 @@
 import { useState } from "react";
+import ColorPicker from "./ColorPicker";
 import type { Player } from "../types";
-
-const COLORS = ["#e74c3c", "#e67e22", "#f1c40f", "#2ecc71", "#1abc9c", "#3498db", "#9b59b6", "#ecf0f1"];
 
 /** Preview sprite display size (px). */
 const SPRITE_DISPLAY = 140;
@@ -106,21 +105,7 @@ export default function AvatarSelect({ initial, onJoin }: Props) {
           <div style={styles.rightCol}>
             <div>
               <p style={styles.label}>Shirt Colour</p>
-              <div style={styles.colorGrid}>
-                {COLORS.map((c) => (
-                  <button
-                    key={c}
-                    type="button"
-                    onClick={() => setShirt(c)}
-                    style={{
-                      ...styles.swatch,
-                      background: c,
-                      boxShadow: shirt === c ? `0 0 0 2px #1a1a1a, 0 0 0 4px ${c}` : "none",
-                      transform: shirt === c ? "scale(1.08)" : "scale(1)",
-                    }}
-                  />
-                ))}
-              </div>
+              <ColorPicker value={shirt} onChange={setShirt} />
             </div>
 
             <button
@@ -213,19 +198,6 @@ const styles: Record<string, React.CSSProperties> = {
     outline: "none",
     width: "100%",
     boxSizing: "border-box",
-  },
-
-  colorGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(4, 1fr)",
-    gap: 8,
-  },
-  swatch: {
-    aspectRatio: "1",
-    borderRadius: 8,
-    border: "none",
-    cursor: "pointer",
-    transition: "transform 0.1s, box-shadow 0.1s",
   },
 
   joinBtn: {

@@ -25,16 +25,24 @@ const tokenLimiter = rateLimit({
 })
 
 // LiveKit token endpoint — requires LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET
-const LIVEKIT_URL = process.env.LIVEKIT_URL || 'ws://localhost:7880'
+const LIVEKIT_URL = process.env.LIVEKIT_URL
 const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || ''
 const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || ''
+const ALLOWED_ROOM = 'gather-world'
+
+if (!LIVEKIT_URL) {
+  console.error('[livekit] LIVEKIT_URL is not set. Voice will not function.')
+}
 
 app.post('/livekit/token', tokenLimiter, async (req, res) => {
-  const { roomName = 'gather-world', identity, name } = req.body || {}
+  const { roomName, identity, name } = req.body || {}
   if (!identity || typeof identity !== 'string') {
     return res.status(400).json({ error: 'identity required' })
   }
-  if (!LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
+  if (roomName !== ALLOWED_ROOM) {
+    return res.status(400).json({ error: 'invalid room' })
+  }
+  if (!LIVEKIT_URL || !LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
     return res.status(500).json({ error: 'LiveKit not configured' })
   }
   try {
