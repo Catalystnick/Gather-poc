@@ -16,6 +16,8 @@ export interface RemotePlayer {
   name: string
   avatar: Avatar
   position: { x: number; y: number; z: number }
+  direction: Direction
+  moving: boolean
 }
 
 export interface ChatMessage {

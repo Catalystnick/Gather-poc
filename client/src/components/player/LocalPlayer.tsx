@@ -11,7 +11,7 @@ const SPEED = 5;
 
 interface Props {
   player: Player;
-  onMove: (position: { x: number; y: number; z: number }) => void;
+  onMove: (state: { x: number; y: number; z: number; direction: Direction; moving: boolean }) => void;
   positionRef: React.MutableRefObject<{ x: number; y: number; z: number }>;
   isSpeaking?: boolean;
 }
@@ -52,7 +52,7 @@ export default function LocalPlayer({ player, onMove, positionRef, isSpeaking }:
     const now = performance.now();
     if (now - lastEmit.current > 50) {
       lastEmit.current = now;
-      onMove({ x, y, z });
+      onMove({ x, y, z, direction: directionRef.current, moving: isMovingRef.current });
     }
   });
 

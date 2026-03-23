@@ -80,6 +80,9 @@ const isValidPosition = (p) =>
   Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z) &&
   Math.abs(p.x) <= 10000 && Math.abs(p.y) <= 10000 && Math.abs(p.z) <= 10000
 
+const VALID_DIRECTIONS = new Set(['down', 'up', 'left', 'right'])
+const isValidDirection = (d) => typeof d === 'string' && VALID_DIRECTIONS.has(d)
+
 // In-memory room state
 // { [socketId]: { id, name, avatar: { shirt }, x, y, z } }
 const players = {}
@@ -93,28 +96,31 @@ io.on('connection', (socket) => {
       console.warn(`[join] invalid payload from ${socket.id}`)
       return
     }
-    players[socket.id] = { id: socket.id, name: trimmed, avatar, x: 0, y: 0.5, z: 0 }
+    players[socket.id] = { id: socket.id, name: trimmed, avatar, x: 0, y: 0.5, z: 0, direction: 'down', moving: false }
 
     const others = Object.values(players)
       .filter(p => p.id !== socket.id)
-      .map(({ id, name, avatar, x, y, z }) => ({ id, name, avatar, position: { x, y, z } }))
+      .map(({ id, name, avatar, x, y, z, direction, moving }) => ({ id, name, avatar, position: { x, y, z }, direction, moving }))
     socket.emit('room:state', others)
 
-    const { id, x, y, z } = players[socket.id]
+    const { id, x, y, z, direction, moving } = players[socket.id]
     socket.broadcast.emit('player:joined', {
-      id, name, avatar, position: { x, y, z }
+      id, name, avatar, position: { x, y, z }, direction, moving
     })
 
     console.log(`[join] ${name} (${socket.id})`)
   })
 
-  socket.on('player:move', ({ x, y, z }) => {
+  socket.on('player:move', ({ x, y, z, direction, moving }) => {
     const player = players[socket.id]
     if (!player || !isValidPosition({ x, y, z })) return
+    if (!isValidDirection(direction) || typeof moving !== 'boolean') return
     player.x = x
     player.y = y
     player.z = z
-    socket.broadcast.emit('player:updated', { id: socket.id, position: { x, y, z } })
+    player.direction = direction
+    player.moving = moving
+    socket.broadcast.emit('player:updated', { id: socket.id, position: { x, y, z }, direction, moving })
   })
 
   // --- Chat (Phase 2) ---

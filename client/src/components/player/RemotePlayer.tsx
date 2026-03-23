@@ -12,56 +12,39 @@ interface Props {
   name: string;
   avatar: Avatar;
   position: { x: number; y: number; z: number };
+  direction: Direction;
+  moving: boolean;
   bubble?: string;
   inRange?: boolean;
   isSpeaking?: boolean;
 }
 
-function RemotePlayer({ name, avatar, position, bubble, inRange, isSpeaking }: Props) {
-  const ref          = useRef<Group>(null);
-  const directionRef = useRef<Direction>('down');
-  const isMovingRef  = useRef(false);
+function RemotePlayer({ name, avatar, position, direction, moving, bubble, inRange, isSpeaking }: Props) {
+  const ref = useRef<Group>(null);
 
-  // Always holds the latest server position without stale-closure risk.
-  // Updated in the render body so useFrame always reads the current target.
+  // Animation state driven directly by the sender — no delta inference.
+  const directionRef = useRef<Direction>(direction);
+  const isMovingRef  = useRef(moving);
+  directionRef.current = direction;
+  isMovingRef.current  = moving;
+
+  // Latest server position via ref so useFrame never has a stale closure.
   const positionRef = useRef(position);
   positionRef.current = position;
 
-  // Per-instance target vector — avoids the shared module-level singleton bug
-  // that corrupts movement when multiple RemotePlayer instances are alive.
   const targetRef = useRef(new Vector3());
 
-  // Set the group's initial position synchronously before the first frame so
-  // the lerp has a correct starting point.
+  // Initialise group position before the first frame.
   useLayoutEffect(() => {
     ref.current?.position.set(position.x, position.y, position.z);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Only lerp position — animation state comes straight from the server.
   useFrame(() => {
     if (!ref.current) return;
-
-    // Read from ref, not from the closure, so we always have the latest value
-    // regardless of whether memo suppressed the last re-render.
     const pos = positionRef.current;
-
-    const prevX = ref.current.position.x;
-    const prevZ = ref.current.position.z;
-
     targetRef.current.set(pos.x, pos.y, pos.z);
     ref.current.position.lerp(targetRef.current, 0.15);
-
-    const dx = ref.current.position.x - prevX;
-    const dz = ref.current.position.z - prevZ;
-    const moving = Math.abs(dx) + Math.abs(dz) > 0.001;
-
-    isMovingRef.current = moving;
-    if (moving) {
-      if (Math.abs(dx) >= Math.abs(dz)) {
-        directionRef.current = dx > 0 ? 'right' : 'left';
-      } else {
-        directionRef.current = dz > 0 ? 'down' : 'up';
-      }
-    }
   });
 
   // No `position` prop on <group> — if we pass it, R3F's reconciler calls

@@ -35,11 +35,11 @@ export function useSocket(player: Player) {
       setRemotePlayers(prev => new Map(prev).set(p.id, p))
     })
 
-    s.on('player:updated', ({ id, position }: { id: string; position: RemotePlayer['position'] }) => {
+    s.on('player:updated', ({ id, position, direction, moving }: Pick<RemotePlayer, 'direction' | 'moving'> & { id: string; position: RemotePlayer['position'] }) => {
       setRemotePlayers(prev => {
         const next = new Map(prev)
         const p = next.get(id)
-        if (p) next.set(id, { ...p, position })
+        if (p) next.set(id, { ...p, position, direction, moving })
         return next
       })
     })
@@ -60,8 +60,8 @@ export function useSocket(player: Player) {
 
   // Stable function reference — reads socket from ref, so LocalPlayer's
   // useFrame closure always calls the current socket without a prop re-capture.
-  const emitMove = useCallback((position: { x: number; y: number; z: number }) => {
-    socketRef.current?.emit('player:move', position)
+  const emitMove = useCallback((state: { x: number; y: number; z: number; direction: string; moving: boolean }) => {
+    socketRef.current?.emit('player:move', state)
   }, [])
 
   return { socket, remotePlayers, emitMove }
