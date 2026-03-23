@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import AvatarSelect from './components/AvatarSelect'
-import World from './components/World'
+import AvatarSelect from './components/ui/AvatarSelect'
+import World from './components/scene/World'
 import type { Player } from './types'
 
 export type { Avatar, Player } from './types'
