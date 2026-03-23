@@ -50,7 +50,7 @@ export default function LocalPlayer({ player, onMove, positionRef, isSpeaking }:
     positionRef.current = { x, y, z };
 
     const now = performance.now();
-    if (now - lastEmit.current > 50) {
+    if (now - lastEmit.current > 100) {
       lastEmit.current = now;
       onMove({ x, y, z, direction: directionRef.current, moving: isMovingRef.current });
     }
