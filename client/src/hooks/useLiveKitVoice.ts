@@ -9,6 +9,7 @@ import {
   Room,
   RoomEvent,
   Track,
+  AudioPresets,
   type RemoteParticipant,
   type RemoteTrackPublication,
   type RemoteAudioTrack,
@@ -85,6 +86,7 @@ interface RemoteEntry {
   participant: RemoteParticipant;
   track: RemoteAudioTrack;
   audio: HTMLAudioElement;
+  gainNode: GainNode;
   analyser: AnalyserNode | null;
   analyserSource: MediaStreamAudioSourceNode | null;
 }
@@ -210,6 +212,8 @@ export function useLiveKitVoice(
   micGainRef.current = micGain;
   const mutedRef = useRef(muted);
   mutedRef.current = muted;
+  const playerNameRef = useRef(playerName);
+  playerNameRef.current = playerName;
   const micDuckedRef = useRef(false);
 
   function applyEffectiveMicGain(baseGain: number, shouldDuck: boolean) {
@@ -409,6 +413,7 @@ export function useLiveKitVoice(
       const entry = remoteEntries.current.get(participantIdentity);
       if (!entry) return;
       if (entry.analyserSource) entry.analyserSource.disconnect();
+      entry.gainNode.disconnect();
       entry.track.detach().forEach((el) => el.remove());
       entry.audio.remove();
       remoteEntries.current.delete(participantIdentity);
@@ -427,7 +432,7 @@ export function useLiveKitVoice(
           body: JSON.stringify({
             roomName: ROOM_NAME,
             identity,
-            name: playerName || identity,
+            name: playerNameRef.current || identity,
           }),
         });
         if (!res.ok) {
@@ -467,12 +472,18 @@ export function useLiveKitVoice(
           audio.setAttribute("playsinline", "true");
           audio.style.display = "none"; // In DOM so Chromium plays; hidden
           document.body.appendChild(audio);
-          audioTrack.setVolume(MIN_GAIN_FLOOR);
+          // GainNode handles all volume including >1.0 amplification for mobile;
+          // setVolume(1) so LiveKit doesn't double-attenuate.
+          audioTrack.setVolume(1);
+          const gainNode = ctx.createGain();
+          gainNode.gain.value = MIN_GAIN_FLOOR;
+          ctx.createMediaElementSource(audio).connect(gainNode).connect(ctx.destination);
 
           remoteEntries.current.set(participant.identity, {
             participant,
             track: audioTrack,
             audio,
+            gainNode,
             analyser: null,
             analyserSource: null,
           });
@@ -507,6 +518,14 @@ export function useLiveKitVoice(
           applyEffectiveMicGain(micGainRef.current, false);
           setConnectedPeers(new Set());
           setPeerConnectionStates({});
+        });
+
+        room.on(RoomEvent.Reconnecting, () => {
+          setRoomReady(false);
+        });
+
+        room.on(RoomEvent.Reconnected, () => {
+          setRoomReady(true);
         });
 
         const connectOpts: { autoSubscribe: boolean; rtcConfig?: RTCConfiguration } = {
@@ -555,6 +574,7 @@ export function useLiveKitVoice(
           await room.localParticipant.publishTrack(micTrack, {
             source: Track.Source.Microphone,
             name: "mic",
+            audioPreset: AudioPresets.musicStereo,
           });
         }
 
@@ -593,7 +613,7 @@ export function useLiveKitVoice(
       subscribedIdentities.current.clear();
       applyEffectiveMicGain(micGainRef.current, false);
     };
-  }, [socket?.id, isMicReady, playerName]);
+  }, [socket?.id, isMicReady]);
 
   // Proximity loop: subscribe/unsubscribe + distance gain + speaking
   useEffect(() => {
@@ -680,7 +700,7 @@ export function useLiveKitVoice(
           const normalized = Math.min(1, Math.max(0, dist / DISCONNECT_RANGE));
           const distanceFactor = 1 - normalized ** rolloffRef.current;
           const targetGain = Math.max(MIN_GAIN_FLOOR, distanceFactor * userGain);
-          entry.track.setVolume(Math.min(1, targetGain));
+          entry.gainNode.gain.setTargetAtTime(targetGain, ctx.currentTime, 0.05);
 
           // Use LiveKit's server-side isSpeaking — more reliable across Mac/PC than our RMS
           if (entry.participant.isSpeaking) nextSpeaking.add(id);

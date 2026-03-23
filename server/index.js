@@ -28,11 +28,19 @@ const tokenLimiter = rateLimit({
 const LIVEKIT_URL = process.env.LIVEKIT_URL || 'ws://localhost:7880'
 const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || ''
 const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || ''
+const ALLOWED_ROOM = 'gather-world'
+
+if (process.env.NODE_ENV === 'production' && LIVEKIT_URL.startsWith('ws://')) {
+  console.warn('[livekit] WARNING: LIVEKIT_URL uses unencrypted ws:// in production. Set LIVEKIT_URL to a wss:// address.')
+}
 
 app.post('/livekit/token', tokenLimiter, async (req, res) => {
-  const { roomName = 'gather-world', identity, name } = req.body || {}
+  const { roomName, identity, name } = req.body || {}
   if (!identity || typeof identity !== 'string') {
     return res.status(400).json({ error: 'identity required' })
+  }
+  if (roomName !== ALLOWED_ROOM) {
+    return res.status(400).json({ error: 'invalid room' })
   }
   if (!LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
     return res.status(500).json({ error: 'LiveKit not configured' })
