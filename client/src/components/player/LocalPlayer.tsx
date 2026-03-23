@@ -13,7 +13,7 @@ interface Props {
   player: Player;
   onMove: (state: { x: number; y: number; z: number; direction: Direction; moving: boolean }) => void;
   positionRef: React.MutableRefObject<{ x: number; y: number; z: number }>;
-  spawnPosition?: { x: number; y: number; z: number };
+  spawnPosition: { x: number; y: number; z: number };
   isSpeaking?: boolean;
 }
 

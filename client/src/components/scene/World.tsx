@@ -59,13 +59,15 @@ export default function World({ player }: Props) {
             <FloorMap />
             <Vegetation />
             <Campfire />
-            <LocalPlayer
-              player={player}
-              onMove={emitMove}
-              positionRef={localPositionRef}
-              spawnPosition={spawnPosition ?? undefined}
-              isSpeaking={voice.isLocalSpeaking}
-            />
+            {spawnPosition && (
+              <LocalPlayer
+                player={player}
+                onMove={emitMove}
+                positionRef={localPositionRef}
+                spawnPosition={spawnPosition}
+                isSpeaking={voice.isLocalSpeaking}
+              />
+            )}
             {Array.from(remotePlayers.values()).map(p => (
               <RemotePlayer
                 key={p.id}
