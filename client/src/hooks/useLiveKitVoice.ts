@@ -698,7 +698,7 @@ export function useLiveKitVoice(
           const userGain = remoteGainRef.current;
           const normalized = Math.min(1, Math.max(0, dist / DISCONNECT_RANGE));
           const distanceFactor = 1 - normalized ** rolloffRef.current;
-          const targetGain = Math.max(MIN_GAIN_FLOOR, distanceFactor * userGain);
+          const targetGain = distanceFactor * userGain;
           entry.gainNode.gain.setTargetAtTime(targetGain, ctx.currentTime, 0.05);
 
           // Use LiveKit's server-side isSpeaking — more reliable across Mac/PC than our RMS

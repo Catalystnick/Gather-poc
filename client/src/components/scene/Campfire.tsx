@@ -27,7 +27,7 @@ export default function Campfire() {
   const frame = useRef(0)
 
   useFrame((_, delta) => {
-    elapsed.current += delta
+    elapsed.current += Math.min(delta, 0.1)
     if (elapsed.current >= 1 / FPS) {
       elapsed.current -= 1 / FPS
       frame.current = (frame.current + 1) % FRAMES
