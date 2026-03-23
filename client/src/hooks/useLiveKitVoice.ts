@@ -86,7 +86,7 @@ interface RemoteEntry {
   participant: RemoteParticipant;
   track: RemoteAudioTrack;
   audio: HTMLAudioElement;
-  gainNode: GainNode;
+  gainNode: GainNode | null; // null on desktop — native <audio> volume preserves browser AEC reference
   analyser: AnalyserNode | null;
   analyserSource: MediaStreamAudioSourceNode | null;
 }
@@ -412,7 +412,7 @@ export function useLiveKitVoice(
       const entry = remoteEntries.current.get(participantIdentity);
       if (!entry) return;
       if (entry.analyserSource) entry.analyserSource.disconnect();
-      entry.gainNode.disconnect();
+      entry.gainNode?.disconnect();
       entry.track.detach().forEach((el) => el.remove());
       entry.audio.remove();
       remoteEntries.current.delete(participantIdentity);
@@ -471,12 +471,19 @@ export function useLiveKitVoice(
           audio.setAttribute("playsinline", "true");
           audio.style.display = "none"; // In DOM so Chromium plays; hidden
           document.body.appendChild(audio);
-          // GainNode handles all volume including >1.0 amplification for mobile;
-          // setVolume(1) so LiveKit doesn't double-attenuate.
           audioTrack.setVolume(1);
-          const gainNode = ctx.createGain();
-          gainNode.gain.value = MIN_GAIN_FLOOR;
-          ctx.createMediaElementSource(audio).connect(gainNode).connect(ctx.destination);
+
+          // Desktop: play natively via <audio> element so the browser's AEC keeps its
+          // output reference and can cancel speaker audio from the mic signal.
+          // Mobile: route through Web Audio for >1.0 gain amplification (native volume is capped at 1).
+          let gainNode: GainNode | null = null;
+          if (IS_MOBILE) {
+            gainNode = ctx.createGain();
+            gainNode.gain.value = MIN_GAIN_FLOOR;
+            ctx.createMediaElementSource(audio).connect(gainNode).connect(ctx.destination);
+          } else {
+            audio.volume = MIN_GAIN_FLOOR;
+          }
 
           remoteEntries.current.set(participant.identity, {
             participant,
@@ -699,7 +706,11 @@ export function useLiveKitVoice(
           const normalized = Math.min(1, Math.max(0, dist / DISCONNECT_RANGE));
           const distanceFactor = 1 - normalized ** rolloffRef.current;
           const targetGain = distanceFactor * userGain;
-          entry.gainNode.gain.setTargetAtTime(targetGain, ctx.currentTime, 0.05);
+          if (entry.gainNode) {
+            entry.gainNode.gain.setTargetAtTime(targetGain, ctx.currentTime, 0.05);
+          } else {
+            entry.audio.volume = Math.min(1, targetGain);
+          }
 
           // Use LiveKit's server-side isSpeaking — more reliable across Mac/PC than our RMS
           if (entry.participant.isSpeaking) nextSpeaking.add(id);
