@@ -67,9 +67,10 @@ class GainKrispProcessor {
     console.log("[Krisp] Pipeline ready: hardware → Krisp NC → gain node → published. processedTrack:", this.processedTrack);
   }
 
-  async enable(): Promise<void> {
+  async onPublish(room: Room): Promise<void> {
+    await this.krisp.onPublish(room);
     await this.krisp.setEnabled(true);
-    console.log("[Krisp] NC enabled.");
+    console.log("[Krisp] NC enabled via onPublish.");
   }
 
   async restart(opts: AudioProcessorOpts): Promise<void> {
@@ -607,10 +608,7 @@ export function useLiveKitVoice(
             await publication.track.setProcessor(
               processor as unknown as Parameters<typeof publication.track.setProcessor>[0],
             );
-            // setEnabled must be called after setProcessor resolves — Krisp rejects it if the
-            // track isn't fully published yet (called inside init() it fires too early).
-            await processor.enable();
-            console.log("[Krisp] Processor applied. processedTrack:", processor.processedTrack);
+            // onPublish is called by LiveKit after the republish completes — enabling happens there.
           } catch (err) {
             console.error("[Krisp] Failed to set processor:", err);
           }
