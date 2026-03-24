@@ -1,6 +1,6 @@
 // LiveKit-based proximity voice
 // Uses LiveKit room with selective subscription based on distance.
-// Mic processing: RNNoise (neural-net denoiser) → gain → stereoMerger (forced stereo) → publish.
+// Mic processing: getUserMedia (browser AEC/NS/AGC) → gain → publish → Krisp noise filter.
 
 import { useEffect, useRef, useState } from "react";
 import type { Socket } from "socket.io-client";
@@ -10,11 +10,12 @@ import {
   RoomEvent,
   Track,
   AudioPresets,
+  LocalAudioTrack,
   type RemoteParticipant,
   type RemoteTrackPublication,
   type RemoteAudioTrack,
 } from "livekit-client";
-import { NoiseSuppressorWorklet_Name } from "@timephy/rnnoise-wasm";
+import { KrispNoiseFilter, isKrispNoiseFilterSupported } from "@livekit/krisp-noise-filter";
 
 const CONNECT_RANGE = 7;
 const DISCONNECT_RANGE = 9;
@@ -269,17 +270,9 @@ export function useLiveKitVoice(
       return;
     }
 
-    const base = (import.meta as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? "/";
-    const workletUrl = new URL("NoiseSuppressorWorklet.js", window.location.origin + base).href;
-    const rnnoiseReady = ctx.audioWorklet
-      .addModule(workletUrl)
-      .then(() => true)
-      .catch((err) => { console.warn("[voice] RNNoise worklet failed to load:", err); return false; });
-
     navigator.mediaDevices
       .getUserMedia(AUDIO_CONSTRAINTS)
       .then(async (rawStream) => {
-        const rnnoiseAvailable = await rnnoiseReady;
         rawMicStream.current = rawStream;
 
         const gainNode = ctx.createGain();
@@ -289,19 +282,7 @@ export function useLiveKitVoice(
         const micSource = ctx.createMediaStreamSource(rawStream);
         micSourceRef.current = micSource;
         const micDest = ctx.createMediaStreamDestination();
-        const stereoMerger = ctx.createChannelMerger(2);
-        // Force stereo: RNNoise outputs mono — duplicate into both L and R channels.
-        gainNode.connect(stereoMerger, 0, 0);
-        gainNode.connect(stereoMerger, 0, 1);
-        stereoMerger.connect(micDest);
-
-        if (rnnoiseAvailable) {
-          const rnnoise1 = new AudioWorkletNode(ctx, NoiseSuppressorWorklet_Name);
-          const rnnoise2 = new AudioWorkletNode(ctx, NoiseSuppressorWorklet_Name);
-          micSource.connect(rnnoise1).connect(rnnoise2).connect(gainNode);
-        } else {
-          micSource.connect(gainNode);
-        }
+        micSource.connect(gainNode).connect(micDest);
         localStream.current = micDest.stream;
 
         if (IS_MOBILE && "setSinkId" in ctx) {
@@ -577,11 +558,15 @@ export function useLiveKitVoice(
         }
         const micTrack = localStream.current!.getAudioTracks()[0];
         if (micTrack) {
-          await room.localParticipant.publishTrack(micTrack, {
+          const publication = await room.localParticipant.publishTrack(micTrack, {
             source: Track.Source.Microphone,
             name: "mic",
             audioPreset: AudioPresets.musicStereo,
           });
+          if (isKrispNoiseFilterSupported() && publication.track instanceof LocalAudioTrack) {
+            const krisp = KrispNoiseFilter();
+            await publication.track.setProcessor(krisp);
+          }
         }
 
         // Subscribe to existing participants in range (will be updated by proximity loop)
