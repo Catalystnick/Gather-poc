@@ -17,6 +17,70 @@ import {
 } from "livekit-client";
 import { KrispNoiseFilter, isKrispNoiseFilterSupported } from "@livekit/krisp-noise-filter";
 
+// Krisp requires a real hardware MediaStreamTrack — publishing a MediaStreamDestination
+// output causes OverconstrainedError because synthetic tracks have no hardware capabilities
+// for applyConstraints(). This processor chains: hardware track → Krisp NC → gain node →
+// published, so both noise cancellation and mic gain control work correctly.
+type AudioProcessorOpts = {
+  kind: Track.Kind;
+  track: MediaStreamTrack;
+  audioContext: AudioContext;
+  element?: HTMLMediaElement;
+};
+
+class GainKrispProcessor {
+  readonly name = "gain-krisp";
+  processedTrack?: MediaStreamTrack;
+  private krisp: ReturnType<typeof KrispNoiseFilter>;
+  private gainNode: GainNode;
+  private micSourceNode: MediaStreamAudioSourceNode;
+  private destNode?: MediaStreamAudioDestinationNode;
+
+  constructor(gainNode: GainNode, micSourceNode: MediaStreamAudioSourceNode) {
+    this.krisp = KrispNoiseFilter();
+    this.gainNode = gainNode;
+    this.micSourceNode = micSourceNode;
+  }
+
+  async init(opts: AudioProcessorOpts): Promise<void> {
+    console.log("[Krisp] Initialising GainKrispProcessor with hardware track:", opts.track);
+    await this.krisp.init(opts as Parameters<typeof this.krisp.init>[0]);
+
+    const krispOut = this.krisp.processedTrack;
+    if (!krispOut) throw new Error("[GainKrispProcessor] Krisp did not produce a processedTrack after init");
+
+    const { audioContext } = opts;
+
+    // Disconnect raw mic source from gain node — Krisp output will drive it instead
+    try { this.micSourceNode.disconnect(this.gainNode); } catch { /* already disconnected */ }
+
+    // Chain: Krisp output → gain node → final published destination
+    this.destNode = audioContext.createMediaStreamDestination();
+    audioContext
+      .createMediaStreamSource(new MediaStream([krispOut]))
+      .connect(this.gainNode)
+      .connect(this.destNode);
+
+    this.processedTrack = this.destNode.stream.getAudioTracks()[0];
+    console.log("[Krisp] Pipeline ready: hardware → Krisp NC → gain node → published. processedTrack:", this.processedTrack);
+  }
+
+  async restart(opts: AudioProcessorOpts): Promise<void> {
+    console.log("[Krisp] Restarting processor with new track:", opts.track);
+    await this.destroy();
+    await this.init(opts);
+  }
+
+  async destroy(): Promise<void> {
+    await this.krisp.destroy();
+    // Restore original routing so the gain node is usable if the room reconnects
+    try { this.micSourceNode.connect(this.gainNode); } catch { /* ignore */ }
+    this.destNode = undefined;
+    this.processedTrack = undefined;
+    console.log("[Krisp] Processor destroyed, mic→gain routing restored.");
+  }
+}
+
 const CONNECT_RANGE = 7;
 const DISCONNECT_RANGE = 9;
 const SPEAKING_THRESHOLD = 35; // Raised from 20 — Mac mics often have higher noise floor
@@ -556,7 +620,10 @@ export function useLiveKitVoice(
           setAudioBlocked(true); // Show "Tap to enable" so user knows to interact
           await ctx.resume().catch(() => {});
         }
-        const micTrack = localStream.current!.getAudioTracks()[0];
+        // Publish the raw hardware track — Krisp requires a real getUserMedia track,
+        // not a MediaStreamDestination output, to satisfy applyConstraints() internally.
+        const micTrack = rawMicStream.current!.getAudioTracks()[0];
+        console.log("[Krisp] Publishing raw hardware track:", micTrack);
         if (micTrack) {
           const publication = await room.localParticipant.publishTrack(micTrack, {
             source: Track.Source.Microphone,
@@ -566,11 +633,10 @@ export function useLiveKitVoice(
           const krispSupported = isKrispNoiseFilterSupported();
           console.log("[Krisp] isKrispNoiseFilterSupported:", krispSupported);
           if (krispSupported && publication.track instanceof LocalAudioTrack) {
-            console.log("[Krisp] Applying noise filter to local mic track...");
-            const krisp = KrispNoiseFilter();
+            const processor = new GainKrispProcessor(micGainNode.current!, micSourceRef.current!);
             try {
-              await publication.track.setProcessor(krisp);
-              console.log("[Krisp] Noise filter applied successfully. Processor:", krisp);
+              await publication.track.setProcessor(processor as unknown as Parameters<typeof publication.track.setProcessor>[0]);
+              console.log("[Krisp] setProcessor complete. processedTrack:", processor.processedTrack);
             } catch (err) {
               console.error("[Krisp] Failed to set processor:", err);
             }
@@ -745,7 +811,7 @@ export function useLiveKitVoice(
     setMuted((prev) => {
       const next = !prev;
       mutedRef.current = next;
-      localStream.current?.getAudioTracks().forEach((t) => {
+      rawMicStream.current?.getAudioTracks().forEach((t) => {
         t.enabled = !next;
       });
       if (next) {
