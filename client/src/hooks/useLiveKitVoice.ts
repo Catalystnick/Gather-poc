@@ -49,14 +49,16 @@ class GainKrispProcessor {
     const krispOut = this.krisp.processedTrack;
     if (!krispOut) throw new Error("[GainKrispProcessor] Krisp did not produce a processedTrack after init");
 
-    const { audioContext } = opts;
+    // Use the gain node's own AudioContext — LiveKit supplies its own context in opts
+    // which is different from the main audioCtx, so mixing them causes InvalidAccessError.
+    const ctx = this.gainNode.context as AudioContext;
 
     // Disconnect raw mic source from gain node — Krisp output will drive it instead
     try { this.micSourceNode.disconnect(this.gainNode); } catch { /* already disconnected */ }
 
-    // Chain: Krisp output → gain node → final published destination
-    this.destNode = audioContext.createMediaStreamDestination();
-    audioContext
+    // Chain: Krisp output → gain node → final published destination (all in same context)
+    this.destNode = ctx.createMediaStreamDestination();
+    ctx
       .createMediaStreamSource(new MediaStream([krispOut]))
       .connect(this.gainNode)
       .connect(this.destNode);
