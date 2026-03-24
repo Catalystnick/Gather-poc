@@ -1,6 +1,6 @@
 // LiveKit-based proximity voice
 // Uses LiveKit room with selective subscription based on distance.
-// Mic processing: getUserMedia (browser AEC/NS/AGC) → gain → publish → Krisp noise filter.
+// Mic processing: getUserMedia (browser AEC/AGC, no NS) → publish raw track → Krisp NC → gain node → encoded.
 
 import { useEffect, useRef, useState } from "react";
 import type { Socket } from "socket.io-client";
@@ -64,6 +64,9 @@ class GainKrispProcessor {
       .connect(this.destNode);
 
     this.processedTrack = this.destNode.stream.getAudioTracks()[0];
+
+    // Must explicitly enable NC — Krisp is loaded but inactive until setEnabled(true) is called.
+    await this.krisp.setEnabled(true);
     console.log("[Krisp] Pipeline ready: hardware → Krisp NC → gain node → published. processedTrack:", this.processedTrack);
   }
 
@@ -137,8 +140,8 @@ function resolveIceServersForFirefox(): RTCIceServer[] {
 
 const AUDIO_CONSTRAINTS: MediaStreamConstraints = {
   audio: {
-    echoCancellation: true,
-    noiseSuppression: true,
+    echoCancellation: true,  // Keep — docs say AEC can stay on alongside Krisp
+    noiseSuppression: false, // Disable — Krisp NC is trained on raw audio; browser NS degrades its accuracy
     autoGainControl: DEFAULT_AGC_ENABLED,
   } as MediaTrackConstraints,
   video: false,
@@ -493,11 +496,9 @@ export function useLiveKitVoice(
           dynacast: false,
           singlePeerConnection: true, // Helps Firefox↔Chromium; some setups fail with dual PC
           webAudioMix: false, // Use HTMLAudioElement for playback — required for AEC, more reliable Firefox→Chromium
-          audioCaptureDefaults: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: DEFAULT_AGC_ENABLED,
-          },
+          // Note: audioCaptureDefaults only applies when LiveKit captures the mic via
+          // setMicrophoneEnabled(). We use manual getUserMedia so these are unused here.
+          // Browser AEC/NS/AGC are set directly in AUDIO_CONSTRAINTS instead.
         });
         (
           room as Room & {
@@ -581,6 +582,35 @@ export function useLiveKitVoice(
           setRoomReady(true);
         });
 
+        // Docs pattern: apply Krisp via LocalTrackPublished so it fires on initial publish
+        // AND on every reconnect (LiveKit auto-republishes the track on reconnect).
+        // Registering before connect() ensures we don't miss the initial publish event.
+        room.on(RoomEvent.LocalTrackPublished, async (publication) => {
+          if (
+            publication.source !== Track.Source.Microphone ||
+            !(publication.track instanceof LocalAudioTrack)
+          ) return;
+          const krispSupported = isKrispNoiseFilterSupported();
+          console.log("[Krisp] LocalTrackPublished — isKrispNoiseFilterSupported:", krispSupported);
+          if (!krispSupported) {
+            console.warn("[Krisp] Not supported in this environment (requires LiveKit Cloud).");
+            return;
+          }
+          if (!micGainNode.current || !micSourceRef.current) {
+            console.warn("[Krisp] Gain node or mic source not ready, skipping processor.");
+            return;
+          }
+          const processor = new GainKrispProcessor(micGainNode.current, micSourceRef.current);
+          try {
+            await publication.track.setProcessor(
+              processor as unknown as Parameters<typeof publication.track.setProcessor>[0],
+            );
+            console.log("[Krisp] Processor applied. processedTrack:", processor.processedTrack);
+          } catch (err) {
+            console.error("[Krisp] Failed to set processor:", err);
+          }
+        });
+
         const connectOpts: { autoSubscribe: boolean; rtcConfig?: RTCConfiguration } = {
           autoSubscribe: false,
         };
@@ -624,29 +654,18 @@ export function useLiveKitVoice(
         }
         // Publish the raw hardware track — Krisp requires a real getUserMedia track,
         // not a MediaStreamDestination output, to satisfy applyConstraints() internally.
+        // Publish the raw hardware track — Krisp requires a real getUserMedia track,
+        // not a MediaStreamDestination output, to satisfy applyConstraints() internally.
+        // Krisp processor is applied via RoomEvent.LocalTrackPublished (registered above),
+        // which also fires on reconnect so NC is never silently lost.
         const micTrack = rawMicStream.current!.getAudioTracks()[0];
         console.log("[Krisp] Publishing raw hardware track:", micTrack);
         if (micTrack) {
-          const publication = await room.localParticipant.publishTrack(micTrack, {
+          await room.localParticipant.publishTrack(micTrack, {
             source: Track.Source.Microphone,
             name: "mic",
             audioPreset: AudioPresets.musicStereo,
           });
-          const krispSupported = isKrispNoiseFilterSupported();
-          console.log("[Krisp] isKrispNoiseFilterSupported:", krispSupported);
-          if (krispSupported && publication.track instanceof LocalAudioTrack) {
-            const processor = new GainKrispProcessor(micGainNode.current!, micSourceRef.current!);
-            try {
-              await publication.track.setProcessor(processor as unknown as Parameters<typeof publication.track.setProcessor>[0]);
-              console.log("[Krisp] setProcessor complete. processedTrack:", processor.processedTrack);
-            } catch (err) {
-              console.error("[Krisp] Failed to set processor:", err);
-            }
-          } else if (!krispSupported) {
-            console.warn("[Krisp] Not supported in this environment (requires LiveKit Cloud).");
-          } else {
-            console.warn("[Krisp] Track is not a LocalAudioTrack, skipping. Track:", publication.track);
-          }
         }
 
         // Subscribe to existing participants in range (will be updated by proximity loop)
