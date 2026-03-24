@@ -5,16 +5,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Socket } from "socket.io-client";
 import type { RemotePlayer } from "../types";
-import {
-  Room,
-  RoomEvent,
-  Track,
-  AudioPresets,
-  LocalAudioTrack,
-  type RemoteParticipant,
-  type RemoteTrackPublication,
-  type RemoteAudioTrack,
-} from "livekit-client";
+import { Room, RoomEvent, Track, AudioPresets, LocalAudioTrack, type RemoteParticipant, type RemoteTrackPublication, type RemoteAudioTrack } from "livekit-client";
 import { KrispNoiseFilter, isKrispNoiseFilterSupported } from "@livekit/krisp-noise-filter";
 
 // Krisp requires a real hardware MediaStreamTrack — publishing a MediaStreamDestination
@@ -43,7 +34,6 @@ class GainKrispProcessor {
   }
 
   async init(opts: AudioProcessorOpts): Promise<void> {
-    console.log("[Krisp] Initialising GainKrispProcessor with hardware track:", opts.track);
     await this.krisp.init(opts as Parameters<typeof this.krisp.init>[0]);
 
     const krispOut = this.krisp.processedTrack;
@@ -54,7 +44,11 @@ class GainKrispProcessor {
     const ctx = this.gainNode.context as AudioContext;
 
     // Disconnect raw mic source from gain node — Krisp output will drive it instead
-    try { this.micSourceNode.disconnect(this.gainNode); } catch { /* already disconnected */ }
+    try {
+      this.micSourceNode.disconnect(this.gainNode);
+    } catch {
+      /* already disconnected */
+    }
 
     // Chain: Krisp output → gain node → final published destination (all in same context)
     this.destNode = ctx.createMediaStreamDestination();
@@ -64,17 +58,14 @@ class GainKrispProcessor {
       .connect(this.destNode);
 
     this.processedTrack = this.destNode.stream.getAudioTracks()[0];
-    console.log("[Krisp] Pipeline ready: hardware → Krisp NC → gain node → published. processedTrack:", this.processedTrack);
   }
 
   async onPublish(room: Room): Promise<void> {
     await this.krisp.onPublish(room);
     await this.krisp.setEnabled(true);
-    console.log("[Krisp] NC enabled via onPublish.");
   }
 
   async restart(opts: AudioProcessorOpts): Promise<void> {
-    console.log("[Krisp] Restarting processor with new track:", opts.track);
     await this.destroy();
     await this.init(opts);
   }
@@ -82,17 +73,20 @@ class GainKrispProcessor {
   async destroy(): Promise<void> {
     await this.krisp.destroy();
     // Restore original routing so the gain node is usable if the room reconnects
-    try { this.micSourceNode.connect(this.gainNode); } catch { /* ignore */ }
+    try {
+      this.micSourceNode.connect(this.gainNode);
+    } catch {
+      /* ignore */
+    }
     this.destNode = undefined;
     this.processedTrack = undefined;
-    console.log("[Krisp] Processor destroyed, mic→gain routing restored.");
   }
 }
 
 const CONNECT_RANGE = 7;
 const DISCONNECT_RANGE = 9;
 const SPEAKING_THRESHOLD = 35; // Raised from 20 — Mac mics often have higher noise floor
-const SPEAKING_HYSTERESIS_UP = 2;   // frames above threshold before showing green
+const SPEAKING_HYSTERESIS_UP = 2; // frames above threshold before showing green
 const SPEAKING_HYSTERESIS_DOWN = 5; // frames below threshold before hiding green
 const MIN_GAIN_FLOOR = 0.15;
 const MAX_ACTIVE_PEERS = 8;
@@ -107,12 +101,8 @@ const MIC_DUCK_ATTACK_TC = 0.02;
 const MIC_DUCK_RELEASE_TC = 0.14;
 const ROOM_NAME = "gather-world";
 
-const IS_MOBILE = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
-  typeof navigator !== "undefined" ? navigator.userAgent : "",
-);
-const IS_FIREFOX = /Firefox\//i.test(
-  typeof navigator !== "undefined" ? navigator.userAgent : "",
-);
+const IS_MOBILE = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(typeof navigator !== "undefined" ? navigator.userAgent : "");
+const IS_FIREFOX = /Firefox\//i.test(typeof navigator !== "undefined" ? navigator.userAgent : "");
 const DEFAULT_AGC_ENABLED = true;
 
 const DEFAULT_ICE_SERVERS: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
@@ -134,24 +124,19 @@ function resolveIceServersForFirefox(): RTCIceServer[] {
   if (turnUrl && turnUsername && turnCredential) {
     return [...DEFAULT_ICE_SERVERS, { urls: turnUrl, username: turnUsername, credential: turnCredential }];
   }
-  console.warn(
-    "[voice] Firefox detected. Firefox↔Chromium audio may fail without TURN. " +
-      "Set VITE_TURN_URL, VITE_TURN_USERNAME, VITE_TURN_CREDENTIAL (or VITE_ICE_SERVERS_JSON).",
-  );
   return DEFAULT_ICE_SERVERS;
 }
 
 const AUDIO_CONSTRAINTS: MediaStreamConstraints = {
   audio: {
-    echoCancellation: true,  // Keep — docs say AEC can stay on alongside Krisp
+    echoCancellation: true, // Keep — docs say AEC can stay on alongside Krisp
     noiseSuppression: false, // Disable — Krisp NC is trained on raw audio; browser NS degrades its accuracy
     autoGainControl: DEFAULT_AGC_ENABLED,
   } as MediaTrackConstraints,
   video: false,
 };
 
-const AudioContextCtor: typeof AudioContext =
-  window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+const AudioContextCtor: typeof AudioContext = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
 
 let audioSettingsMigrationChecked = false;
 
@@ -169,10 +154,7 @@ function getTokenUrl(): string {
   return `${base || window.location.origin}/livekit/token`;
 }
 
-function distance(
-  a: { x: number; y: number; z: number },
-  b: { x: number; y: number; z: number },
-) {
+function distance(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }) {
   return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2);
 }
 
@@ -236,12 +218,7 @@ function ensureAudioSettingsMigration() {
   }
 }
 
-export function useLiveKitVoice(
-  socket: Socket | null,
-  playerName: string,
-  localPositionRef: React.MutableRefObject<{ x: number; y: number; z: number }>,
-  remotePlayers: Map<string, RemotePlayer>,
-) {
+export function useLiveKitVoice(socket: Socket | null, playerName: string, localPositionRef: React.MutableRefObject<{ x: number; y: number; z: number }>, remotePlayers: Map<string, RemotePlayer>) {
   const [muted, setMuted] = useState(false);
   const [isLocalSpeaking, setIsLocalSpeaking] = useState(false);
   const [speakingPeers, setSpeakingPeers] = useState<Set<string>>(new Set());
@@ -294,11 +271,7 @@ export function useLiveKitVoice(
     if (!ctx || !gainNode) return;
     const effectiveBase = mutedRef.current ? 0 : baseGain;
     const targetGain = shouldDuck ? effectiveBase * MIC_DUCKING_FACTOR : effectiveBase;
-    gainNode.gain.setTargetAtTime(
-      targetGain,
-      ctx.currentTime,
-      shouldDuck ? MIC_DUCK_ATTACK_TC : MIC_DUCK_RELEASE_TC,
-    );
+    gainNode.gain.setTargetAtTime(targetGain, ctx.currentTime, shouldDuck ? MIC_DUCK_ATTACK_TC : MIC_DUCK_RELEASE_TC);
     micDuckedRef.current = shouldDuck && effectiveBase > 0;
   }
 
@@ -338,7 +311,6 @@ export function useLiveKitVoice(
     }
 
     if (!navigator.mediaDevices) {
-      console.warn("[voice] mediaDevices unavailable");
       return;
     }
 
@@ -378,7 +350,9 @@ export function useLiveKitVoice(
         ctx.createMediaStreamSource(rawStream).connect(analyser);
         localAnalyser.current = analyser;
       })
-      .catch((err) => console.warn("[voice] mic denied:", err));
+      .catch((err) => {
+        console.error("[voice] mic denied:", err);
+      });
 
     window.addEventListener("pointerdown", resumeOnGesture);
     window.addEventListener("keydown", resumeOnGesture);
@@ -400,12 +374,13 @@ export function useLiveKitVoice(
   useEffect(() => {
     if (!navigator.mediaDevices?.addEventListener) return;
     let disposed = false;
-    navigator.mediaDevices.enumerateDevices().then((devices) => {
-      if (disposed) return;
-      prevOutputDeviceIdsRef.current = new Set(
-        devices.filter((d) => d.kind === "audiooutput").map((d) => d.deviceId),
-      );
-    }).catch(() => {});
+    navigator.mediaDevices
+      .enumerateDevices()
+      .then((devices) => {
+        if (disposed) return;
+        prevOutputDeviceIdsRef.current = new Set(devices.filter((d) => d.kind === "audiooutput").map((d) => d.deviceId));
+      })
+      .catch(() => {});
 
     async function handleDeviceChange() {
       if (disposed) return;
@@ -413,12 +388,7 @@ export function useLiveKitVoice(
         const devices = await navigator.mediaDevices.enumerateDevices();
         const outputs = devices.filter((d) => d.kind === "audiooutput");
         const newIds = new Set(outputs.map((d) => d.deviceId));
-        const appeared = outputs.filter(
-          (d) =>
-            !prevOutputDeviceIdsRef.current.has(d.deviceId) &&
-            d.deviceId !== "default" &&
-            d.deviceId !== "communications",
-        );
+        const appeared = outputs.filter((d) => !prevOutputDeviceIdsRef.current.has(d.deviceId) && d.deviceId !== "default" && d.deviceId !== "communications");
         const disappearedIds = [...prevOutputDeviceIdsRef.current].filter((id) => !newIds.has(id));
         prevOutputDeviceIdsRef.current = newIds;
 
@@ -471,9 +441,7 @@ export function useLiveKitVoice(
       remoteEntries.current.delete(participantIdentity);
     };
     const cleanupAllRemoteEntries = () => {
-      [...remoteEntries.current.keys()].forEach((participantIdentity) =>
-        cleanupRemoteEntry(participantIdentity),
-      );
+      [...remoteEntries.current.keys()].forEach((participantIdentity) => cleanupRemoteEntry(participantIdentity));
     };
 
     async function connect() {
@@ -589,25 +557,19 @@ export function useLiveKitVoice(
         // AND on every reconnect (LiveKit auto-republishes the track on reconnect).
         // Registering before connect() ensures we don't miss the initial publish event.
         room.on(RoomEvent.LocalTrackPublished, async (publication) => {
-          if (
-            publication.source !== Track.Source.Microphone ||
-            !(publication.track instanceof LocalAudioTrack)
-          ) return;
+          if (publication.source !== Track.Source.Microphone || !(publication.track instanceof LocalAudioTrack)) return;
           const krispSupported = isKrispNoiseFilterSupported();
-          console.log("[Krisp] LocalTrackPublished — isKrispNoiseFilterSupported:", krispSupported);
           if (!krispSupported) {
-            console.warn("[Krisp] Not supported in this environment (requires LiveKit Cloud).");
+            console.error("[Krisp] Not supported in this environment (requires LiveKit Cloud).");
             return;
           }
           if (!micGainNode.current || !micSourceRef.current) {
-            console.warn("[Krisp] Gain node or mic source not ready, skipping processor.");
+            console.error("[Krisp] Gain node or mic source not ready, skipping processor.");
             return;
           }
           const processor = new GainKrispProcessor(micGainNode.current, micSourceRef.current);
           try {
-            await publication.track.setProcessor(
-              processor as unknown as Parameters<typeof publication.track.setProcessor>[0],
-            );
+            await publication.track.setProcessor(processor as unknown as Parameters<typeof publication.track.setProcessor>[0]);
             // onPublish is called by LiveKit after the republish completes — enabling happens there.
           } catch (err) {
             console.error("[Krisp] Failed to set processor:", err);
@@ -662,7 +624,6 @@ export function useLiveKitVoice(
         // Krisp processor is applied via RoomEvent.LocalTrackPublished (registered above),
         // which also fires on reconnect so NC is never silently lost.
         const micTrack = rawMicStream.current!.getAudioTracks()[0];
-        console.log("[Krisp] Publishing raw hardware track:", micTrack);
         if (micTrack) {
           await room.localParticipant.publishTrack(micTrack, {
             source: Track.Source.Microphone,
@@ -726,20 +687,11 @@ export function useLiveKitVoice(
         localAnalyser.current.getByteFrequencyData(dataArray);
         const above = rmsOf(dataArray) > SPEAKING_THRESHOLD;
         if (above) {
-          localSpeakingFrames.current = Math.min(
-            SPEAKING_HYSTERESIS_UP,
-            localSpeakingFrames.current + 1,
-          );
+          localSpeakingFrames.current = Math.min(SPEAKING_HYSTERESIS_UP, localSpeakingFrames.current + 1);
         } else {
-          localSpeakingFrames.current = Math.max(
-            -SPEAKING_HYSTERESIS_DOWN,
-            localSpeakingFrames.current - 1,
-          );
+          localSpeakingFrames.current = Math.max(-SPEAKING_HYSTERESIS_DOWN, localSpeakingFrames.current - 1);
         }
-        const speaking = !mutedRef.current && (
-          localSpeakingFrames.current >= SPEAKING_HYSTERESIS_UP ||
-          (wasLocalSpeaking.current && localSpeakingFrames.current > -SPEAKING_HYSTERESIS_DOWN)
-        );
+        const speaking = !mutedRef.current && (localSpeakingFrames.current >= SPEAKING_HYSTERESIS_UP || (wasLocalSpeaking.current && localSpeakingFrames.current > -SPEAKING_HYSTERESIS_DOWN));
         wasLocalSpeaking.current = speaking;
         setIsLocalSpeaking(speaking);
       }
@@ -865,7 +817,10 @@ export function useLiveKitVoice(
       // speaker loopback/echo on imperfect routing setups; users can still toggle manually.
       setEchoCancelEnabledState(true);
       echoCancelEnabledRef.current = true;
-      void rawMicStream.current?.getAudioTracks()[0]?.applyConstraints({ echoCancellation: true }).catch(() => {});
+      void rawMicStream.current
+        ?.getAudioTracks()[0]
+        ?.applyConstraints({ echoCancellation: true })
+        .catch(() => {});
     } else {
       headphoneDeviceIdRef.current = null;
     }
