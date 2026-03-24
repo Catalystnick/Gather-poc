@@ -563,9 +563,21 @@ export function useLiveKitVoice(
             name: "mic",
             audioPreset: AudioPresets.musicStereo,
           });
-          if (isKrispNoiseFilterSupported() && publication.track instanceof LocalAudioTrack) {
+          const krispSupported = isKrispNoiseFilterSupported();
+          console.log("[Krisp] isKrispNoiseFilterSupported:", krispSupported);
+          if (krispSupported && publication.track instanceof LocalAudioTrack) {
+            console.log("[Krisp] Applying noise filter to local mic track...");
             const krisp = KrispNoiseFilter();
-            await publication.track.setProcessor(krisp);
+            try {
+              await publication.track.setProcessor(krisp);
+              console.log("[Krisp] Noise filter applied successfully. Processor:", krisp);
+            } catch (err) {
+              console.error("[Krisp] Failed to set processor:", err);
+            }
+          } else if (!krispSupported) {
+            console.warn("[Krisp] Not supported in this environment (requires LiveKit Cloud).");
+          } else {
+            console.warn("[Krisp] Track is not a LocalAudioTrack, skipping. Track:", publication.track);
           }
         }
 
