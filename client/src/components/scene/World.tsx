@@ -2,7 +2,9 @@ import { Suspense, useEffect, useMemo, useRef } from "react";
 import { Canvas } from "@react-three/fiber";
 import { Perf } from "r3f-perf";
 import { Environment, KeyboardControls } from "@react-three/drei";
+import * as THREE from "three";
 import FloorMap from "./FloorMap";
+import PlacementTool from "./PlacementTool";
 import Vegetation from "./Vegetation";
 import Campfire from "./Campfire";
 import LocalPlayer from "../player/LocalPlayer";
@@ -11,7 +13,7 @@ import ChatPanel from "../hud/ChatPanel";
 import VoiceControls from "../hud/VoiceControls";
 import VoiceConnectionsPanel from "../hud/VoiceConnectionsPanel";
 import CameraRig from "./CameraRig";
-import HouseExterior from "./HouseExterior";
+import Zones from "./Zones";
 import Fence from "./Fence";
 import { useSocket } from "../../hooks/useSocket";
 import { useChat } from "../../hooks/useChat";
@@ -36,6 +38,7 @@ export default function World({ player }: Props) {
   const accessToken = session!.access_token;
   const { socket, remotePlayers, emitMove, spawnPosition } = useSocket(player, accessToken);
   const localPositionRef = useRef({ x: 0, y: 0.5, z: 0 });
+  const uvAttrRef = useRef<THREE.InstancedBufferAttribute | null>(null);
 
   useEffect(() => {
     if (spawnPosition) {
@@ -69,11 +72,12 @@ export default function World({ player }: Props) {
             <Perf position="top-left" />
           <CameraRig targetRef={localPositionRef} />
             <Environment preset="city" />
-            <FloorMap />
+            <FloorMap uvAttrRef={uvAttrRef} />
             {/* <Vegetation /> */}
             <Campfire />
-            <HouseExterior />
+            <Zones />
             <Fence />
+            {import.meta.env.DEV && <PlacementTool uvAttrRef={uvAttrRef} />}
             {spawnPosition && <LocalPlayer player={player} onMove={emitMove} positionRef={localPositionRef} spawnPosition={spawnPosition} isSpeaking={voice.isLocalSpeaking} />}
             {Array.from(remotePlayers.values()).map((p) => (
               <RemotePlayer key={p.id} {...p} bubble={bubbles.get(p.id)} inRange={voice.connectedPeers.has(p.id)} isSpeaking={voice.speakingPeers.has(p.id)} />

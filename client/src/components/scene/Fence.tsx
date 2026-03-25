@@ -2,12 +2,12 @@ import { useRef, useMemo, useEffect } from 'react'
 import { useTexture } from '@react-three/drei'
 import * as THREE from 'three'
 
-// ─── World constants (must match FloorMap) ────────────────────────────────────
+import { COLS as MAP_COLS, ROWS as MAP_ROWS } from './FloorMap'
+
+// ─── World constants ──────────────────────────────────────────────────────────
 const TILE_SIZE = 1
-const MAP_COLS  = 50
-const MAP_ROWS  = 36
-const HALF_W    = (MAP_COLS * TILE_SIZE) / 2   // 25
-const HALF_H    = (MAP_ROWS * TILE_SIZE) / 2   // 18
+const HALF_W    = (MAP_COLS * TILE_SIZE) / 2
+const HALF_H    = (MAP_ROWS * TILE_SIZE) / 2
 
 // ─── Fence layout ─────────────────────────────────────────────────────────────
 // Divide the 50-col world into 3 equal sections (~16.67 cols each).

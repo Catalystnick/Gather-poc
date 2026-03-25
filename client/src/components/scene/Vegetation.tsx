@@ -1,12 +1,9 @@
 import { useTexture } from '@react-three/drei'
 import { useMemo } from 'react'
 import * as THREE from 'three'
-import { MAP, GRASS_IDS } from '../scene/FloorMap'
+import { COLS as MAP_COLS, ROWS as MAP_ROWS, MAP, GRASS_IDS } from '../scene/FloorMap'
 
-// Must match FloorMap constants
 const TILE_SIZE = 1
-const MAP_COLS = 50
-const MAP_ROWS = 36
 
 // 32 px = 1 world unit (same scale as tiles).
 // Objects are upscaled 1.8× so they read well from above.
@@ -90,7 +87,7 @@ function buildVegetation(): VegItem[] {
       const jx = (hash(c, r, 11) - 0.5) * 0.7
       const jz = (hash(c, r, 22) - 0.5) * 0.7
 
-      const isGrassTile = GRASS_IDS.has(MAP[r][c])
+      const isGrassTile = GRASS_IDS.has(MAP[r * MAP_COLS + c])
 
       if (v < 0.03) {
         // Bush — sparse
