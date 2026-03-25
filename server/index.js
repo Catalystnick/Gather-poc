@@ -4,6 +4,7 @@ import { Server } from 'socket.io'
 import cors from 'cors'
 import { AccessToken } from 'livekit-server-sdk'
 import rateLimit from 'express-rate-limit'
+import { requireAuth, requireAuthSocket } from './middleware/requireAuth.js'
 
 const app = express()
 
@@ -34,7 +35,7 @@ if (!LIVEKIT_URL) {
   console.error('[livekit] LIVEKIT_URL is not set. Voice will not function.')
 }
 
-app.post('/livekit/token', tokenLimiter, async (req, res) => {
+app.post('/livekit/token', requireAuth, tokenLimiter, async (req, res) => {
   const { roomName, identity, name } = req.body || {}
   if (!identity || typeof identity !== 'string') {
     return res.status(400).json({ error: 'identity required' })
@@ -98,35 +99,39 @@ const isValidDirection = (d) => typeof d === 'string' && VALID_DIRECTIONS.has(d)
 // { [socketId]: { id, name, avatar: { shirt }, x, y, z } }
 const players = {}
 
+io.use(requireAuthSocket)
+
 io.on('connection', (socket) => {
-  console.log(`[connect] ${socket.id}`)
+  console.log(`[connect] ${socket.userId}`)
 
   socket.on('player:join', ({ name, avatar }, ack) => {
     const trimmed = typeof name === 'string' ? name.trim() : ''
     if (!trimmed || trimmed.length > 24 || !isValidAvatar(avatar)) {
-      console.warn(`[join] invalid payload from ${socket.id}`)
+      console.warn(`[join] invalid payload from ${socket.userId}`)
       return
     }
     const pos = randomSpawn()
-    players[socket.id] = { id: socket.id, name: trimmed, avatar, x: pos.x, y: pos.y, z: pos.z, direction: 'down', moving: false }
+    // Use socket.userId (stable Supabase UUID) instead of socket.id —
+    // survives reconnects so token refresh doesn't respawn the player.
+    players[socket.userId] = { id: socket.userId, name: trimmed, avatar, x: pos.x, y: pos.y, z: pos.z, direction: 'down', moving: false }
 
     const others = Object.values(players)
-      .filter(p => p.id !== socket.id)
+      .filter(p => p.id !== socket.userId)
       .map(({ id, name, avatar, x, y, z, direction, moving }) => ({ id, name, avatar, position: { x, y, z }, direction, moving }))
     socket.emit('room:state', others)
 
     if (typeof ack === 'function') ack({ position: pos })
 
-    const { id, x, y, z, direction, moving } = players[socket.id]
+    const { id, x, y, z, direction, moving } = players[socket.userId]
     socket.broadcast.emit('player:joined', {
       id, name, avatar, position: { x, y, z }, direction, moving
     })
 
-    console.log(`[join] ${name} (${socket.id})`)
+    console.log(`[join] ${name} (${socket.userId})`)
   })
 
   socket.on('player:move', ({ x, y, z, direction, moving }) => {
-    const player = players[socket.id]
+    const player = players[socket.userId]
     if (!player || !isValidPosition({ x, y, z })) return
     if (!isValidDirection(direction) || typeof moving !== 'boolean') return
 
@@ -137,7 +142,7 @@ io.on('connection', (socket) => {
       const dz = z - player.z
       const speed = Math.sqrt(dx * dx + dz * dz) / elapsed
       if (speed > MAX_SPEED) {
-        console.warn(`[move] speed violation from ${socket.id}: ${speed.toFixed(1)} u/s`)
+        console.warn(`[move] speed violation from ${socket.userId}: ${speed.toFixed(1)} u/s`)
         return
       }
     }
@@ -148,24 +153,23 @@ io.on('connection', (socket) => {
     player.direction = direction
     player.moving = moving
     player.lastMoveTime = now
-    socket.broadcast.emit('player:updated', { id: socket.id, position: { x, y, z }, direction, moving })
+    socket.broadcast.emit('player:updated', { id: socket.userId, position: { x, y, z }, direction, moving })
   })
 
-  // --- Chat (Phase 2) ---
   socket.on('chat:message', ({ text }) => {
-    const player = players[socket.id]
+    const player = players[socket.userId]
     const trimmed = typeof text === 'string' ? text.trim() : ''
     if (!player || !trimmed || trimmed.length > 500) return
 
     const now = Date.now()
     if (player.lastChatTime !== undefined && now - player.lastChatTime < CHAT_MIN_INTERVAL) {
-      console.warn(`[chat] rate limit from ${socket.id}`)
+      console.warn(`[chat] rate limit from ${socket.userId}`)
       return
     }
 
     player.lastChatTime = now
     io.emit('chat:message', {
-      id: socket.id,
+      id: socket.userId,
       name: player.name,
       text: trimmed,
       timestamp: now,
@@ -173,11 +177,11 @@ io.on('connection', (socket) => {
   })
 
   socket.on('disconnect', () => {
-    const player = players[socket.id]
+    const player = players[socket.userId]
     if (player) {
-      console.log(`[leave] ${player.name} (${socket.id})`)
-      delete players[socket.id]
-      io.emit('player:left', { id: socket.id })
+      console.log(`[leave] ${player.name} (${socket.userId})`)
+      delete players[socket.userId]
+      io.emit('player:left', { id: socket.userId })
     }
   })
 })

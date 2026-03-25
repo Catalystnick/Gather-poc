@@ -14,6 +14,7 @@ import { useSocket } from '../../hooks/useSocket'
 import { useChat } from '../../hooks/useChat'
 import { useLiveKitVoice } from '../../hooks/useLiveKitVoice'
 import { VoiceProvider } from '../../contexts/VoiceContext'
+import { useAuth } from '../../contexts/AuthContext'
 import type { Player } from '../../types'
 
 const keyMap = [
@@ -28,14 +29,16 @@ interface Props {
 }
 
 export default function World({ player }: Props) {
-  const { socket, remotePlayers, emitMove, spawnPosition } = useSocket(player)
+  const { session } = useAuth()
+  const accessToken = session!.access_token
+  const { socket, remotePlayers, emitMove, spawnPosition } = useSocket(player, accessToken)
   const localPositionRef = useRef({ x: 0, y: 0.5, z: 0 })
 
   useEffect(() => {
     if (spawnPosition) localPositionRef.current = spawnPosition
   }, [spawnPosition])
   const { messages, bubbles, sendMessage } = useChat(socket)
-  const voice = useLiveKitVoice(socket, player.name, localPositionRef, remotePlayers)
+  const voice = useLiveKitVoice(socket, player.name, localPositionRef, remotePlayers, accessToken)
 
   // Derive connection rows once per render rather than inline in JSX.
   const connectionRows = useMemo(

@@ -218,7 +218,7 @@ function ensureAudioSettingsMigration() {
   }
 }
 
-export function useLiveKitVoice(socket: Socket | null, playerName: string, localPositionRef: React.MutableRefObject<{ x: number; y: number; z: number }>, remotePlayers: Map<string, RemotePlayer>) {
+export function useLiveKitVoice(socket: Socket | null, playerName: string, localPositionRef: React.MutableRefObject<{ x: number; y: number; z: number }>, remotePlayers: Map<string, RemotePlayer>, accessToken: string) {
   const [muted, setMuted] = useState(false);
   const [isLocalSpeaking, setIsLocalSpeaking] = useState(false);
   const [speakingPeers, setSpeakingPeers] = useState<Set<string>>(new Set());
@@ -262,6 +262,8 @@ export function useLiveKitVoice(socket: Socket | null, playerName: string, local
   const mutedRef = useRef(muted);
   mutedRef.current = muted;
   const playerNameRef = useRef(playerName);
+  const accessTokenRef = useRef(accessToken);
+  accessTokenRef.current = accessToken;
   playerNameRef.current = playerName;
   const micDuckedRef = useRef(false);
 
@@ -317,6 +319,10 @@ export function useLiveKitVoice(socket: Socket | null, playerName: string, local
     navigator.mediaDevices
       .getUserMedia(AUDIO_CONSTRAINTS)
       .then(async (rawStream) => {
+        if (ctx.state === "closed") {
+          rawStream.getTracks().forEach((t) => t.stop());
+          return;
+        }
         rawMicStream.current = rawStream;
 
         const gainNode = ctx.createGain();
@@ -448,7 +454,7 @@ export function useLiveKitVoice(socket: Socket | null, playerName: string, local
       try {
         const res = await fetch(getTokenUrl(), {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${accessTokenRef.current}` },
           body: JSON.stringify({
             roomName: ROOM_NAME,
             identity,

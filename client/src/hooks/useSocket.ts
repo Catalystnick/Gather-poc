@@ -7,7 +7,7 @@ import type { Player, RemotePlayer } from '../types'
 // avoiding mixed-content errors when the page is served over HTTPS.
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || undefined
 
-export function useSocket(player: Player) {
+export function useSocket(player: Player, accessToken: string) {
   const [socket, setSocket] = useState<Socket | null>(null)
   const [remotePlayers, setRemotePlayers] = useState<Map<string, RemotePlayer>>(new Map())
   const [spawnPosition, setSpawnPosition] = useState<{ x: number; y: number; z: number } | null>(null)
@@ -17,10 +17,21 @@ export function useSocket(player: Player) {
   const playerRef = useRef(player)
   playerRef.current = player
 
+  // Token ref — updated on refresh without triggering a reconnect.
+  // socket.auth is patched in-place so any future reconnect (e.g. network drop)
+  // uses the latest token automatically.
+  const tokenRef = useRef(accessToken)
   const socketRef = useRef<Socket | null>(null)
 
   useEffect(() => {
-    const s = io(SERVER_URL)
+    tokenRef.current = accessToken
+    if (socketRef.current) {
+      socketRef.current.auth = { token: accessToken }
+    }
+  }, [accessToken])
+
+  useEffect(() => {
+    const s = io(SERVER_URL, { auth: { token: tokenRef.current } })
     socketRef.current = s
     setSocket(s)
 
