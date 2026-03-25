@@ -1,6 +1,7 @@
 import { lazy, Suspense } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from './contexts/AuthContext'
+import ProtectedRoute from './components/auth/ProtectedRoute'
 
 const LoginPage         = lazy(() => import('./pages/LoginPage'))
 const SignupPage        = lazy(() => import('./pages/SignupPage'))
@@ -29,7 +30,9 @@ export default function App() {
             <Route path="/signup"         element={<SignupPage />} />
             <Route path="/verify-pending" element={<VerifyPendingPage />} />
             <Route path="/auth/callback"  element={<AuthCallbackPage />} />
-            <Route path="/game"           element={<GameRoute />} />
+            <Route element={<ProtectedRoute />}>
+              <Route path="/game"         element={<GameRoute />} />
+            </Route>
             <Route path="*"               element={<Navigate to="/game" replace />} />
           </Routes>
         </Suspense>
