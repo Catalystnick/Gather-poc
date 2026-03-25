@@ -20,21 +20,34 @@ function loadSaved(): Player | null {
 }
 
 export default function GameRoute() {
-  const { isAuthenticated, isLoading } = useAuth()
+  const { isAuthenticated, isLoading, session } = useAuth()
   const [player, setPlayer] = useState<Player | null>(null)
 
-  if (isLoading) return null
+  console.log('[GameRoute] isLoading:', isLoading, '| isAuthenticated:', isAuthenticated)
 
-  if (!isAuthenticated) return <Navigate to="/login" replace />
+  if (isLoading) {
+    console.log('[GameRoute] waiting for auth session...')
+    return null
+  }
+
+  if (!isAuthenticated) {
+    console.log('[GameRoute] not authenticated → redirecting to /login')
+    return <Navigate to="/login" replace />
+  }
+
+  console.log('[GameRoute] authenticated | user:', session?.user?.email, '| token length:', session?.access_token?.length)
 
   function handleJoin(p: Player) {
+    console.log('[GameRoute] player joined avatar select → name:', p.name, '| shirt:', p.avatar.shirt)
     localStorage.setItem(STORAGE_KEY, JSON.stringify(p))
     setPlayer(p)
   }
 
   if (!player) {
+    console.log('[GameRoute] showing AvatarSelect (no player yet)')
     return <AvatarSelect initial={loadSaved()} onJoin={handleJoin} />
   }
 
+  console.log('[GameRoute] mounting World with player:', player.name)
   return <World player={player} />
 }

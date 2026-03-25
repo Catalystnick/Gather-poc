@@ -35,7 +35,12 @@ export default function World({ player }: Props) {
   const localPositionRef = useRef({ x: 0, y: 0.5, z: 0 })
 
   useEffect(() => {
-    if (spawnPosition) localPositionRef.current = spawnPosition
+    if (spawnPosition) {
+      console.log('[World] spawnPosition received → rendering LocalPlayer at', spawnPosition)
+      localPositionRef.current = spawnPosition
+    } else {
+      console.log('[World] spawnPosition is null — LocalPlayer will not render')
+    }
   }, [spawnPosition])
   const { messages, bubbles, sendMessage } = useChat(socket)
   const voice = useLiveKitVoice(socket, player.name, localPositionRef, remotePlayers, accessToken)

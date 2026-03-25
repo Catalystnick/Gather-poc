@@ -31,17 +31,30 @@ export function useSocket(player: Player, accessToken: string) {
   }, [accessToken])
 
   useEffect(() => {
+    console.log('[socket] connecting to', SERVER_URL ?? 'current origin', '| token present:', !!tokenRef.current, '| token length:', tokenRef.current?.length)
     const s = io(SERVER_URL, { auth: { token: tokenRef.current } })
     socketRef.current = s
     setSocket(s)
 
     s.on('connect', () => {
+      console.log('[socket] connected | id:', s.id)
+      console.log('[socket] emitting player:join | name:', playerRef.current.name)
       s.emit('player:join', { name: playerRef.current.name, avatar: playerRef.current.avatar }, ({ position }: { position: { x: number; y: number; z: number } }) => {
+        console.log('[socket] player:join ack received | spawnPosition:', position)
         setSpawnPosition(position)
       })
     })
 
+    s.on('connect_error', (err) => {
+      console.error('[socket] connect_error:', err.message)
+    })
+
+    s.on('disconnect', (reason) => {
+      console.warn('[socket] disconnected | reason:', reason)
+    })
+
     s.on('room:state', (players: RemotePlayer[]) => {
+      console.log('[socket] room:state | remote players:', players.length)
       setRemotePlayers(new Map(players.map(p => [p.id, p])))
     })
 
@@ -67,6 +80,7 @@ export function useSocket(player: Player, accessToken: string) {
     })
 
     return () => {
+      console.log('[socket] cleanup — disconnecting')
       socketRef.current = null
       s.disconnect()
     }
