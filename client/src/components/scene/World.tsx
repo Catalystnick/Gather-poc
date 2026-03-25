@@ -10,6 +10,7 @@ import ChatPanel from '../hud/ChatPanel'
 import VoiceControls from '../hud/VoiceControls'
 import VoiceConnectionsPanel from '../hud/VoiceConnectionsPanel'
 import CameraRig from './CameraRig'
+import HouseExterior from './HouseExterior'
 import { useSocket } from '../../hooks/useSocket'
 import { useChat } from '../../hooks/useChat'
 import { useLiveKitVoice } from '../../hooks/useLiveKitVoice'
@@ -67,6 +68,7 @@ export default function World({ player }: Props) {
             <FloorMap />
             <Vegetation />
             <Campfire />
+            <HouseExterior />
             {spawnPosition && (
               <LocalPlayer
                 player={player}
