@@ -60,7 +60,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signUpWithEmail = useCallback(async (email: string, password: string) => {
     console.log('[auth] signUpWithEmail →', email)
-    const { error } = await supabase.auth.signUp({ email, password })
+    const { error } = await supabase.auth.signUp({ email, password, options: { emailRedirectTo: import.meta.env.VITE_APP_URL as string } })
     if (error) console.warn('[auth] signUpWithEmail error:', error.message)
     return error
   }, [])
