@@ -14,7 +14,7 @@ import { isKrispNoiseFilterSupported } from '@livekit/krisp-noise-filter'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const SPEAKING_THRESHOLD    = 35
+const SPEAKING_THRESHOLD    = 20
 const SPEAKING_HYSTERESIS_UP   = 2   // frames above threshold → speaking
 const SPEAKING_HYSTERESIS_DOWN = 5   // frames below threshold → silent
 const MIC_GAIN_STORAGE_KEY  = 'gather_poc_mic_gain'
