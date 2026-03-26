@@ -91,7 +91,6 @@ export function createRoom(audioContext?: AudioContext | null): Room {
   const room = new Room({
     adaptiveStream: false,
     dynacast: false,
-    singlePeerConnection: true,
     webAudioMix: audioContext ? { audioContext } : false,
     // Shared browser mic is owned by useMicTrack — never stop it on unpublish/disconnect.
     stopLocalTrackOnUnpublish: false,

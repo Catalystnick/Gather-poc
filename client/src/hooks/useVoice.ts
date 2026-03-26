@@ -314,7 +314,7 @@ export function useVoice(
           if (oldLocalTrack) {
             await safeUnpublishUserMicTrack(oldRoom, oldLocalTrack)
           }
-          if (oldClone) mic.removePublishedClone(oldClone)
+          if (oldClone) { mic.removePublishedClone(oldClone); oldClone.stop() }
         } catch { /* ignore */ }
         await oldRoom.disconnect(false).catch(() => {})
       })()
@@ -414,10 +414,13 @@ export function useVoice(
 
     const sendTrack = mic.sendMicStreamRef.current?.getAudioTracks()[0]
     if (sendTrack) {
-      console.log('[voice][zone] publish mic | zone:', targetKey, '| track id:', sendTrack.id, '| state:', sendTrack.readyState)
-      mic.addPublishedClone(sendTrack)
-      zonePublishedCloneRef.current = sendTrack
-      const localTrack = createLocalMicTrack(sendTrack, mic.audioCtxRef.current ?? undefined)
+      // Clone so zone and proximity have independent entries in publishedClonesRef.
+      // Removing the zone clone on exit won't deregister the proximity clone.
+      const zoneTrackClone = sendTrack.clone()
+      console.log('[voice][zone] publish mic | zone:', targetKey, '| clone id:', zoneTrackClone.id, '| state:', zoneTrackClone.readyState)
+      mic.addPublishedClone(zoneTrackClone)
+      zonePublishedCloneRef.current = zoneTrackClone
+      const localTrack = createLocalMicTrack(zoneTrackClone, mic.audioCtxRef.current ?? undefined)
       zoneLocalTrackRef.current = localTrack
       console.log('[voice][zone] localTrack ready | sid?:', localTrack.sid ?? 'n/a', '| mediaStreamTrack id:', localTrack.mediaStreamTrack.id)
       await room.localParticipant.publishTrack(localTrack, AUDIO_PUBLISH_OPTS)
@@ -439,7 +442,7 @@ export function useVoice(
       zoneRoomRef.current = null
       const clone = zonePublishedCloneRef.current
       zonePublishedCloneRef.current = null
-      if (clone) mic.removePublishedClone(clone)
+      if (clone) { mic.removePublishedClone(clone); clone.stop() }
       return
     }
 
@@ -668,7 +671,7 @@ export function useVoice(
       zoneLocalTrackRef.current = null
       const clone = zonePublishedCloneRef.current
       zonePublishedCloneRef.current = null
-      if (clone) mic.removePublishedClone(clone)
+      if (clone) { mic.removePublishedClone(clone); clone.stop() }
       cleanupAllZone()
       void (async () => {
         try {
