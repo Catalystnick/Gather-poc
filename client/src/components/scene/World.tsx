@@ -99,12 +99,12 @@ export default function World({ player }: Props) {
       <KeyboardControls map={keyMap}>
         <Canvas orthographic style={{ cursor: "grab" }}>
           <Suspense fallback={null}>
-            <Perf position="top-left" />
+            {import.meta.env.DEV && <Perf position="top-left" />}
             <CameraRig targetRef={localPositionRef} />
             <Environment preset="city" />
             <FloorMap uvAttrRef={uvAttrRef} />
             <Campfire />
-            <Zones />
+            {import.meta.env.DEV && <Zones />}
             <Fence />
             {import.meta.env.DEV && <PlacementTool uvAttrRef={uvAttrRef} onHUDState={onHUDState} />}
             {spawnPosition && (
