@@ -156,17 +156,9 @@ export function useZoneVoice(
       cleanupAll()
       setConnectedPeers(new Set())
       setSpeakingPeers(new Set())
-      // Unpublish mic with stopOnUnpublish=false before disconnect so the raw
-      // MediaStreamTrack is not stopped — it is shared with the proximity room.
-      // Look up the LocalTrack from the publication rather than passing rawTrack
-      // directly: after setProcessor the LocalAudioTrack wraps processedTrack, so
-      // unpublishTrack(rawTrack) may silently miss and disconnect() then stops it.
-      const micPub = [...oldRoom.localParticipant.trackPublications.values()]
-        .find(pub => pub.source === Track.Source.Microphone)
-      if (micPub?.track) {
-        console.log('[zone voice] unpublishing mic before disconnect | stopOnUnpublish: false')
-        await oldRoom.localParticipant.unpublishTrack(micPub.track, false).catch(() => {})
-      }
+      // The zone room holds a clone of the mic track (see publishTrack below),
+      // so disconnect() stopping the clone is safe — the original track shared
+      // with the proximity room is unaffected. No unpublishTrack needed.
       await oldRoom.disconnect().catch(() => {})
     }
     if (cancelled()) { console.log('[zone voice] cancelled after old room disconnect | gen:', myGen); return }
@@ -299,12 +291,14 @@ export function useZoneVoice(
 
     zoneRoomRef.current = room
 
-    // Publish raw mic track — Krisp applied in LocalTrackPublished handler above
+    // Publish a clone of the raw mic track — the clone is independent so LiveKit
+    // can stop it on disconnect without affecting the proximity room's original track.
+    // This also removes the need for an explicit unpublishTrack before disconnect().
     const rawStream = mic.rawMicStreamRef.current
     const micTrack  = rawStream?.getAudioTracks()[0]
     if (micTrack) {
-      console.log('[zone voice] publishing mic | zone:', targetKey)
-      await room.localParticipant.publishTrack(micTrack, {
+      console.log('[zone voice] publishing mic clone | zone:', targetKey)
+      await room.localParticipant.publishTrack(micTrack.clone(), {
         source: Track.Source.Microphone,
         name: 'mic',
         audioPreset: AudioPresets.musicStereo,
