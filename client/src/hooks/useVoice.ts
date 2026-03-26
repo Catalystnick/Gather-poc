@@ -280,9 +280,9 @@ export function useVoice(
       setConnectedPeers(new Set(zoneEntries.current.keys()))
     })
 
-    room.on(RoomEvent.LocalTrackPublished, async publication => {
-      await applyKrisp(publication as Parameters<typeof applyKrisp>[0], mic, 'zone')
-    })
+    // No LocalTrackPublished / applyKrisp here — the processedMicStream is already
+    // Krisp-filtered via the proximity room's GainKrispProcessor (mic → Krisp → gainNode → micDest).
+    // Applying a second Krisp instance would double-process and corrupt the audio.
 
     room.on(RoomEvent.Disconnected, () => {
       if (zoneRoomRef.current !== room) return
@@ -318,15 +318,17 @@ export function useVoice(
 
     zoneRoomRef.current = room
 
-    // Publish a clone — LiveKit can stop it on disconnect without touching the
-    // original track shared with the proximity room.
-    const micTrack = mic.rawMicStreamRef.current?.getAudioTracks()[0]
-    if (micTrack) {
-      console.log('[voice] publishing mic clone | zone:', targetKey)
-      await room.localParticipant.publishTrack(micTrack.clone(), AUDIO_PUBLISH_OPTS)
+    // Publish a clone of the processed (gain-controlled, Krisp-filtered) stream so that
+    // mute, mic gain, and the voice gate all work in zone mode — they all operate via
+    // gainNode which feeds micDest. A clone prevents LiveKit stopping the shared track
+    // on zone disconnect.
+    const processedTrack = mic.processedMicStreamRef.current?.getAudioTracks()[0]
+    if (processedTrack) {
+      console.log('[voice] publishing processed mic clone | zone:', targetKey)
+      await room.localParticipant.publishTrack(processedTrack.clone(), AUDIO_PUBLISH_OPTS)
         .catch(err => console.warn('[voice] zone publish failed:', err))
     } else {
-      console.warn('[voice] no mic track to publish | zone:', targetKey)
+      console.warn('[voice] no processed mic track to publish | zone:', targetKey)
     }
     if (cancelled()) {
       console.log('[voice] cancelled after publish | gen:', myGen)

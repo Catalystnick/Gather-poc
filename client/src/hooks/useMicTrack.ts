@@ -61,8 +61,11 @@ function loadMicGain(): number {
 
 export interface MicTrack {
   // Stable refs — safe to use inside async callbacks across renders.
-  rawMicStreamRef: React.MutableRefObject<MediaStream | null>
-  audioCtxRef:     React.MutableRefObject<AudioContext | null>
+  rawMicStreamRef:       React.MutableRefObject<MediaStream | null>
+  // Gain-controlled, Krisp-filtered output stream — use this for publishing to rooms.
+  // Mute (gain=0) and mic gain changes propagate here automatically via gainNode.
+  processedMicStreamRef: React.MutableRefObject<MediaStream | null>
+  audioCtxRef:           React.MutableRefObject<AudioContext | null>
   micGainNodeRef:  React.MutableRefObject<GainNode | null>
   micSourceNodeRef: React.MutableRefObject<MediaStreamAudioSourceNode | null>
   // Mutable state refs (kept in sync with state values below)
@@ -94,8 +97,9 @@ export function useMicTrack(): MicTrack {
   const [echoCancelEnabled, setEchoCancelEnabled] = useState(true)
   const [isReady,         setIsReady]         = useState(false)
 
-  const rawMicStreamRef = useRef<MediaStream | null>(null)
-  const audioCtxRef     = useRef<AudioContext | null>(null)
+  const rawMicStreamRef       = useRef<MediaStream | null>(null)
+  const processedMicStreamRef = useRef<MediaStream | null>(null)
+  const audioCtxRef           = useRef<AudioContext | null>(null)
   const micGainNodeRef  = useRef<GainNode | null>(null)
   const micSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null)
   const localAnalyserRef = useRef<AnalyserNode | null>(null)
@@ -141,6 +145,7 @@ export function useMicTrack(): MicTrack {
       // Route: mic → gain → destination (Krisp will intercept this chain when published)
       const micDest = ctx.createMediaStreamDestination()
       micSource.connect(gainNode).connect(micDest)
+      processedMicStreamRef.current = micDest.stream
 
       // Analyser taps directly from the raw stream for speaking detection
       const analyser = ctx.createAnalyser()
@@ -282,7 +287,7 @@ export function useMicTrack(): MicTrack {
   }
 
   return {
-    rawMicStreamRef, audioCtxRef, micGainNodeRef, micSourceNodeRef,
+    rawMicStreamRef, processedMicStreamRef, audioCtxRef, micGainNodeRef, micSourceNodeRef,
     mutedRef, micGainRef, duckedRef,
     isMuted, toggleMute,
     isLocalSpeaking,
