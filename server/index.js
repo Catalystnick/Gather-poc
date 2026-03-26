@@ -36,6 +36,7 @@ const ALLOWED_ROOMS = new Set([
   'gather-world',
   ...ZONE_KEYS.map(k => `gather-world-zone-${k}`),
 ])
+const ZONE_ROOM_PATTERN = /^gather-world-zone-([a-z0-9_-]+)$/
 
 if (!LIVEKIT_URL) {
   console.error('[livekit] LIVEKIT_URL is not set. Voice will not function.')
@@ -48,6 +49,18 @@ app.post('/livekit/token', requireAuth, tokenLimiter, async (req, res) => {
   }
   if (!ALLOWED_ROOMS.has(roomName)) {
     return res.status(400).json({ error: 'invalid room' })
+  }
+  const authedUserId = req.user?.sub
+  if (!authedUserId || authedUserId !== identity) {
+    return res.status(403).json({ error: 'identity mismatch' })
+  }
+  const zoneMatch = roomName.match(ZONE_ROOM_PATTERN)
+  if (zoneMatch) {
+    const requestedZone = zoneMatch[1]
+    const player = players[authedUserId]
+    if (!player || player.zoneKey !== requestedZone) {
+      return res.status(403).json({ error: 'zone_access_denied' })
+    }
   }
   if (!LIVEKIT_URL || !LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
     return res.status(500).json({ error: 'LiveKit not configured' })

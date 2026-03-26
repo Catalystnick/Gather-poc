@@ -25,7 +25,7 @@ import { getZoneKey, getPrefetchZoneKey } from '../utils/zoneDetection'
 import {
   ROOM_NAME, ZONE_ROOM_PREFIX,
   type CachedToken,
-  createRoom, fetchToken, tokenIsValid, attachRemoteAudio, createKrispLocalTrack, createLocalAudioTrack, AUDIO_PUBLISH_OPTS,
+  createRoom, fetchToken, tokenIsValid, attachRemoteAudio, createKrispLocalTrack, AUDIO_PUBLISH_OPTS,
 } from '../utils/voiceRoom'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -130,6 +130,7 @@ export function useVoice(
   const pendingZoneRef    = useRef<string | null | undefined>(undefined)
   const debounceTicksRef  = useRef(0)
   const generationRef     = useRef(0)
+  const krispAppliedRef   = useRef<{ proximity: boolean; zone: boolean }>({ proximity: false, zone: false })
 
   // ── Stable value refs ──────────────────────────────────────────────────────
   const remoteGainRef    = useRef(remoteGain)
@@ -341,38 +342,34 @@ export function useVoice(
 
     zoneRoomRef.current = room
 
-    // Prefer cloning proximity's already-processed outbound track for zone publish.
-    // This avoids running a second Krisp processor concurrently on the same mic source.
-    const proxProcessedTrack = proximityLocalTrackRef.current?.mediaStreamTrack
-    if (proxProcessedTrack) {
-      console.log('[voice][zone] path=processed-clone | zone:', targetKey, '| source id:', proxProcessedTrack.id, '| state:', proxProcessedTrack.readyState)
-      const clone = proxProcessedTrack.clone()
+    // Always create a dedicated zone LocalAudioTrack from a raw clone and apply Krisp
+    // before publish. LocalAudioTrack.mediaStreamTrack may still point to the source
+    // input handle even when a processor is active, so cloning it is not a reliable
+    // way to inherit processed output.
+    const rawTrack = mic.rawMicStreamRef.current?.getAudioTracks()[0]
+    if (rawTrack) {
+      console.log('[voice][zone] path=raw-plus-krisp | zone:', targetKey, '| source id:', rawTrack.id, '| state:', rawTrack.readyState)
+      const clone = rawTrack.clone()
       mic.addPublishedClone(clone)
       zonePublishedCloneRef.current = clone
-      console.log('[voice][zone] clone (processed path) | id:', clone.id, '| state:', clone.readyState, '| enabled:', clone.enabled)
-      const localTrack = createLocalAudioTrack(clone, mic.audioCtxRef.current ?? undefined)
+      console.log('[voice][zone] clone | id:', clone.id, '| state:', clone.readyState, '| enabled:', clone.enabled)
+      const { localTrack, krispApplied } = await createKrispLocalTrack(clone, 'zone', mic.audioCtxRef.current ?? undefined)
+      krispAppliedRef.current.zone = krispApplied
+      console.log('[voice][krisp] zone applied:', krispApplied)
+      if (!krispApplied) {
+        console.warn('[voice][zone] Krisp unavailable/failed; skipping zone publish to avoid unprocessed private-room audio')
+        mic.removePublishedClone(clone)
+        try { clone.stop() } catch { /* ignore */ }
+        zonePublishedCloneRef.current = null
+        return
+      }
       zoneLocalTrackRef.current = localTrack
-      console.log('[voice][zone] localTrack ready (processed path) | sid?:', localTrack.sid ?? 'n/a', '| mediaStreamTrack id:', localTrack.mediaStreamTrack.id)
+      console.log('[voice][zone] localTrack ready | sid?:', localTrack.sid ?? 'n/a', '| mediaStreamTrack id:', localTrack.mediaStreamTrack.id)
       await room.localParticipant.publishTrack(localTrack, AUDIO_PUBLISH_OPTS)
         .catch(err => console.warn('[voice] zone publish failed:', err))
-      console.log('[voice][zone] publish attempted (processed path) | mediaStreamTrack id:', localTrack.mediaStreamTrack.id)
+      console.log('[voice][zone] publish attempted | mediaStreamTrack id:', localTrack.mediaStreamTrack.id)
     } else {
-      const rawTrack = mic.rawMicStreamRef.current?.getAudioTracks()[0]
-      if (rawTrack) {
-        console.log('[voice][zone] path=raw-plus-krisp-fallback | zone:', targetKey, '| source id:', rawTrack.id, '| state:', rawTrack.readyState)
-        const clone = rawTrack.clone()
-        mic.addPublishedClone(clone)
-        zonePublishedCloneRef.current = clone
-        console.log('[voice][zone] clone (fallback) | id:', clone.id, '| state:', clone.readyState, '| enabled:', clone.enabled)
-        const localTrack = await createKrispLocalTrack(clone, 'zone', mic.audioCtxRef.current ?? undefined)
-        zoneLocalTrackRef.current = localTrack
-        console.log('[voice][zone] localTrack ready (fallback) | sid?:', localTrack.sid ?? 'n/a', '| mediaStreamTrack id:', localTrack.mediaStreamTrack.id)
-        await room.localParticipant.publishTrack(localTrack, AUDIO_PUBLISH_OPTS)
-          .catch(err => console.warn('[voice] zone publish failed:', err))
-        console.log('[voice][zone] publish attempted (fallback) | mediaStreamTrack id:', localTrack.mediaStreamTrack.id)
-      } else {
-        console.warn('[voice] no source mic track to publish | zone:', targetKey)
-      }
+      console.warn('[voice] no source mic track to publish | zone:', targetKey)
     }
     if (cancelled()) {
       console.log('[voice] cancelled after publish | gen:', myGen)
@@ -477,7 +474,9 @@ export function useVoice(
           mic.addPublishedClone(clone)
           proximityPublishedCloneRef.current = clone
           console.log('[voice][proximity] clone | id:', clone.id, '| state:', clone.readyState, '| enabled:', clone.enabled)
-          const localTrack = await createKrispLocalTrack(clone, 'proximity', mic.audioCtxRef.current ?? undefined)
+          const { localTrack, krispApplied } = await createKrispLocalTrack(clone, 'proximity', mic.audioCtxRef.current ?? undefined)
+          krispAppliedRef.current.proximity = krispApplied
+          console.log('[voice][krisp] proximity applied:', krispApplied)
           proximityLocalTrackRef.current = localTrack
           console.log('[voice][proximity] localTrack ready | sid?:', localTrack.sid ?? 'n/a', '| mediaStreamTrack id:', localTrack.mediaStreamTrack.id)
           await room.localParticipant.publishTrack(localTrack, AUDIO_PUBLISH_OPTS)

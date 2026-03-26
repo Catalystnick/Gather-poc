@@ -97,25 +97,19 @@ export async function createKrispLocalTrack(
   rawClone: MediaStreamTrack,
   label: string,
   audioCtx?: AudioContext,
-): Promise<LocalAudioTrack> {
+): Promise<{ localTrack: LocalAudioTrack; krispApplied: boolean }> {
   const localTrack = new LocalAudioTrack(rawClone, undefined, true, audioCtx)
   if (!isKrispNoiseFilterSupported()) {
     console.warn(`[Krisp][${label}] not supported — NC skipped`)
-    return localTrack
+    return { localTrack, krispApplied: false }
   }
   console.log(`[Krisp][${label}] applying NC | track:`, rawClone.label)
   try {
     await localTrack.setProcessor(KrispNoiseFilter())
     console.log(`[Krisp][${label}] processor set OK`)
+    return { localTrack, krispApplied: true }
   } catch (err) {
     console.error(`[Krisp][${label}] setProcessor failed:`, err)
+    return { localTrack, krispApplied: false }
   }
-  return localTrack
-}
-
-export function createLocalAudioTrack(
-  sourceTrack: MediaStreamTrack,
-  audioCtx?: AudioContext,
-): LocalAudioTrack {
-  return new LocalAudioTrack(sourceTrack, undefined, true, audioCtx)
 }
