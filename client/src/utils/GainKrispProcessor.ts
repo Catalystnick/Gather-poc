@@ -20,6 +20,7 @@ export class GainKrispProcessor {
   private gainNode: GainNode
   private micSourceNode: MediaStreamAudioSourceNode
   private destNode?: MediaStreamAudioDestinationNode
+  private krispSourceNode?: MediaStreamAudioSourceNode
 
   constructor(gainNode: GainNode, micSourceNode: MediaStreamAudioSourceNode) {
     this.krisp = KrispNoiseFilter()
@@ -40,7 +41,8 @@ export class GainKrispProcessor {
     try { this.micSourceNode.disconnect(this.gainNode) } catch { /* already disconnected */ }
 
     this.destNode = ctx.createMediaStreamDestination()
-    ctx.createMediaStreamSource(new MediaStream([krispOut])).connect(this.gainNode).connect(this.destNode)
+    this.krispSourceNode = ctx.createMediaStreamSource(new MediaStream([krispOut]))
+    this.krispSourceNode.connect(this.gainNode).connect(this.destNode)
     this.processedTrack = this.destNode.stream.getAudioTracks()[0]
     console.log('[Krisp] audio graph rewired — chain: mic → Krisp → gain → dest')
   }
@@ -59,9 +61,13 @@ export class GainKrispProcessor {
   }
 
   async destroy(): Promise<void> {
-    console.log('[Krisp] destroy — rewiring mic → gain directly')
+    console.log('[Krisp] destroy — disconnecting Krisp audio chain')
     await this.krisp.destroy()
-    try { this.micSourceNode.connect(this.gainNode) } catch { /* ignore */ }
+    // Disconnect only what this processor owns. Do NOT reconnect micSourceNode → gainNode:
+    // that would bypass Krisp and feed raw (noisy) audio into the proximity room's chain.
+    try { this.krispSourceNode?.disconnect(this.gainNode) } catch { /* ignore */ }
+    try { if (this.destNode) this.gainNode.disconnect(this.destNode) } catch { /* ignore */ }
+    this.krispSourceNode = undefined
     this.destNode = undefined
     this.processedTrack = undefined
   }

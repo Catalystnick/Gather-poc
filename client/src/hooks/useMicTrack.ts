@@ -10,6 +10,7 @@
 //   - Audio settings version migration
 
 import { useEffect, useRef, useState } from 'react'
+import { isKrispNoiseFilterSupported } from '@livekit/krisp-noise-filter'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -30,7 +31,7 @@ const AudioContextCtor: typeof AudioContext =
 const AUDIO_CONSTRAINTS: MediaStreamConstraints = {
   audio: {
     echoCancellation: true,
-    noiseSuppression: false,  // Krisp NC handles this; browser NS degrades Krisp accuracy
+    noiseSuppression: !isKrispNoiseFilterSupported(), // native NS only when Krisp unavailable; running both degrades Krisp accuracy
     autoGainControl:  true,
   } as MediaTrackConstraints,
   video: false,
