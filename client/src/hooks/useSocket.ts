@@ -7,7 +7,7 @@ import type { Player, RemotePlayer } from '../types'
 // avoiding mixed-content errors when the page is served over HTTPS.
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || undefined
 
-export function useSocket(player: Player) {
+export function useSocket(player: Player, accessToken: string) {
   const [socket, setSocket] = useState<Socket | null>(null)
   const [remotePlayers, setRemotePlayers] = useState<Map<string, RemotePlayer>>(new Map())
   const [spawnPosition, setSpawnPosition] = useState<{ x: number; y: number; z: number } | null>(null)
@@ -17,20 +17,44 @@ export function useSocket(player: Player) {
   const playerRef = useRef(player)
   playerRef.current = player
 
+  // Token ref — updated on refresh without triggering a reconnect.
+  // socket.auth is patched in-place so any future reconnect (e.g. network drop)
+  // uses the latest token automatically.
+  const tokenRef = useRef(accessToken)
   const socketRef = useRef<Socket | null>(null)
 
   useEffect(() => {
-    const s = io(SERVER_URL)
+    tokenRef.current = accessToken
+    if (socketRef.current) {
+      socketRef.current.auth = { token: accessToken }
+    }
+  }, [accessToken])
+
+  useEffect(() => {
+    console.log('[socket] connecting to', SERVER_URL ?? 'current origin', '| token present:', !!tokenRef.current, '| token length:', tokenRef.current?.length)
+    const s = io(SERVER_URL, { auth: { token: tokenRef.current } })
     socketRef.current = s
     setSocket(s)
 
     s.on('connect', () => {
+      console.log('[socket] connected | id:', s.id)
+      console.log('[socket] emitting player:join | name:', playerRef.current.name)
       s.emit('player:join', { name: playerRef.current.name, avatar: playerRef.current.avatar }, ({ position }: { position: { x: number; y: number; z: number } }) => {
+        console.log('[socket] player:join ack received | spawnPosition:', position)
         setSpawnPosition(position)
       })
     })
 
+    s.on('connect_error', (err) => {
+      console.error('[socket] connect_error:', err.message)
+    })
+
+    s.on('disconnect', (reason) => {
+      console.warn('[socket] disconnected | reason:', reason)
+    })
+
     s.on('room:state', (players: RemotePlayer[]) => {
+      console.log('[socket] room:state | remote players:', players.length)
       setRemotePlayers(new Map(players.map(p => [p.id, p])))
     })
 
@@ -56,6 +80,7 @@ export function useSocket(player: Player) {
     })
 
     return () => {
+      console.log('[socket] cleanup — disconnecting')
       socketRef.current = null
       s.disconnect()
     }

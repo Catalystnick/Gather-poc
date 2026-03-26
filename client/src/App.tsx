@@ -1,38 +1,42 @@
-import { useState } from 'react'
-import AvatarSelect from './components/ui/AvatarSelect'
-import World from './components/scene/World'
-import type { Player } from './types'
+import { lazy, Suspense } from 'react'
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
+import { AuthProvider } from './contexts/AuthContext'
+import ProtectedRoute from './components/auth/ProtectedRoute'
 
-export type { Avatar, Player } from './types'
+const LoginPage         = lazy(() => import('./pages/LoginPage'))
+const SignupPage        = lazy(() => import('./pages/SignupPage'))
+const VerifyPendingPage = lazy(() => import('./pages/VerifyPendingPage'))
+const AuthCallbackPage  = lazy(() => import('./pages/AuthCallbackPage'))
+const GameRoute         = lazy(() => import('./pages/GameRoute'))
 
-const STORAGE_KEY = 'gather_poc_avatar'
-
-function loadSaved(): Player | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return null
-    const p = JSON.parse(raw) as { name?: string; avatar?: { shirt?: string } }
-    if (
-      typeof p?.name !== 'string' ||
-      typeof p?.avatar?.shirt !== 'string'
-    ) return null
-    return { name: p.name, avatar: { shirt: p.avatar.shirt } }
-  } catch {
-    return null
-  }
+// Lightweight fallback — shown only during the initial chunk fetch.
+// Auth pages are tiny; the game chunk (Three.js + LiveKit + WASM) is large
+// but only fetched after the user is authenticated.
+function PageLoader() {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#0a0a0a', color: '#fff', fontFamily: 'sans-serif' }}>
+      Loading...
+    </div>
+  )
 }
 
 export default function App() {
-  const [player, setPlayer] = useState<Player | null>(null)
-
-  function handleJoin(p: Player) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(p))
-    setPlayer(p)
-  }
-
-  if (!player) {
-    return <AvatarSelect initial={loadSaved()} onJoin={handleJoin} />
-  }
-
-  return <World player={player} />
+  return (
+    <BrowserRouter>
+      <AuthProvider>
+        <Suspense fallback={<PageLoader />}>
+          <Routes>
+            <Route path="/login"          element={<LoginPage />} />
+            <Route path="/signup"         element={<SignupPage />} />
+            <Route path="/verify-pending" element={<VerifyPendingPage />} />
+            <Route path="/auth/callback"  element={<AuthCallbackPage />} />
+            <Route element={<ProtectedRoute />}>
+              <Route path="/game"         element={<GameRoute />} />
+            </Route>
+            <Route path="*"               element={<Navigate to="/game" replace />} />
+          </Routes>
+        </Suspense>
+      </AuthProvider>
+    </BrowserRouter>
+  )
 }
