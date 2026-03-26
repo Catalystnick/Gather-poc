@@ -10,8 +10,6 @@ export interface VoiceState {
   peerConnectionStates: Record<string, string>
   remoteGain: number
   setRemoteGain: (v: number) => void
-  micGain: number
-  setMicGain: (v: number) => void
   headphonePrompt: string | null
   confirmHeadphones: (accept: boolean) => void
   audioBlocked?: boolean

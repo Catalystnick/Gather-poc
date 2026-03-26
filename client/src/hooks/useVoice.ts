@@ -6,8 +6,10 @@
 //
 // Proximity room: always connected when mic is ready. Distance-gated subscriptions.
 // Zone room: created/destroyed as the player enters/leaves zone boundaries.
-//   Zone room publishes a clone of the mic track so disconnect() can stop it
-//   without affecting the shared track used by the proximity room.
+//
+// Both rooms publish a raw hardware track clone. Krisp noise cancellation is
+// applied per-room via LocalTrackPublished → applyKrisp. Mute propagates to all
+// registered clones via mic.addPublishedClone / mic.removePublishedClone.
 
 import { useEffect, useRef, useState } from 'react'
 import type { Socket } from 'socket.io-client'
@@ -103,9 +105,10 @@ export function useVoice(
   const [activeZoneKey,       setActiveZoneKey]       = useState<string | null>(null)
 
   // ── Room refs ──────────────────────────────────────────────────────────────
-  const proximityRoomRef = useRef<Room | null>(null)
-  const zoneRoomRef      = useRef<Room | null>(null)
-  const zonePublishedCloneRef = useRef<MediaStreamTrack | null>(null)
+  const proximityRoomRef         = useRef<Room | null>(null)
+  const zoneRoomRef              = useRef<Room | null>(null)
+  const proximityPublishedCloneRef = useRef<MediaStreamTrack | null>(null)
+  const zonePublishedCloneRef    = useRef<MediaStreamTrack | null>(null)
 
   // ── Remote entry maps ──────────────────────────────────────────────────────
   const proximityEntries = useRef<Map<string, ProximityEntry>>(new Map())
@@ -220,8 +223,8 @@ export function useVoice(
     console.log('[voice] zone transition | from:', activeZoneKeyRef.current, '→', targetKey, '| gen:', myGen)
     syncMode('switching')
 
-    // Disconnect current zone room. The zone room holds a mic clone, so
-    // disconnect() stopping it is safe — proximity room's original track is unaffected.
+    // Disconnect current zone room. The zone room holds a raw mic clone, so
+    // disconnect() stopping it is safe — proximity room's clone is unaffected.
     const oldRoom = zoneRoomRef.current
     if (oldRoom) {
       console.log('[voice] disconnecting old zone room | gen:', myGen)
@@ -232,6 +235,7 @@ export function useVoice(
         const clone = zonePublishedCloneRef.current
         zonePublishedCloneRef.current = null
         if (clone) {
+          mic.removePublishedClone(clone)
           for (const pub of oldRoom.localParticipant.trackPublications.values()) {
             if (pub.track?.mediaStreamTrack === clone) {
               oldRoom.localParticipant.unpublishTrack(pub.track)
@@ -335,29 +339,29 @@ export function useVoice(
 
     zoneRoomRef.current = room
 
-    // Publish a clone of the processed (gain-controlled, Krisp-filtered) stream so that
-    // mute, mic gain, and the voice gate all work in zone mode — they all operate via
-    // gainNode which feeds micDest. A clone prevents LiveKit stopping the shared track
-    // on zone disconnect.
-    const processedTrack = mic.processedMicStreamRef.current?.getAudioTracks()[0]
-    if (processedTrack) {
-      console.log('[voice] publishing processed mic clone | zone:', targetKey)
-      const clone = processedTrack.clone()
+    // Publish a raw hardware track clone. Krisp receives a real hardware track
+    // (required for applyConstraints to succeed) and is applied via LocalTrackPublished.
+    const rawTrack = mic.rawMicStreamRef.current?.getAudioTracks()[0]
+    if (rawTrack) {
+      console.log('[voice] publishing raw mic clone | zone:', targetKey)
+      const clone = rawTrack.clone()
       zonePublishedCloneRef.current = clone
+      mic.addPublishedClone(clone)
       await room.localParticipant.publishTrack(clone, AUDIO_PUBLISH_OPTS)
         .catch(err => console.warn('[voice] zone publish failed:', err))
     } else {
-      console.warn('[voice] no processed mic track to publish | zone:', targetKey)
+      console.warn('[voice] no raw mic track to publish | zone:', targetKey)
     }
     if (cancelled()) {
       console.log('[voice] cancelled after publish | gen:', myGen)
       await room.disconnect().catch(() => {})
       zoneRoomRef.current = null
-      try {
-        const clone = zonePublishedCloneRef.current
-        zonePublishedCloneRef.current = null
-        try { clone?.stop() } catch { /* ignore */ }
-      } catch { /* ignore */ }
+      const clone = zonePublishedCloneRef.current
+      zonePublishedCloneRef.current = null
+      if (clone) {
+        mic.removePublishedClone(clone)
+        try { clone.stop() } catch { /* ignore */ }
+      }
       return
     }
 
@@ -444,12 +448,15 @@ export function useVoice(
         else if (ctx?.state === 'suspended') setAudioBlocked(true)
         setProximityRoomReady(true)
 
-        // Publish from processedMicStreamRef (rawMic → gainNode → micDest) so that
-        // mic gain, mute, and the voice gate are all applied before Krisp sees the signal.
-        // Clone so LiveKit's track.stop() on disconnect doesn't kill the shared micDest stream.
-        const processedTrack = mic.processedMicStreamRef.current?.getAudioTracks()[0]
-        if (processedTrack) {
-          await room.localParticipant.publishTrack(processedTrack.clone(), AUDIO_PUBLISH_OPTS)
+        // Publish a raw hardware track clone. Krisp receives a real hardware track
+        // (required for applyConstraints to succeed) and is applied via LocalTrackPublished.
+        const rawTrack = mic.rawMicStreamRef.current?.getAudioTracks()[0]
+        if (rawTrack) {
+          const clone = rawTrack.clone()
+          proximityPublishedCloneRef.current = clone
+          mic.addPublishedClone(clone)
+          await room.localParticipant.publishTrack(clone, AUDIO_PUBLISH_OPTS)
+            .catch(err => console.warn('[voice] proximity publish failed:', err))
         }
 
         // Subscribe to existing in-range participants
@@ -474,6 +481,12 @@ export function useVoice(
 
     return () => {
       setProximityRoomReady(false)
+      const clone = proximityPublishedCloneRef.current
+      proximityPublishedCloneRef.current = null
+      if (clone) {
+        mic.removePublishedClone(clone)
+        try { clone.stop() } catch { /* ignore */ }
+      }
       if (room) { room.disconnect(); proximityRoomRef.current = null }
       cleanupAllProximity()
       subscribedIds.current.clear()
@@ -504,7 +517,6 @@ export function useVoice(
           if (zoneRoomRef.current.remoteParticipants.get(peer)?.isSpeaking) nextSpeaking.add(peer)
         }
         setSpeakingPeers(nextSpeaking)
-        mic.applyEffectiveMicGain(mic.micGainRef.current, nextSpeaking.size > 0)
       }
 
       // Debounce zone boundary detection
@@ -538,15 +550,18 @@ export function useVoice(
       try {
         const clone = zonePublishedCloneRef.current
         zonePublishedCloneRef.current = null
-        if (room && clone) {
-          for (const pub of room.localParticipant.trackPublications.values()) {
-            if (pub.track?.mediaStreamTrack === clone) {
-              room.localParticipant.unpublishTrack(pub.track)
-              break
+        if (clone) {
+          mic.removePublishedClone(clone)
+          if (room) {
+            for (const pub of room.localParticipant.trackPublications.values()) {
+              if (pub.track?.mediaStreamTrack === clone) {
+                room.localParticipant.unpublishTrack(pub.track)
+                break
+              }
             }
           }
+          try { clone.stop() } catch { /* ignore */ }
         }
-        try { clone?.stop() } catch { /* ignore */ }
       } catch { /* ignore */ }
       cleanupAllZone()
       room?.disconnect()
@@ -590,7 +605,6 @@ export function useVoice(
       // In zone — proximity connections suppressed; zone interval handles speaking
       if (activeZoneKeyRef.current !== null) {
         setSpeakingPeers(new Set())
-        mic.applyEffectiveMicGain(mic.micGainRef.current, false)
         return
       }
 
@@ -638,7 +652,6 @@ export function useVoice(
       })
 
       setSpeakingPeers(nextSpeaking)
-      mic.applyEffectiveMicGain(mic.micGainRef.current, nextSpeaking.size > 0)
       setConnectedPeers(new Set(subscribedIds.current))
 
       const hasPeers      = proximityEntries.current.size > 0
@@ -688,8 +701,6 @@ export function useVoice(
     muted:              mic.isMuted,
     toggleMute:         mic.toggleMute,
     isLocalSpeaking:    mic.isLocalSpeaking,
-    micGain:            mic.micGain,
-    setMicGain:         mic.setMicGain,
     headphonePrompt:    mic.headphonePrompt,
     confirmHeadphones:  mic.confirmHeadphones,
     speakingPeers,

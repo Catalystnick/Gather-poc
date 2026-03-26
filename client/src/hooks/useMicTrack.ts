@@ -1,11 +1,12 @@
 // Owns the local microphone pipeline — one getUserMedia call shared across all
-// LiveKit rooms (proximity + zone). Both useLiveKitVoice and useZoneVoice receive
-// a MicTrack and publish mic.rawMicStreamRef.current to their respective room.
+// LiveKit rooms (proximity + zone). Both rooms receive a MicTrack and publish
+// raw hardware track clones to their respective room. Krisp noise cancellation
+// is applied per-room via LocalTrackPublished.
 //
 // Responsibilities:
-//   - getUserMedia / AudioContext / GainNode / Analyser
+//   - getUserMedia / AudioContext / AnalyserNode
 //   - Local speaking detection (RMS + hysteresis)
-//   - Mute / mic-gain state (persisted in localStorage)
+//   - Mute state (propagated to all registered published clones)
 //   - Headphone detection and echo-cancel toggle
 //   - Audio settings version migration
 
@@ -14,15 +15,11 @@ import { isKrispNoiseFilterSupported } from '@livekit/krisp-noise-filter'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const SPEAKING_THRESHOLD    = 20
+const SPEAKING_THRESHOLD       = 20
 const SPEAKING_HYSTERESIS_UP   = 2   // frames above threshold → speaking
 const SPEAKING_HYSTERESIS_DOWN = 5   // frames below threshold → silent
-const MIC_GAIN_STORAGE_KEY  = 'gather_poc_mic_gain'
 const AUDIO_SETTINGS_VERSION_KEY = 'gather_poc_audio_settings_version'
 const AUDIO_SETTINGS_VERSION     = '2026-03-native-v1'
-const DUCK_ATTACK_TC  = 0.02
-const DUCK_RELEASE_TC = 0.14
-const DUCKING_FACTOR  = 0.25
 
 const AudioContextCtor: typeof AudioContext =
   window.AudioContext ??
@@ -31,7 +28,7 @@ const AudioContextCtor: typeof AudioContext =
 const AUDIO_CONSTRAINTS: MediaStreamConstraints = {
   audio: {
     echoCancellation: true,
-    noiseSuppression: !isKrispNoiseFilterSupported(), // native NS only when Krisp unavailable; running both degrades Krisp accuracy
+    noiseSuppression: !isKrispNoiseFilterSupported(), // native NS only when Krisp unavailable
     autoGainControl:  true,
   } as MediaTrackConstraints,
   video: false,
@@ -49,73 +46,52 @@ function ensureMigration() {
   } catch { /* storage unavailable */ }
 }
 
-function loadMicGain(): number {
-  ensureMigration()
-  try {
-    const v = Number(localStorage.getItem(MIC_GAIN_STORAGE_KEY))
-    return Number.isNaN(v) ? 1 : Math.max(0, v)
-  } catch { return 1 }
-}
-
 // ─── Public interface ─────────────────────────────────────────────────────────
 
 export interface MicTrack {
   // Stable refs — safe to use inside async callbacks across renders.
-  rawMicStreamRef:       React.MutableRefObject<MediaStream | null>
-  // Gain-controlled, Krisp-filtered output stream — use this for publishing to rooms.
-  // Mute (gain=0) and mic gain changes propagate here automatically via gainNode.
-  processedMicStreamRef: React.MutableRefObject<MediaStream | null>
-  audioCtxRef:           React.MutableRefObject<AudioContext | null>
-  micGainNodeRef:  React.MutableRefObject<GainNode | null>
-  micSourceNodeRef: React.MutableRefObject<MediaStreamAudioSourceNode | null>
-  // Mutable state refs (kept in sync with state values below)
-  mutedRef:    React.MutableRefObject<boolean>
-  micGainRef:  React.MutableRefObject<number>
-  duckedRef:   React.MutableRefObject<boolean>
+  rawMicStreamRef: React.MutableRefObject<MediaStream | null>
+  audioCtxRef:     React.MutableRefObject<AudioContext | null>
+  mutedRef:        React.MutableRefObject<boolean>
   // React state (triggers re-renders for UI)
-  isMuted:         boolean
-  toggleMute:      () => void
-  isLocalSpeaking: boolean
-  micGain:         number
-  setMicGain:      (v: number) => void
-  headphonePrompt: string | null
+  isMuted:          boolean
+  toggleMute:       () => void
+  isLocalSpeaking:  boolean
+  headphonePrompt:  string | null
   confirmHeadphones: (accept: boolean) => void
   echoCancelEnabled: boolean
   toggleEchoCancel:  () => void
-  isReady:         boolean
-  // Helpers used by room hooks
-  applyEffectiveMicGain: (baseGain: number, duck: boolean) => void
+  isReady:          boolean
+  // Published clone registry — mute/unmute propagates to all registered clones.
+  // Each room hook registers its clone when publishing and unregisters on disconnect.
+  addPublishedClone:    (track: MediaStreamTrack) => void
+  removePublishedClone: (track: MediaStreamTrack) => void
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useMicTrack(): MicTrack {
-  const [isMuted,         setIsMuted]         = useState(false)
-  const [isLocalSpeaking, setIsLocalSpeaking] = useState(false)
-  const [micGain,         setMicGainState]    = useState(loadMicGain)
-  const [headphonePrompt, setHeadphonePrompt] = useState<string | null>(null)
+  const [isMuted,           setIsMuted]           = useState(false)
+  const [isLocalSpeaking,   setIsLocalSpeaking]   = useState(false)
+  const [headphonePrompt,   setHeadphonePrompt]   = useState<string | null>(null)
   const [echoCancelEnabled, setEchoCancelEnabled] = useState(true)
-  const [isReady,         setIsReady]         = useState(false)
+  const [isReady,           setIsReady]           = useState(false)
 
-  const rawMicStreamRef       = useRef<MediaStream | null>(null)
-  const processedMicStreamRef = useRef<MediaStream | null>(null)
-  const audioCtxRef           = useRef<AudioContext | null>(null)
-  const micGainNodeRef  = useRef<GainNode | null>(null)
-  const micSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null)
+  const rawMicStreamRef  = useRef<MediaStream | null>(null)
+  const audioCtxRef      = useRef<AudioContext | null>(null)
   const localAnalyserRef = useRef<AnalyserNode | null>(null)
 
-  const mutedRef   = useRef(false)
-  const micGainRef = useRef(loadMicGain())
-  const duckedRef  = useRef(false)
-  const gateOpenRef = useRef(false)
-  const echoCancelRef = useRef(true)
-  const speakingFrames = useRef(0)
-  const wasSpeaking    = useRef(false)
-  const prevOutputIds  = useRef<Set<string>>(new Set())
-  const headphoneIdRef = useRef<string | null>(null)
+  const mutedRef          = useRef(false)
+  const echoCancelRef     = useRef(true)
+  const speakingFrames    = useRef(0)
+  const wasSpeaking       = useRef(false)
+  const prevOutputIds     = useRef<Set<string>>(new Set())
+  const headphoneIdRef    = useRef<string | null>(null)
+  const publishedClonesRef = useRef<Set<MediaStreamTrack>>(new Set())
 
   // ── Mic setup ──────────────────────────────────────────────────────────────
   useEffect(() => {
+    ensureMigration()
     const ctx = new AudioContextCtor()
     audioCtxRef.current = ctx
     void ctx.resume().catch(() => {})
@@ -135,21 +111,7 @@ export function useMicTrack(): MicTrack {
       if (ctx.state === 'closed') { rawStream.getTracks().forEach(t => t.stop()); return }
       rawMicStreamRef.current = rawStream
 
-      const gainNode = ctx.createGain()
-      gainNode.gain.value = micGainRef.current
-      micGainNodeRef.current = gainNode
-
-      const micSource = ctx.createMediaStreamSource(rawStream)
-      micSourceNodeRef.current = micSource
-
-      // Route: mic → gain → destination. Both rooms publish clones of micDest.stream
-      // (processedMicStreamRef) and apply KrispNoiseFilter via LocalTrackPublished.
-      // Gain, mute, and voice gate all operate on gainNode before Krisp sees the signal.
-      const micDest = ctx.createMediaStreamDestination()
-      micSource.connect(gainNode).connect(micDest)
-      processedMicStreamRef.current = micDest.stream
-
-      // Analyser taps directly from the raw stream for speaking detection
+      // Analyser taps directly from the raw stream for local speaking detection
       const analyser = ctx.createAnalyser()
       analyser.fftSize = 256
       ctx.createMediaStreamSource(rawStream).connect(analyser)
@@ -164,7 +126,6 @@ export function useMicTrack(): MicTrack {
       window.removeEventListener('keydown',     resumeOnGesture)
       window.removeEventListener('touchstart',  resumeOnGesture)
       rawMicStreamRef.current?.getTracks().forEach(t => t.stop())
-      micSourceNodeRef.current = null
       void ctx.close()
     }
   }, [])
@@ -186,10 +147,7 @@ export function useMicTrack(): MicTrack {
         (wasSpeaking.current && speakingFrames.current > -SPEAKING_HYSTERESIS_DOWN)
       )
       wasSpeaking.current = speaking
-      gateOpenRef.current = speaking
       setIsLocalSpeaking(speaking)
-      // Keep transmit gain aligned with gate state even when no peers are active.
-      applyEffectiveMicGain(micGainRef.current, duckedRef.current)
     }, 100)
     return () => clearInterval(id)
   }, [])
@@ -236,15 +194,14 @@ export function useMicTrack(): MicTrack {
 
   // ── Controls ───────────────────────────────────────────────────────────────
 
-  function applyEffectiveMicGain(baseGain: number, duck: boolean) {
-    const ctx  = audioCtxRef.current
-    const node = micGainNodeRef.current
-    if (!ctx || !node) return
-    // Voice gate: require local speech detection before transmitting mic audio.
-    const effective = mutedRef.current ? 0 : (gateOpenRef.current ? baseGain : 0)
-    const target    = duck ? effective * DUCKING_FACTOR : effective
-    node.gain.setTargetAtTime(target, ctx.currentTime, duck ? DUCK_ATTACK_TC : DUCK_RELEASE_TC)
-    duckedRef.current = duck && effective > 0
+  function addPublishedClone(track: MediaStreamTrack) {
+    publishedClonesRef.current.add(track)
+    // Immediately apply current mute state so late-registered clones are consistent
+    track.enabled = !mutedRef.current
+  }
+
+  function removePublishedClone(track: MediaStreamTrack) {
+    publishedClonesRef.current.delete(track)
   }
 
   function toggleMute() {
@@ -252,18 +209,10 @@ export function useMicTrack(): MicTrack {
       const next = !prev
       mutedRef.current = next
       rawMicStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = !next })
+      publishedClonesRef.current.forEach(t => { t.enabled = !next })
       if (next) { wasSpeaking.current = false; speakingFrames.current = 0; setIsLocalSpeaking(false) }
-      applyEffectiveMicGain(micGainRef.current, duckedRef.current)
       return next
     })
-  }
-
-  function setMicGain(value: number) {
-    const next = Math.max(0, value)
-    setMicGainState(next)
-    micGainRef.current = next
-    applyEffectiveMicGain(next, duckedRef.current)
-    try { localStorage.setItem(MIC_GAIN_STORAGE_KEY, String(next)) } catch { /* ignore */ }
   }
 
   async function confirmHeadphones(accept: boolean) {
@@ -272,8 +221,7 @@ export function useMicTrack(): MicTrack {
       headphoneIdRef.current = null
       return
     }
-
-    // User confirmed headphones are in use → disable AEC for better quality.
+    // User confirmed headphones → disable AEC for better quality.
     setEchoCancelEnabled(false)
     echoCancelRef.current = false
     const track = rawMicStreamRef.current?.getAudioTracks()[0]
@@ -289,14 +237,12 @@ export function useMicTrack(): MicTrack {
   }
 
   return {
-    rawMicStreamRef, processedMicStreamRef, audioCtxRef, micGainNodeRef, micSourceNodeRef,
-    mutedRef, micGainRef, duckedRef,
+    rawMicStreamRef, audioCtxRef, mutedRef,
     isMuted, toggleMute,
     isLocalSpeaking,
-    micGain, setMicGain,
     headphonePrompt, confirmHeadphones,
     echoCancelEnabled, toggleEchoCancel,
     isReady,
-    applyEffectiveMicGain,
+    addPublishedClone, removePublishedClone,
   }
 }

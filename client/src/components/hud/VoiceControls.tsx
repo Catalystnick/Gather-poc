@@ -97,8 +97,6 @@ export default function VoiceControls() {
     toggleMute,
     remoteGain,
     setRemoteGain,
-    micGain,
-    setMicGain,
     headphonePrompt,
     confirmHeadphones,
     audioBlocked,
@@ -149,7 +147,6 @@ export default function VoiceControls() {
           unit=""
           title="Playback volume (0–1)"
         />
-        <GainControl label="🎙 Mic"     value={micGain}    onChange={setMicGain} />
       </div>
     </>
   )

@@ -85,8 +85,8 @@ export function attachRemoteAudio(track: RemoteAudioTrack, volume: number): HTML
 
 // ─── Krisp noise filter setup ─────────────────────────────────────────────────
 // Official LiveKit pattern: KrispNoiseFilter applied directly via setProcessor.
-// Both rooms publish a clone of processedMicStreamRef (gain already applied upstream),
-// so Krisp receives the correctly-levelled signal without any custom routing.
+// Both rooms publish a clone of the raw hardware track so Krisp can call
+// applyConstraints on it (Web Audio destination tracks do not support this).
 
 export async function applyKrisp(
   publication: Pick<LocalTrackPublication, 'source' | 'track'> & { track?: unknown },
