@@ -12,7 +12,7 @@ A multiplayer virtual space with proximity-based voice chat, top-down 3D renderi
 - Three.js via React Three Fiber (R3F) + Drei
 - Socket.IO client — presence and chat
 - LiveKit client — WebRTC proximity voice
-- Krisp noise cancellation (`@livekit/krisp-noise-filter`)
+- Browser WebRTC capture processing (echo cancellation, noise suppression, AGC)
 - No external state library — hooks + VoiceContext only
 
 ### Server (`/server`)

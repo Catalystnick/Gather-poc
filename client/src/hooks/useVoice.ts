@@ -10,8 +10,7 @@
 // Voice is proximity XOR zone for UX: while activeZoneKey is set, proximity peer
 // subscriptions are suppressed (gating) and zone owns who you hear.
 // One underlying capture from useMicTrack; LiveKit publish uses the VAD-gated
-// Web Audio send stream (VAD gate → destination). Krisp is attached on the
-// capture track in useMicTrack before this send stream is derived.
+// Web Audio send stream (VAD gate → destination), fed from browser-processed mic capture.
 
 import { useEffect, useRef, useState } from 'react'
 import type { Socket } from 'socket.io-client'
@@ -129,7 +128,7 @@ export function useVoice(
   const zoneRoomRef              = useRef<Room | null>(null)
   const proximityPublishedCloneRef = useRef<MediaStreamTrack | null>(null)
   const zonePublishedCloneRef    = useRef<MediaStreamTrack | null>(null)
-  // LocalAudioTrack wrappers — hold the Krisp processor; stopped on cleanup.
+  // LocalAudioTrack wrappers for published send path; stopped on cleanup.
   const proximityLocalTrackRef   = useRef<LocalAudioTrack | null>(null)
   const zoneLocalTrackRef        = useRef<LocalAudioTrack | null>(null)
 
@@ -294,7 +293,7 @@ export function useVoice(
     const cancelled = () => generationRef.current !== myGen
     console.log('[voice] zone transition | from:', activeZoneKeyRef.current, '→', targetKey, '| gen:', myGen)
     if (targetKey) {
-      console.log('[voice][krisp][zone-enter] begin | zone:', targetKey)
+      console.log('[voice][zone-enter] begin | zone:', targetKey)
     }
     syncMode('switching')
 
@@ -534,7 +533,7 @@ export function useVoice(
             await room.disconnect(false).catch(() => {})
             return
           }
-          console.log('[voice][krisp][join] publish mic | proximity | trackId:', sendTrack.id)
+          console.log('[voice][join] publish mic | proximity | trackId:', sendTrack.id)
           console.log('[voice][proximity] send (VAD) | id:', sendTrack.id, '| state:', sendTrack.readyState, '| enabled:', sendTrack.enabled)
           mic.addPublishedClone(sendTrack)
           proximityPublishedCloneRef.current = sendTrack
@@ -558,7 +557,7 @@ export function useVoice(
             await room.disconnect(false).catch(() => {})
             return
           }
-          console.log('[voice][proximity] publish attempted (Krisp via LocalTrackPublished) | mediaStreamTrack id:', localTrack.mediaStreamTrack.id)
+          console.log('[voice][proximity] publish attempted | mediaStreamTrack id:', localTrack.mediaStreamTrack.id)
         }
 
         // Subscribe to existing in-range participants

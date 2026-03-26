@@ -119,35 +119,13 @@ export function attachRemoteAudio(track: RemoteAudioTrack, linearGain: number): 
 // ─── Local mic track (LiveKit publish wrapper for Web Audio send path) ─────────
 
 /**
- * Wrap the shared send-path track for LiveKit publish. Mic acquisition and Krisp run
- * in useMicTrack on the real capture `LocalAudioTrack`; this wrapper is the VAD-gated
- * Web Audio output (`userProvided: true`) plus `audioContext` for room `webAudioMix`.
+ * Wrap the shared send-path track for LiveKit publish. Raw mic is acquired in
+ * useMicTrack; this wraps the VAD-gated Web Audio output (`userProvided: true`)
+ * plus `audioContext` for room `webAudioMix`.
  */
 export function createLocalMicTrack(
   rawClone: MediaStreamTrack,
   audioCtx?: AudioContext,
 ): LocalAudioTrack {
   return new LocalAudioTrack(rawClone, undefined, true, audioCtx)
-}
-
-/** Matches LiveKit Krisp docs: dynamic import, setProcessor, setEnabled(true). */
-export async function applyKrispNoiseFilterFromDocs(
-  track: LocalAudioTrack,
-  label: string,
-): Promise<boolean> {
-  const { KrispNoiseFilter, isKrispNoiseFilterSupported } = await import('@livekit/krisp-noise-filter')
-  if (!isKrispNoiseFilterSupported()) {
-    console.warn(`[Krisp][${label}] Krisp noise filter is currently not supported on this browser`)
-    return false
-  }
-  try {
-    const krispProcessor = KrispNoiseFilter()
-    await track.setProcessor(krispProcessor)
-    console.log(`[Krisp][${label}] Enabling LiveKit Krisp noise filter`)
-    await krispProcessor.setEnabled(true)
-    return true
-  } catch (err) {
-    console.error(`[Krisp][${label}] setProcessor / setEnabled failed:`, err)
-    return false
-  }
 }

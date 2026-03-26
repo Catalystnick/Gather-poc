@@ -1,5 +1,5 @@
-// Local mic: LiveKit capture + Krisp + Web Audio VAD gate → LiveKit publish stream.
-// Graph: one MediaStreamSource → vadGate → MediaStreamDestination (send), parallel → Analyser (fallback).
+// Local mic: LiveKit capture (browser AEC/NS/AGC) + Web Audio VAD gate → LiveKit publish stream.
+// Graph: mic → RNNoise (if loadable) → vadGate → send dest; parallel → analyser + VAD tap stream.
 // Heavy setup lives in `utils/micPipeline.ts`; this hook owns React state and lifecycle.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -10,7 +10,7 @@ import {
   getAudioContextCtor,
   buildSendPathGraph,
   teardownSendPathGraph,
-  createCaptureTrackWithKrisp,
+  createCaptureTrack,
   startSileroVad,
   analyserRms,
   type SendPathGraph,
@@ -92,7 +92,7 @@ export function useMicTrack(): MicTrack {
     void (async () => {
       let capture: LocalAudioTrack | null = null
       try {
-        const { capture: cap, mediaStream } = await createCaptureTrackWithKrisp('capture')
+        const { capture: cap, mediaStream } = await createCaptureTrack()
         capture = cap
         if (disposed) {
           cap.stop()
@@ -101,7 +101,12 @@ export function useMicTrack(): MicTrack {
         captureRef.current = cap
         rawMicStreamRef.current = mediaStream
 
-        const graph = buildSendPathGraph(ctx, mediaStream)
+        const graph = await buildSendPathGraph(ctx, mediaStream)
+        if (disposed) {
+          teardownSendPathGraph(graph)
+          cap.stop()
+          return
+        }
         graphRef.current = graph
         analyserRef.current = graph.analyser
         sendMicStreamRef.current = graph.destination.stream
@@ -111,7 +116,7 @@ export function useMicTrack(): MicTrack {
 
         const vad = await startSileroVad({
           ctx,
-          mediaStream,
+          mediaStream: graph.vadTapDestination.stream,
           vadGate: graph.vadGate,
           disposed: isDisposed,
           isMuted: () => mutedRef.current,

@@ -1,12 +1,11 @@
 /**
- * LiveKit mic capture, Krisp attach, and Web Audio send-path graph.
- * Keeps one hardware MediaStreamSource fan-out (publish path + analyser tap).
+ * LiveKit mic capture (browser AEC / AGC / optional NS) + RNNoise worklet + VAD/send graph.
+ * Chain: mic → [RNNoise] → vadGate → publish; same tail → analyser + tap stream for Silero.
  */
 
+import { NoiseSuppressorWorklet_Name } from '@timephy/rnnoise-wasm'
 import { MicVAD } from '@ricky0123/vad-web'
 import { createLocalAudioTrack, type LocalAudioTrack } from 'livekit-client'
-import { isKrispNoiseFilterSupported } from '@livekit/krisp-noise-filter'
-import { applyKrispNoiseFilterFromDocs } from './voiceRoom'
 
 export const AUDIO_SETTINGS_VERSION_KEY = 'gather_poc_audio_settings_version'
 export const AUDIO_SETTINGS_VERSION     = '2026-03-native-v1'
@@ -32,14 +31,15 @@ export function getAudioContextCtor(): typeof AudioContext {
   )
 }
 
-/** Krisp expects browser noise suppression off when the filter is active. */
+/**
+ * WebRTC capture defaults — browser applies echo cancellation, noise suppression,
+ * and auto gain where supported (Chrome: “noise cancellation” bundle).
+ */
 export function getMicCaptureOptions() {
-  const krisp = isKrispNoiseFilterSupported()
   return {
     echoCancellation: true,
+    noiseSuppression: true,
     autoGainControl: true,
-    noiseSuppression: !krisp,
-    ...(krisp ? { voiceIsolation: false } : {}),
   }
 }
 
@@ -50,40 +50,60 @@ export function vadAssetBase(): string {
 
 export type SendPathGraph = {
   micSource: MediaStreamAudioSourceNode
+  /** RNNoise AudioWorklet; null if worklet failed to load. */
+  rnnoise: AudioWorkletNode | null
+  /** Denoised stream for Silero only (not published directly). */
+  vadTapDestination: MediaStreamAudioDestinationNode
   vadGate: GainNode
   destination: MediaStreamAudioDestinationNode
   analyser: AnalyserNode
 }
 
+function rnnoiseWorkletUrl(): string {
+  return new URL('NoiseSuppressorWorklet.js', `${window.location.origin}${vadAssetBase()}`).href
+}
+
 /**
- * micSource → vadGate → destination (what LiveKit publishes).
- * micSource → analyser (RMS fallback; no second MediaStreamSource).
+ * mic → [RNNoise?] → fan-out: vadGate → destination, analyser, vadTapDestination.
  */
-export function buildSendPathGraph(ctx: AudioContext, mediaStream: MediaStream): SendPathGraph {
+export async function buildSendPathGraph(ctx: AudioContext, mediaStream: MediaStream): Promise<SendPathGraph> {
   const micSource = ctx.createMediaStreamSource(mediaStream)
   const vadGate = ctx.createGain()
   vadGate.gain.value = 0
   const destination = ctx.createMediaStreamDestination()
+  const vadTapDestination = ctx.createMediaStreamDestination()
   const analyser = ctx.createAnalyser()
   analyser.fftSize = 256
-  micSource.connect(vadGate)
+
+  let tail: AudioNode = micSource
+  let rnnoise: AudioWorkletNode | null = null
+  try {
+    await ctx.audioWorklet.addModule(rnnoiseWorkletUrl())
+    rnnoise = new AudioWorkletNode(ctx, NoiseSuppressorWorklet_Name)
+    micSource.connect(rnnoise)
+    tail = rnnoise
+  } catch (err) {
+    console.warn('[mic] RNNoise worklet unavailable — continuing without it:', err)
+  }
+
+  tail.connect(vadGate)
   vadGate.connect(destination)
-  micSource.connect(analyser)
-  return { micSource, vadGate, destination, analyser }
+  tail.connect(analyser)
+  tail.connect(vadTapDestination)
+
+  return { micSource, rnnoise, vadTapDestination, vadGate, destination, analyser }
 }
 
 export function teardownSendPathGraph(graph: SendPathGraph): void {
   try { graph.micSource.disconnect() } catch { /* ignore */ }
+  try { graph.rnnoise?.disconnect() } catch { /* ignore */ }
   try { graph.vadGate.disconnect() } catch { /* ignore */ }
   try { graph.analyser.disconnect() } catch { /* ignore */ }
+  try { graph.vadTapDestination.disconnect() } catch { /* ignore */ }
 }
 
-export async function createCaptureTrackWithKrisp(
-  krispLabel: string,
-): Promise<{ capture: LocalAudioTrack; mediaStream: MediaStream }> {
+export async function createCaptureTrack(): Promise<{ capture: LocalAudioTrack; mediaStream: MediaStream }> {
   const capture = await createLocalAudioTrack(getMicCaptureOptions())
-  const krispOk = await applyKrispNoiseFilterFromDocs(capture, krispLabel)
-  if (!krispOk) console.warn('[mic] Krisp noise filter not active')
   const mediaStream = capture.mediaStream ?? new MediaStream([capture.mediaStreamTrack])
   return { capture, mediaStream }
 }
@@ -113,6 +133,7 @@ export async function startSileroVad(options: {
     return await MicVAD.new({
       startOnLoad: false,
       model: 'v5',
+      positiveSpeechThreshold: 0.22,
       audioContext: ctx,
       getStream: async () => mediaStream,
       pauseStream: async () => {},
