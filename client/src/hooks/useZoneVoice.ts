@@ -169,6 +169,7 @@ export function useZoneVoice(
     // Leaving all zones → return to proximity
     if (targetKey === null) {
       console.log('[zone voice] returned to proximity | gen:', myGen)
+      targetZoneRef.current = null
       syncZoneKey(null)
       syncMode('proximity')
       return
@@ -185,8 +186,9 @@ export function useZoneVoice(
     if (cancelled()) { console.log('[zone voice] cancelled after token fetch | gen:', myGen); return }
     if (!cached) {
       console.warn('[zone voice] token fetch failed for zone:', targetKey, '— staying in proximity')
-      console.log('[zone voice] targetZone reset for retry | was:', targetZoneRef.current, '→', activeZoneKeyRef.current)
-      targetZoneRef.current = activeZoneKeyRef.current  // allow retry on next boundary cross
+      console.log('[zone voice] token fetch failed — resetting zone state to proximity fallback')
+      targetZoneRef.current = undefined
+      syncZoneKey(null)
       syncMode('proximity')
       return
     }
@@ -276,8 +278,9 @@ export function useZoneVoice(
     } catch (err) {
       console.warn('[zone voice] connect failed | zone:', targetKey, '| err:', err)
       if (!cancelled()) {
-        console.log('[zone voice] targetZone reset for retry | was:', targetZoneRef.current, '→', activeZoneKeyRef.current)
-        targetZoneRef.current = activeZoneKeyRef.current  // allow retry
+        console.log('[zone voice] connect failed — resetting zone state to proximity fallback')
+        targetZoneRef.current = undefined
+        syncZoneKey(null)
         syncMode('proximity')
       }
       return
@@ -367,8 +370,13 @@ export function useZoneVoice(
       room?.disconnect()
       // Clear transition guards so a fresh effect run starts with a clean slate
       console.log('[zone voice] detector cleanup — clearing guards | activeZone:', activeZoneKeyRef.current, '→ null | targetZone:', targetZoneRef.current, '→ undefined')
-      activeZoneKeyRef.current = null
+      setConnectedPeers(new Set())
+      setSpeakingPeers(new Set())
+      syncZoneKey(null)
+      syncMode('proximity')
       targetZoneRef.current = undefined
+      pendingZoneRef.current = undefined
+      debounceTicksRef.current = 0
     }
   }, [socket?.id, mic.isReady])
 
