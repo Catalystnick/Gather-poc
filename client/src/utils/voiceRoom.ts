@@ -112,3 +112,10 @@ export async function createKrispLocalTrack(
   }
   return localTrack
 }
+
+export function createLocalAudioTrack(
+  sourceTrack: MediaStreamTrack,
+  audioCtx?: AudioContext,
+): LocalAudioTrack {
+  return new LocalAudioTrack(sourceTrack, undefined, true, audioCtx)
+}

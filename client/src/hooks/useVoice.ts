@@ -25,7 +25,7 @@ import { getZoneKey, getPrefetchZoneKey } from '../utils/zoneDetection'
 import {
   ROOM_NAME, ZONE_ROOM_PREFIX,
   type CachedToken,
-  createRoom, fetchToken, tokenIsValid, attachRemoteAudio, createKrispLocalTrack, AUDIO_PUBLISH_OPTS,
+  createRoom, fetchToken, tokenIsValid, attachRemoteAudio, createKrispLocalTrack, createLocalAudioTrack, AUDIO_PUBLISH_OPTS,
 } from '../utils/voiceRoom'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -341,20 +341,38 @@ export function useVoice(
 
     zoneRoomRef.current = room
 
-    // Clone the raw mic track, apply Krisp before publishing so the processor
-    // is guaranteed to be active when the track enters the PeerConnection.
-    const rawTrack = mic.rawMicStreamRef.current?.getAudioTracks()[0]
-    if (rawTrack) {
-      console.log('[voice] publishing mic clone with Krisp | zone:', targetKey)
-      const clone = rawTrack.clone()
+    // Prefer cloning proximity's already-processed outbound track for zone publish.
+    // This avoids running a second Krisp processor concurrently on the same mic source.
+    const proxProcessedTrack = proximityLocalTrackRef.current?.mediaStreamTrack
+    if (proxProcessedTrack) {
+      console.log('[voice][zone] path=processed-clone | zone:', targetKey, '| source id:', proxProcessedTrack.id, '| state:', proxProcessedTrack.readyState)
+      const clone = proxProcessedTrack.clone()
       mic.addPublishedClone(clone)
       zonePublishedCloneRef.current = clone
-      const localTrack = await createKrispLocalTrack(clone, 'zone', mic.audioCtxRef.current ?? undefined)
+      console.log('[voice][zone] clone (processed path) | id:', clone.id, '| state:', clone.readyState, '| enabled:', clone.enabled)
+      const localTrack = createLocalAudioTrack(clone, mic.audioCtxRef.current ?? undefined)
       zoneLocalTrackRef.current = localTrack
+      console.log('[voice][zone] localTrack ready (processed path) | sid?:', localTrack.sid ?? 'n/a', '| mediaStreamTrack id:', localTrack.mediaStreamTrack.id)
       await room.localParticipant.publishTrack(localTrack, AUDIO_PUBLISH_OPTS)
         .catch(err => console.warn('[voice] zone publish failed:', err))
+      console.log('[voice][zone] publish attempted (processed path) | mediaStreamTrack id:', localTrack.mediaStreamTrack.id)
     } else {
-      console.warn('[voice] no raw mic track to publish | zone:', targetKey)
+      const rawTrack = mic.rawMicStreamRef.current?.getAudioTracks()[0]
+      if (rawTrack) {
+        console.log('[voice][zone] path=raw-plus-krisp-fallback | zone:', targetKey, '| source id:', rawTrack.id, '| state:', rawTrack.readyState)
+        const clone = rawTrack.clone()
+        mic.addPublishedClone(clone)
+        zonePublishedCloneRef.current = clone
+        console.log('[voice][zone] clone (fallback) | id:', clone.id, '| state:', clone.readyState, '| enabled:', clone.enabled)
+        const localTrack = await createKrispLocalTrack(clone, 'zone', mic.audioCtxRef.current ?? undefined)
+        zoneLocalTrackRef.current = localTrack
+        console.log('[voice][zone] localTrack ready (fallback) | sid?:', localTrack.sid ?? 'n/a', '| mediaStreamTrack id:', localTrack.mediaStreamTrack.id)
+        await room.localParticipant.publishTrack(localTrack, AUDIO_PUBLISH_OPTS)
+          .catch(err => console.warn('[voice] zone publish failed:', err))
+        console.log('[voice][zone] publish attempted (fallback) | mediaStreamTrack id:', localTrack.mediaStreamTrack.id)
+      } else {
+        console.warn('[voice] no source mic track to publish | zone:', targetKey)
+      }
     }
     if (cancelled()) {
       console.log('[voice] cancelled after publish | gen:', myGen)
@@ -454,13 +472,17 @@ export function useVoice(
         // Clone the raw mic track and apply Krisp before publishing.
         const rawTrack = mic.rawMicStreamRef.current?.getAudioTracks()[0]
         if (rawTrack) {
+          console.log('[voice][proximity] source raw | id:', rawTrack.id, '| state:', rawTrack.readyState, '| enabled:', rawTrack.enabled)
           const clone = rawTrack.clone()
           mic.addPublishedClone(clone)
           proximityPublishedCloneRef.current = clone
+          console.log('[voice][proximity] clone | id:', clone.id, '| state:', clone.readyState, '| enabled:', clone.enabled)
           const localTrack = await createKrispLocalTrack(clone, 'proximity', mic.audioCtxRef.current ?? undefined)
           proximityLocalTrackRef.current = localTrack
+          console.log('[voice][proximity] localTrack ready | sid?:', localTrack.sid ?? 'n/a', '| mediaStreamTrack id:', localTrack.mediaStreamTrack.id)
           await room.localParticipant.publishTrack(localTrack, AUDIO_PUBLISH_OPTS)
             .catch(err => console.warn('[voice] proximity publish failed:', err))
+          console.log('[voice][proximity] publish attempted | mediaStreamTrack id:', localTrack.mediaStreamTrack.id)
         }
 
         // Subscribe to existing in-range participants
