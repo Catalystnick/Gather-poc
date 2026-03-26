@@ -18,6 +18,8 @@ import Zones from "./Zones";
 import Fence from "./Fence";
 import { useSocket } from "../../hooks/useSocket";
 import { useChat } from "../../hooks/useChat";
+import { useMicTrack } from "../../hooks/useMicTrack";
+import { useZoneVoice } from "../../hooks/useZoneVoice";
 import { useLiveKitVoice } from "../../hooks/useLiveKitVoice";
 import { VoiceProvider } from "../../contexts/VoiceContext";
 import { useAuth } from "../../contexts/AuthContext";
@@ -53,7 +55,32 @@ export default function World({ player }: Props) {
     }
   }, [spawnPosition]);
   const { messages, bubbles, sendMessage } = useChat(socket);
-  const voice = useLiveKitVoice(socket, player.name, localPositionRef, remotePlayers, accessToken);
+
+  // ── Voice coordinator ───────────────────────────────────────────────────
+  const mic          = useMicTrack()
+  const zoneVoice    = useZoneVoice(socket, localPositionRef, mic, accessToken)
+  const proximityVoice = useLiveKitVoice(socket, localPositionRef, remotePlayers, mic, zoneVoice.activeZoneKey, accessToken)
+
+  // Unified voice state: zone room takes precedence when active
+  const inZone = zoneVoice.activeZoneKey !== null
+  const voice = {
+    muted:                mic.isMuted,
+    toggleMute:           mic.toggleMute,
+    isLocalSpeaking:      mic.isLocalSpeaking,
+    micGain:              mic.micGain,
+    setMicGain:           mic.setMicGain,
+    headphonePrompt:      mic.headphonePrompt,
+    confirmHeadphones:    mic.confirmHeadphones,
+    connectedPeers:       inZone ? zoneVoice.connectedPeers : proximityVoice.connectedPeers,
+    speakingPeers:        inZone ? zoneVoice.speakingPeers  : proximityVoice.speakingPeers,
+    peerConnectionStates: inZone ? {}                        : proximityVoice.peerConnectionStates,
+    remoteGain:           proximityVoice.remoteGain,
+    setRemoteGain:        proximityVoice.setRemoteGain,
+    audioBlocked:         proximityVoice.audioBlocked,
+    audioInterrupted:     proximityVoice.audioInterrupted,
+    mode:                 zoneVoice.mode,
+    activeZoneKey:        zoneVoice.activeZoneKey,
+  }
 
   // Derive connection rows once per render rather than inline in JSX.
   const connectionRows = useMemo(
@@ -82,7 +109,7 @@ export default function World({ player }: Props) {
             <Zones />
             <Fence />
             {import.meta.env.DEV && <PlacementTool uvAttrRef={uvAttrRef} onHUDState={onHUDState} />}
-            {spawnPosition && <LocalPlayer player={player} onMove={emitMove} positionRef={localPositionRef} spawnPosition={spawnPosition} isSpeaking={voice.isLocalSpeaking} />}
+            {spawnPosition && <LocalPlayer player={player} onMove={emitMove} positionRef={localPositionRef} spawnPosition={spawnPosition} isSpeaking={voice.isLocalSpeaking} activeZoneKey={zoneVoice.activeZoneKey} />}
             {Array.from(remotePlayers.values()).map((p) => (
               <RemotePlayer key={p.id} {...p} bubble={bubbles.get(p.id)} inRange={voice.connectedPeers.has(p.id)} isSpeaking={voice.speakingPeers.has(p.id)} />
             ))}

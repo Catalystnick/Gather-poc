@@ -77,27 +77,9 @@ export const WORLD_MAP = new Uint8Array([
 ]);
 
 export const WORLD_ZONES = [
-  {
-    key: "dev",
-    x: -17.5,
-    z: -20,
-    width: 25,
-    height: 20,
-  },
-  {
-    key: "design",
-    x: 17,
-    z: -20,
-    width: 26,
-    height: 20,
-  },
-  {
-    key: "game",
-    x: 0.5,
-    z: 20,
-    width: 33,
-    height: 20,
-  },
+  { key: "dev",    x: -17.5, z: -20, width: 25, depth: 20 },
+  { key: "design", x:  17,   z: -20, width: 26, depth: 20 },
+  { key: "game",   x:   0.5, z:  20, width: 33, depth: 20 },
 ];
 
 // Zone fence layout — one entry per sprite tile.
@@ -156,3 +138,43 @@ export const WORLD_FENCES = [
   // Back wall (bottom of map) — row 59, bottom edge, full width, no entrance
   ...Array.from({ length: 33 }, (_, i) => ({ fenceId: 1, col: 14 + i, row: 59, dir: "h", offsetX: 0.5, offsetZ: 1   })),
 ] as PlacedFence[];
+
+// ─── Zone entrances ───────────────────────────────────────────────────────────
+// The exact tile coordinates of each entrance gap.
+// Col/row are the first (left/top-most) tile of the gap; length is always 6.
+//
+//  Dev    – bottom wall, gap at cols 9–14, row 20
+//  Design – bottom wall, gap at cols 43–48, row 20
+//  Game   – top wall,    gap at cols 23–28, row 40  (faces map centre)
+//
+// World formula: world_x = -30 + col,  world_z = -30 + row  (TILE_SIZE = 1)
+
+export interface EntranceTile { col: number; row: number }
+export interface ZoneEntrance  { zoneKey: string; tiles: EntranceTile[] }
+
+export const ZONE_ENTRANCES: ZoneEntrance[] = [
+  { zoneKey: 'dev',    tiles: Array.from({ length: 6 }, (_, i) => ({ col: 9  + i, row: 20 })) },
+  { zoneKey: 'design', tiles: Array.from({ length: 6 }, (_, i) => ({ col: 43 + i, row: 20 })) },
+  { zoneKey: 'game',   tiles: Array.from({ length: 6 }, (_, i) => ({ col: 23 + i, row: 40 })) },
+]
+
+// ─── Prefetch trigger zones ───────────────────────────────────────────────────
+// AABB rectangles in world space positioned ~5 tiles outside each entrance.
+// When the local player's position enters one of these, the zone voice token
+// for that zone should be pre-fetched so the audio gap is minimised on entry.
+//
+//  Dev / Design – south walls: outside is z > wall (z+), trigger spans zMin→zMax below wall
+//  Game          – north wall:  outside is z < wall (z-), trigger spans zMin→zMax above wall
+
+export interface ZonePrefetchTrigger {
+  zoneKey: string
+  xMin: number; xMax: number
+  zMin: number; zMax: number
+}
+
+// prettier-ignore
+export const ZONE_PREFETCH_TRIGGERS: ZonePrefetchTrigger[] = [
+  { zoneKey: 'dev',    xMin: -21, xMax: -15, zMin: -10, zMax: -5 },  // cols 9–14,  5 tiles south of row 20
+  { zoneKey: 'design', xMin:  13, xMax:  19, zMin: -10, zMax: -5 },  // cols 43–48, 5 tiles south of row 20
+  { zoneKey: 'game',   xMin:  -7, xMax:  -1, zMin:   5, zMax: 10 },  // cols 23–28, 5 tiles north of row 40
+]

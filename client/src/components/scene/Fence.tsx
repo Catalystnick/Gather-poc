@@ -1,5 +1,6 @@
 // Renders WORLD_FENCES from worldMap.ts using InstancedMesh — one mesh per
-// unique fenceId so all instances of the same sprite share one draw call.
+// unique (fenceId, worldZ) bucket so all instances at the same depth share
+// one draw call AND each bucket gets its own renderOrder for Y-sorting.
 //
 // Position formula (matches PlacementTool):
 //   world_x = OX + col + offsetX
@@ -22,6 +23,9 @@ const OZ = -(ROWS * TILE_SIZE) / 2
 const USED_IDS = [...new Set(WORLD_FENCES.map(f => f.fenceId))].sort((a, b) => a - b)
 const TEXTURE_PATHS = USED_IDS.map(id => `/floor map/2 Objects/2 Fence/${id}.png`)
 
+// renderOrder scale: 1 world unit → 100 sort units, giving sub-tile precision.
+const RENDER_SCALE = 100
+
 // Scale sprite to fit within one tile while preserving aspect ratio.
 function spriteSize(tex: THREE.Texture): [number, number] {
   const img = tex.image as HTMLImageElement
@@ -39,9 +43,10 @@ function spriteSize(tex: THREE.Texture): [number, number] {
 interface FenceGroupProps {
   fences: PlacedFence[]
   texture: THREE.Texture
+  renderOrder: number
 }
 
-function FenceGroup({ fences, texture }: FenceGroupProps) {
+function FenceGroup({ fences, texture, renderOrder }: FenceGroupProps) {
   const ref = useRef<THREE.InstancedMesh>(null)
   const dummy = useMemo(() => new THREE.Object3D(), [])
   const [w, h] = spriteSize(texture)
@@ -63,10 +68,10 @@ function FenceGroup({ fences, texture }: FenceGroupProps) {
       ref={ref}
       args={[undefined, undefined, fences.length]}
       frustumCulled={false}
-      renderOrder={1}
+      renderOrder={renderOrder}
     >
       <planeGeometry args={[w, h]} />
-      <meshBasicMaterial map={texture} transparent alphaTest={0.1} depthTest={false} />
+      <meshBasicMaterial map={texture} transparent alphaTest={0.1} depthTest={false} depthWrite={false} />
     </instancedMesh>
   )
 }
@@ -84,23 +89,33 @@ export default function Fence() {
     }
   }, [texArr])
 
-  // Group fences by fenceId — stable since WORLD_FENCES is a module-level constant.
+  // Map fenceId → texture for O(1) lookup.
+  const texByFenceId = useMemo(() => {
+    const m = new Map<number, THREE.Texture>()
+    USED_IDS.forEach((id, i) => m.set(id, texArr[i]))
+    return m
+  }, [texArr])
+
+  // Group by (fenceId, worldZ bucket) so each unique depth level gets its own
+  // InstancedMesh with the correct renderOrder for Y-sorting.
   const grouped = useMemo(() => {
-    const map = new Map<number, PlacedFence[]>()
+    const map = new Map<string, { fenceId: number; fences: PlacedFence[]; renderOrder: number }>()
     for (const f of WORLD_FENCES) {
-      const arr = map.get(f.fenceId) ?? []
-      arr.push(f)
-      map.set(f.fenceId, arr)
+      const worldZ = OZ + f.row + f.offsetZ
+      const zKey = Math.round(worldZ * RENDER_SCALE)
+      const key = `${f.fenceId}_${zKey}`
+      if (!map.has(key)) map.set(key, { fenceId: f.fenceId, fences: [], renderOrder: zKey })
+      map.get(key)!.fences.push(f)
     }
     return map
   }, [])
 
   return (
     <group>
-      {USED_IDS.map((id, i) => {
-        const fences = grouped.get(id)
-        if (!fences?.length) return null
-        return <FenceGroup key={id} fences={fences} texture={texArr[i]} />
+      {Array.from(grouped.entries()).map(([key, { fenceId, fences, renderOrder }]) => {
+        const tex = texByFenceId.get(fenceId)
+        if (!tex) return null
+        return <FenceGroup key={key} fences={fences} texture={tex} renderOrder={renderOrder} />
       })}
     </group>
   )

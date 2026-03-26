@@ -156,11 +156,11 @@ export default function PlacementTool({ uvAttrRef, onHUDState }: Props) {
       const zones = ['Dev', 'Design', 'Game'].map((label) => {
         const f = `Zone: ${label}`
         return {
-          key:    label.toLowerCase(),
-          x:      get(`${f}.x`)      as number,
-          z:      get(`${f}.z`)      as number,
-          width:  get(`${f}.width`)  as number,
-          height: get(`${f}.height`) as number,
+          key:   label.toLowerCase(),
+          x:     get(`${f}.x`)      as number,
+          z:     get(`${f}.z`)      as number,
+          width: get(`${f}.width`)  as number,
+          depth: get(`${f}.height`) as number,
         }
       })
       const snippet =

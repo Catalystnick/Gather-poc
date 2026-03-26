@@ -81,6 +81,7 @@ export default function AvatarMesh({ avatar, directionRef, isMovingRef }: Props)
     const mat = new MeshBasicMaterial({
       map: templateTex,
       transparent: true,
+      depthTest: false,
       depthWrite: false,
       toneMapped: false,
     });

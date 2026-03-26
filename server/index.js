@@ -29,7 +29,13 @@ const tokenLimiter = rateLimit({
 const LIVEKIT_URL = process.env.LIVEKIT_URL
 const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || ''
 const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || ''
-const ALLOWED_ROOM = 'gather-world'
+// Zone keys — must be kept in sync with WORLD_ZONES keys in client/src/data/worldMap.ts.
+// Any change here requires a coordinated client + server deploy.
+const ZONE_KEYS = ['dev', 'design', 'game']
+const ALLOWED_ROOMS = new Set([
+  'gather-world',
+  ...ZONE_KEYS.map(k => `gather-world-zone-${k}`),
+])
 
 if (!LIVEKIT_URL) {
   console.error('[livekit] LIVEKIT_URL is not set. Voice will not function.')
@@ -40,7 +46,7 @@ app.post('/livekit/token', requireAuth, tokenLimiter, async (req, res) => {
   if (!identity || typeof identity !== 'string') {
     return res.status(400).json({ error: 'identity required' })
   }
-  if (roomName !== ALLOWED_ROOM) {
+  if (!ALLOWED_ROOMS.has(roomName)) {
     return res.status(400).json({ error: 'invalid room' })
   }
   if (!LIVEKIT_URL || !LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
@@ -113,24 +119,24 @@ io.on('connection', (socket) => {
     const pos = randomSpawn()
     // Use socket.userId (stable Supabase UUID) instead of socket.id —
     // survives reconnects so token refresh doesn't respawn the player.
-    players[socket.userId] = { id: socket.userId, name: trimmed, avatar, x: pos.x, y: pos.y, z: pos.z, direction: 'down', moving: false }
+    players[socket.userId] = { id: socket.userId, name: trimmed, avatar, x: pos.x, y: pos.y, z: pos.z, direction: 'down', moving: false, zoneKey: null }
 
     const others = Object.values(players)
       .filter(p => p.id !== socket.userId)
-      .map(({ id, name, avatar, x, y, z, direction, moving }) => ({ id, name, avatar, position: { x, y, z }, direction, moving }))
+      .map(({ id, name, avatar, x, y, z, direction, moving, zoneKey }) => ({ id, name, avatar, position: { x, y, z }, direction, moving, zoneKey: zoneKey ?? null }))
     socket.emit('room:state', others)
 
     if (typeof ack === 'function') ack({ position: pos })
 
-    const { id, x, y, z, direction, moving } = players[socket.userId]
+    const { id, x, y, z, direction, moving, zoneKey } = players[socket.userId]
     socket.broadcast.emit('player:joined', {
-      id, name, avatar, position: { x, y, z }, direction, moving
+      id, name, avatar, position: { x, y, z }, direction, moving, zoneKey: zoneKey ?? null
     })
 
     console.log(`[join] ${name} (${socket.userId})`)
   })
 
-  socket.on('player:move', ({ x, y, z, direction, moving }) => {
+  socket.on('player:move', ({ x, y, z, direction, moving, zoneKey }) => {
     const player = players[socket.userId]
     if (!player || !isValidPosition({ x, y, z })) return
     if (!isValidDirection(direction) || typeof moving !== 'boolean') return
@@ -147,13 +153,15 @@ io.on('connection', (socket) => {
       }
     }
 
+    const validZoneKey = ZONE_KEYS.includes(zoneKey) ? zoneKey : null
     player.x = x
     player.y = y
     player.z = z
     player.direction = direction
     player.moving = moving
+    player.zoneKey = validZoneKey
     player.lastMoveTime = now
-    socket.broadcast.emit('player:updated', { id: socket.userId, position: { x, y, z }, direction, moving })
+    socket.broadcast.emit('player:updated', { id: socket.userId, position: { x, y, z }, direction, moving, zoneKey: validZoneKey })
   })
 
   socket.on('chat:message', ({ text }) => {

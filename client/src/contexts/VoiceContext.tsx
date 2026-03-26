@@ -1,4 +1,5 @@
 import { createContext, useContext } from 'react'
+import type { VoiceMode } from '../hooks/useZoneVoice'
 
 export interface VoiceState {
   muted: boolean
@@ -15,6 +16,8 @@ export interface VoiceState {
   confirmHeadphones: (accept: boolean) => void
   audioBlocked?: boolean
   audioInterrupted?: boolean
+  mode: VoiceMode
+  activeZoneKey: string | null
 }
 
 const VoiceContext = createContext<VoiceState | null>(null)

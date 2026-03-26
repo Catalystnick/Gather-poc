@@ -70,6 +70,20 @@ function GainControl({ label, value, onChange, min = 0, sliderMax = SLIDER_MAX, 
   )
 }
 
+const ZONE_LABELS: Record<string, string> = {
+  dev: 'Dev Zone',
+  design: 'Design Zone',
+  game: 'Game Zone',
+}
+
+function ModeLabel({ mode, activeZoneKey }: { mode: string; activeZoneKey: string | null }) {
+  if (mode === 'switching') return <span style={styles.modeBadgeSwitching}>Switching...</span>
+  if (mode === 'zone' && activeZoneKey) {
+    return <span style={styles.modeBadgeZone}>{ZONE_LABELS[activeZoneKey] ?? activeZoneKey}</span>
+  }
+  return <span style={styles.modeBadgeProximity}>Proximity</span>
+}
+
 export default function VoiceControls() {
   const {
     muted,
@@ -82,6 +96,8 @@ export default function VoiceControls() {
     confirmHeadphones,
     audioBlocked,
     audioInterrupted,
+    mode,
+    activeZoneKey,
   } = useVoice()
 
   return (
@@ -115,9 +131,12 @@ export default function VoiceControls() {
             📱 {PLATFORM_LABEL}
           </div>
         )}
-        <button style={styles.btn} onClick={toggleMute} title={muted ? 'Unmute' : 'Mute'}>
-          {muted ? '🔇 Muted' : '🎤 Live'}
-        </button>
+        <div style={styles.muteRow}>
+          <button style={styles.btn} onClick={toggleMute} title={muted ? 'Unmute' : 'Mute'}>
+            {muted ? '🔇 Muted' : '🎤 Live'}
+          </button>
+          <ModeLabel mode={mode} activeZoneKey={activeZoneKey} />
+        </div>
         <GainControl label="🔊 Speaker" value={remoteGain} onChange={setRemoteGain} />
         <GainControl label="🎙 Mic"     value={micGain}    onChange={setMicGain} />
       </div>
@@ -134,10 +153,40 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: 6,
   },
+  muteRow: {
+    display: 'flex',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   btn: {
     background: 'rgba(0,0,0,0.7)', color: '#fff',
     border: '1px solid #444', borderRadius: 20,
     padding: '8px 20px', fontSize: 14, cursor: 'pointer',
+  },
+  modeBadgeProximity: {
+    fontSize: 11, fontWeight: 600,
+    color: '#94a3b8',
+    background: 'rgba(0,0,0,0.5)',
+    border: '1px solid rgba(148,163,184,0.3)',
+    padding: '3px 10px', borderRadius: 20,
+    pointerEvents: 'none' as const,
+  },
+  modeBadgeZone: {
+    fontSize: 11, fontWeight: 700,
+    color: '#6ee7b7',
+    background: 'rgba(16,185,129,0.15)',
+    border: '1px solid rgba(110,231,183,0.4)',
+    padding: '3px 10px', borderRadius: 20,
+    pointerEvents: 'none' as const,
+  },
+  modeBadgeSwitching: {
+    fontSize: 11, fontWeight: 600,
+    color: '#fbbf24',
+    background: 'rgba(245,158,11,0.15)',
+    border: '1px solid rgba(251,191,36,0.4)',
+    padding: '3px 10px', borderRadius: 20,
+    pointerEvents: 'none' as const,
   },
   gainRow: {
     display: 'flex',

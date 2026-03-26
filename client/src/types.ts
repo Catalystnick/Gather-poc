@@ -18,6 +18,7 @@ export interface RemotePlayer {
   position: { x: number; y: number; z: number }
   direction: Direction
   moving: boolean
+  zoneKey: string | null
 }
 
 export interface ChatMessage {
