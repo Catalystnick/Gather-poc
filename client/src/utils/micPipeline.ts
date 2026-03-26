@@ -32,13 +32,13 @@ export function getAudioContextCtor(): typeof AudioContext {
 }
 
 /**
- * WebRTC capture defaults — browser applies echo cancellation, noise suppression,
- * and auto gain where supported (Chrome: “noise cancellation” bundle).
+ * WebRTC capture: AEC + AGC; **noiseSuppression off** so RNNoise is the only broadband NS.
+ * Stacking browser NS + RNNoise is a common cause of hollow / “underwater” timbre.
  */
 export function getMicCaptureOptions() {
   return {
     echoCancellation: true,
-    noiseSuppression: true,
+    noiseSuppression: false,
     autoGainControl: true,
   }
 }
@@ -63,6 +63,8 @@ export type SendPathGraph = {
   vadGate: GainNode
   destination: MediaStreamAudioDestinationNode
   analyser: AnalyserNode
+  /** Biquad chain after RNNoise (warmth / presence / air); only when RNNoise is active. */
+  postRnnoiseTone: { disconnect: () => void } | null
 }
 
 function rnnoiseWorkletUrl(): string {
@@ -75,6 +77,50 @@ const VAD_NEGATIVE_SPEECH_THRESHOLD = 0.08
 const VAD_MIN_SPEECH_MS           = 200
 const VAD_REDEMPTION_MS          = 2_000
 const VAD_PRE_SPEECH_PAD_MS      = 1_000
+
+/**
+ * Light EQ after RNNoise to offset “hollow / tubby” denoising: trim sub-mud, add body, presence, air.
+ * Gains are modest (~1–3 dB peaking / shelf) to avoid phasey or fatiguing sound.
+ */
+function connectPostRnnoiseToneShaping(ctx: AudioContext, fromNode: AudioNode): {
+  output: AudioNode
+  disconnect: () => void
+} {
+  const hp = ctx.createBiquadFilter()
+  hp.type = 'highpass'
+  hp.frequency.value = 85
+  hp.Q.value = 0.707
+
+  const warmth = ctx.createBiquadFilter()
+  warmth.type = 'peaking'
+  warmth.frequency.value = 380
+  warmth.Q.value = 0.9
+  warmth.gain.value = 1.8
+
+  const presence = ctx.createBiquadFilter()
+  presence.type = 'peaking'
+  presence.frequency.value = 2_600
+  presence.Q.value = 0.85
+  presence.gain.value = 3
+
+  const air = ctx.createBiquadFilter()
+  air.type = 'highshelf'
+  air.frequency.value = 7_000
+  air.gain.value = 2.5
+
+  fromNode.connect(hp)
+  hp.connect(warmth)
+  warmth.connect(presence)
+  presence.connect(air)
+
+  const nodes = [hp, warmth, presence, air]
+  return {
+    output: air,
+    disconnect: () => {
+      for (const n of nodes) try { n.disconnect() } catch { /* ignore */ }
+    },
+  }
+}
 
 /**
  * mic → [RNNoise?] → fan-out: vadGate → destination, analyser, vadTapDestination.
@@ -93,6 +139,7 @@ export async function buildSendPathGraph(ctx: AudioContext, mediaStream: MediaSt
   let tail: AudioNode = micSource
   let rnnoise: AudioWorkletNode | null = null
   let rnnoiseStereoFix: SendPathGraph['rnnoiseStereoFix'] = null
+  let postRnnoiseTone: SendPathGraph['postRnnoiseTone'] = null
   try {
     await ctx.audioWorklet.addModule(rnnoiseWorkletUrl())
     rnnoise = new AudioWorkletNode(ctx, NoiseSuppressorWorklet_Name)
@@ -103,7 +150,9 @@ export async function buildSendPathGraph(ctx: AudioContext, mediaStream: MediaSt
     splitter.connect(merger, 0, 0)
     splitter.connect(merger, 0, 1)
     rnnoiseStereoFix = { splitter, merger }
-    tail = merger
+    const tone = connectPostRnnoiseToneShaping(ctx, merger)
+    postRnnoiseTone = { disconnect: tone.disconnect }
+    tail = tone.output
   } catch (err) {
     console.warn('[mic] RNNoise worklet unavailable — continuing without it:', err)
   }
@@ -113,13 +162,14 @@ export async function buildSendPathGraph(ctx: AudioContext, mediaStream: MediaSt
   tail.connect(analyser)
   tail.connect(vadTapDestination)
 
-  return { micSource, rnnoise, rnnoiseStereoFix, vadTapDestination, vadGate, destination, analyser }
+  return { micSource, rnnoise, rnnoiseStereoFix, postRnnoiseTone, vadTapDestination, vadGate, destination, analyser }
 }
 
 export function teardownSendPathGraph(graph: SendPathGraph): void {
   try { graph.vadGate.disconnect() } catch { /* ignore */ }
   try { graph.analyser.disconnect() } catch { /* ignore */ }
   try { graph.vadTapDestination.disconnect() } catch { /* ignore */ }
+  graph.postRnnoiseTone?.disconnect()
   try { graph.rnnoiseStereoFix?.merger.disconnect() } catch { /* ignore */ }
   try { graph.rnnoiseStereoFix?.splitter.disconnect() } catch { /* ignore */ }
   try { graph.rnnoise?.disconnect() } catch { /* ignore */ }
