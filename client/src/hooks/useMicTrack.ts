@@ -171,6 +171,7 @@ export function useMicTrack(): MicTrack {
 
         let sendInputStream: MediaStream = rawStream
         if (isKrispNoiseFilterSupported()) {
+          localTrack.setAudioContext(ctx)
           const ok = await applyKrispNoiseFilterFromDocs(localTrack, 'mic-pipeline')
           if (ok && !disposed) {
             sendInputStream = new MediaStream([localTrack.mediaStreamTrack])
