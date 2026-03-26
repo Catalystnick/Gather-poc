@@ -50,6 +50,7 @@ export function useZoneVoice(
   localPositionRef: React.MutableRefObject<{ x: number; y: number; z: number }>,
   mic: MicTrack,
   accessToken: string,
+  userId: string,
 ): ZoneVoiceState {
   const [activeZoneKey, setActiveZoneKey] = useState<string | null>(null)
   const [connectedPeers, setConnectedPeers] = useState<Set<string>>(new Set())
@@ -294,7 +295,7 @@ export function useZoneVoice(
 
   useEffect(() => {
     if (!socket?.id || !mic.isReady) return
-    const identity = socket.id
+    const identity = userId
     console.log('[zone voice] detector started | identity:', identity)
 
     const id = setInterval(() => {

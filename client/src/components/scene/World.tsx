@@ -57,8 +57,9 @@ export default function World({ player }: Props) {
 
   // ── Voice coordinator ───────────────────────────────────────────────────
   const mic = useMicTrack();
-  const zoneVoice = useZoneVoice(socket, localPositionRef, mic, accessToken);
-  const proximityVoice = useLiveKitVoice(socket, localPositionRef, remotePlayers, mic, zoneVoice.activeZoneKey, accessToken);
+  const userId = session!.user.id;
+  const zoneVoice = useZoneVoice(socket, localPositionRef, mic, accessToken, userId);
+  const proximityVoice = useLiveKitVoice(socket, localPositionRef, remotePlayers, mic, zoneVoice.activeZoneKey, accessToken, userId);
 
   // Unified voice state: zone room takes precedence when active
   const inZone = zoneVoice.activeZoneKey !== null;

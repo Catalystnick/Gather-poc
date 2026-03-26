@@ -84,6 +84,7 @@ export function useLiveKitVoice(
   mic: MicTrack,
   activeZoneKey: string | null,
   accessToken: string,
+  userId: string,
 ) {
   const [speakingPeers,       setSpeakingPeers]       = useState<Set<string>>(new Set())
   const [connectedPeers,      setConnectedPeers]      = useState<Set<string>>(new Set())
@@ -137,7 +138,7 @@ export function useLiveKitVoice(
   useEffect(() => {
     if (!socket?.id || !mic.isReady) return
 
-    const identity = socket.id
+    const identity = userId
     let room: Room | null = null
 
     async function connect() {
