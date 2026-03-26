@@ -1,7 +1,7 @@
 // Shared primitives for proximity and zone LiveKit rooms.
 // Extracted to eliminate duplication between the two room slots in useVoice.
 
-import { Room, Track, AudioPresets, type LocalTrackPublication, type LocalAudioTrack, type RemoteAudioTrack } from 'livekit-client'
+import { Room, Track, AudioPresets, LocalAudioTrack, type RemoteAudioTrack } from 'livekit-client'
 import { isKrispNoiseFilterSupported, KrispNoiseFilter } from '@livekit/krisp-noise-filter'
 
 // ─── Shared constants ─────────────────────────────────────────────────────────
@@ -84,32 +84,31 @@ export function attachRemoteAudio(track: RemoteAudioTrack, volume: number): HTML
 }
 
 // ─── Krisp noise filter setup ─────────────────────────────────────────────────
-// Official LiveKit pattern: KrispNoiseFilter applied directly via setProcessor.
-// Both rooms publish a clone of the raw hardware track so Krisp can call
-// applyConstraints on it (Web Audio destination tracks do not support this).
+// Krisp is applied to a LocalAudioTrack BEFORE publishing, not in a
+// LocalTrackPublished event handler. The event approach races with zone
+// transitions — applying it here ensures it runs in the correct async context
+// with the correct room, before the track enters the PeerConnection.
+//
+// audioCtx must be the same AudioContext owned by useMicTrack (already running).
+// Without it, LocalAudioTrack creates its own context internally which may start
+// suspended — Krisp's AudioWorkletNode then never processes audio.
 
-export async function applyKrisp(
-  publication: Pick<LocalTrackPublication, 'source' | 'track'> & { track?: unknown },
+export async function createKrispLocalTrack(
+  rawClone: MediaStreamTrack,
   label: string,
-): Promise<void> {
-  if (publication.source !== Track.Source.Microphone) return
-
-  const track = publication.track as LocalAudioTrack | undefined | null
-  if (!track || track.kind !== Track.Kind.Audio || typeof (track as LocalAudioTrack).setProcessor !== 'function') {
-    console.warn(`[Krisp][${label}] mic published but track is not a LocalAudioTrack — NC skipped`)
-    return
-  }
+  audioCtx?: AudioContext,
+): Promise<LocalAudioTrack> {
+  const localTrack = new LocalAudioTrack(rawClone, undefined, true, audioCtx)
   if (!isKrispNoiseFilterSupported()) {
     console.warn(`[Krisp][${label}] not supported — NC skipped`)
-    return
+    return localTrack
   }
-  console.log(`[Krisp][${label}] applying NC | track:`, track.mediaStreamTrack.label)
+  console.log(`[Krisp][${label}] applying NC | track:`, rawClone.label)
   try {
-    await track.setProcessor(
-      KrispNoiseFilter() as unknown as Parameters<typeof track.setProcessor>[0],
-    )
+    await localTrack.setProcessor(KrispNoiseFilter())
     console.log(`[Krisp][${label}] processor set OK`)
   } catch (err) {
     console.error(`[Krisp][${label}] setProcessor failed:`, err)
   }
+  return localTrack
 }
