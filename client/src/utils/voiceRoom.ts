@@ -116,7 +116,7 @@ export function attachRemoteAudio(track: RemoteAudioTrack, linearGain: number): 
   return audio
 }
 
-// ─── Local mic track (Krisp attached after publish — see LiveKit docs) ─────────
+// ─── Local mic track (LiveKit publish wrapper for Web Audio send path) ─────────
 
 /**
  * Wrap the shared send-path track for LiveKit publish. Mic acquisition and Krisp run

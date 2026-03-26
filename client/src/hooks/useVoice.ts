@@ -10,7 +10,7 @@
 // Voice is proximity XOR zone for UX: while activeZoneKey is set, proximity peer
 // subscriptions are suppressed (gating) and zone owns who you hear.
 // One underlying capture from useMicTrack; LiveKit publish uses the VAD-gated
-// Web Audio send stream (gate → gain → destination). Krisp is attached on the
+// Web Audio send stream (VAD gate → destination). Krisp is attached on the
 // capture track in useMicTrack before this send stream is derived.
 
 import { useEffect, useRef, useState } from 'react'
@@ -535,7 +535,7 @@ export function useVoice(
             return
           }
           console.log('[voice][krisp][join] publish mic | proximity | trackId:', sendTrack.id)
-          console.log('[voice][proximity] send (VAD + gain) | id:', sendTrack.id, '| state:', sendTrack.readyState, '| enabled:', sendTrack.enabled)
+          console.log('[voice][proximity] send (VAD) | id:', sendTrack.id, '| state:', sendTrack.readyState, '| enabled:', sendTrack.enabled)
           mic.addPublishedClone(sendTrack)
           proximityPublishedCloneRef.current = sendTrack
           const localTrack = createLocalMicTrack(sendTrack, mic.audioCtxRef.current ?? undefined)
