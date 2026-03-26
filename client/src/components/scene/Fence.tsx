@@ -23,6 +23,10 @@ const OZ = -(ROWS * TILE_SIZE) / 2
 const USED_IDS = [...new Set(WORLD_FENCES.map(f => f.fenceId))].sort((a, b) => a - b)
 const TEXTURE_PATHS = USED_IDS.map(id => `/floor map/2 Objects/2 Fence/${id}.png`)
 
+console.log('[Fence] WORLD_FENCES count:', WORLD_FENCES.length)
+console.log('[Fence] USED_IDS:', USED_IDS)
+console.log('[Fence] TEXTURE_PATHS:', TEXTURE_PATHS)
+
 // renderOrder scale: 1 world unit → 100 sort units, giving sub-tile precision.
 const RENDER_SCALE = 100
 
@@ -79,7 +83,17 @@ function FenceGroup({ fences, texture, renderOrder }: FenceGroupProps) {
 // ─── Fence ────────────────────────────────────────────────────────────────────
 
 export default function Fence() {
-  const textures = useTexture(TEXTURE_PATHS)
+  console.log('[Fence] component mounting, loading textures:', TEXTURE_PATHS)
+  const textures = useTexture(
+    TEXTURE_PATHS,
+    (loaded) => {
+      const arr = Array.isArray(loaded) ? loaded : [loaded]
+      console.log('[Fence] textures loaded OK:', arr.map((t, i) => `${TEXTURE_PATHS[i]} → ${t.image?.width}×${t.image?.height}`))
+    },
+    (err) => {
+      console.error('[Fence] texture load FAILED:', err)
+    },
+  )
   const texArr = Array.isArray(textures) ? textures : [textures]
 
   useMemo(() => {
@@ -110,11 +124,16 @@ export default function Fence() {
     return map
   }, [])
 
+  console.log('[Fence] grouped buckets:', grouped.size, '| fenceIds in map:', [...texByFenceId.keys()])
+
   return (
     <group>
       {Array.from(grouped.entries()).map(([key, { fenceId, fences, renderOrder }]) => {
         const tex = texByFenceId.get(fenceId)
-        if (!tex) return null
+        if (!tex) {
+          console.warn('[Fence] no texture for fenceId', fenceId, '— skipping group', key)
+          return null
+        }
         return <FenceGroup key={key} fences={fences} texture={tex} renderOrder={renderOrder} />
       })}
     </group>
