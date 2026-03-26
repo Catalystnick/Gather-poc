@@ -421,10 +421,13 @@ export function useVoice(
         else if (ctx?.state === 'suspended') setAudioBlocked(true)
         setProximityRoomReady(true)
 
-        // Publish raw hardware track
+        // Publish a clone of the raw hardware track. LiveKit calls track.stop() on
+        // disconnect (stopLocalTrackOnUnpublish defaults to true). Cloning ensures a
+        // socket reconnect can publish a fresh clone while the original hardware track
+        // in rawMicStreamRef remains active for GainKrispProcessor and useMicTrack cleanup.
         const micTrack = mic.rawMicStreamRef.current?.getAudioTracks()[0]
         if (micTrack) {
-          await room.localParticipant.publishTrack(micTrack, AUDIO_PUBLISH_OPTS)
+          await room.localParticipant.publishTrack(micTrack.clone(), AUDIO_PUBLISH_OPTS)
         }
 
         // Subscribe to existing in-range participants

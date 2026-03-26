@@ -2,7 +2,7 @@
 // Extracted to eliminate duplication between the two room slots in useVoice.
 
 import { Room, Track, AudioPresets, type LocalTrackPublication, type LocalAudioTrack, type RemoteAudioTrack } from 'livekit-client'
-import { isKrispNoiseFilterSupported, KrispNoiseFilter } from '@livekit/krisp-noise-filter'
+import { isKrispNoiseFilterSupported } from '@livekit/krisp-noise-filter'
 import { GainKrispProcessor } from './GainKrispProcessor'
 import type { MicTrack } from '../hooks/useMicTrack'
 
@@ -86,7 +86,9 @@ export function attachRemoteAudio(track: RemoteAudioTrack, volume: number): HTML
 }
 
 // ─── Krisp noise filter setup ─────────────────────────────────────────────────
-// Called from RoomEvent.LocalTrackPublished — applies NC on every publish/reconnect.
+// Called from the proximity room's RoomEvent.LocalTrackPublished handler only.
+// Zone rooms publish a clone of processedMicStreamRef which is already Krisp-filtered
+// via the proximity room's GainKrispProcessor (mic → Krisp → gainNode → micDest).
 
 export async function applyKrisp(
   publication: Pick<LocalTrackPublication, 'source' | 'track'> & { track?: unknown },
@@ -108,22 +110,6 @@ export async function applyKrisp(
     console.warn(`[Krisp][${label}] not supported — NC skipped`)
     return
   }
-  // Zone rooms use a standalone KrispNoiseFilter — not GainKrispProcessor — to avoid
-  // routing through the shared gainNode owned by the proximity room's processor, which
-  // would corrupt the audio graph and cause raw mic to leak after zone teardown.
-  if (label === 'zone') {
-    const processor = KrispNoiseFilter()
-    try {
-      await track.setProcessor(
-        processor as unknown as Parameters<typeof track.setProcessor>[0],
-      )
-      console.log(`[Krisp][${label}] standalone processor set OK`)
-    } catch (err) {
-      console.error(`[Krisp][${label}] setProcessor failed:`, err)
-    }
-    return
-  }
-
   const gainNode = mic.micGainNodeRef.current
   const srcNode  = mic.micSourceNodeRef.current
   if (!gainNode || !srcNode) {
