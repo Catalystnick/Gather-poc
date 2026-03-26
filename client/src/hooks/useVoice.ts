@@ -105,6 +105,7 @@ export function useVoice(
   // ── Room refs ──────────────────────────────────────────────────────────────
   const proximityRoomRef = useRef<Room | null>(null)
   const zoneRoomRef      = useRef<Room | null>(null)
+  const zonePublishedCloneRef = useRef<MediaStreamTrack | null>(null)
 
   // ── Remote entry maps ──────────────────────────────────────────────────────
   const proximityEntries = useRef<Map<string, ProximityEntry>>(new Map())
@@ -225,6 +226,21 @@ export function useVoice(
     if (oldRoom) {
       console.log('[voice] disconnecting old zone room | gen:', myGen)
       zoneRoomRef.current = null
+      // Best-effort: unpublish + stop the cloned track before disconnecting.
+      // This reduces "track for participant not present" warnings seen by other peers.
+      try {
+        const clone = zonePublishedCloneRef.current
+        zonePublishedCloneRef.current = null
+        if (clone) {
+          for (const pub of oldRoom.localParticipant.trackPublications.values()) {
+            if (pub.track?.mediaStreamTrack === clone) {
+              oldRoom.localParticipant.unpublishTrack(pub.track)
+              break
+            }
+          }
+          try { clone.stop() } catch { /* ignore */ }
+        }
+      } catch { /* ignore */ }
       cleanupAllZone()
       setConnectedPeers(new Set(subscribedIds.current))
       await oldRoom.disconnect().catch(() => {})
@@ -326,7 +342,9 @@ export function useVoice(
     const processedTrack = mic.processedMicStreamRef.current?.getAudioTracks()[0]
     if (processedTrack) {
       console.log('[voice] publishing processed mic clone | zone:', targetKey)
-      await room.localParticipant.publishTrack(processedTrack.clone(), AUDIO_PUBLISH_OPTS)
+      const clone = processedTrack.clone()
+      zonePublishedCloneRef.current = clone
+      await room.localParticipant.publishTrack(clone, AUDIO_PUBLISH_OPTS)
         .catch(err => console.warn('[voice] zone publish failed:', err))
     } else {
       console.warn('[voice] no processed mic track to publish | zone:', targetKey)
@@ -335,6 +353,11 @@ export function useVoice(
       console.log('[voice] cancelled after publish | gen:', myGen)
       await room.disconnect().catch(() => {})
       zoneRoomRef.current = null
+      try {
+        const clone = zonePublishedCloneRef.current
+        zonePublishedCloneRef.current = null
+        try { clone?.stop() } catch { /* ignore */ }
+      } catch { /* ignore */ }
       return
     }
 
@@ -512,6 +535,20 @@ export function useVoice(
       generationRef.current++
       const room = zoneRoomRef.current
       zoneRoomRef.current = null
+      // Best-effort: unpublish + stop clone before disconnecting.
+      try {
+        const clone = zonePublishedCloneRef.current
+        zonePublishedCloneRef.current = null
+        if (room && clone) {
+          for (const pub of room.localParticipant.trackPublications.values()) {
+            if (pub.track?.mediaStreamTrack === clone) {
+              room.localParticipant.unpublishTrack(pub.track)
+              break
+            }
+          }
+        }
+        try { clone?.stop() } catch { /* ignore */ }
+      } catch { /* ignore */ }
       cleanupAllZone()
       room?.disconnect()
       setConnectedPeers(new Set(subscribedIds.current))

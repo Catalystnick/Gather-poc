@@ -29,15 +29,26 @@ export class GainKrispProcessor {
   }
 
   async init(opts: AudioProcessorOpts): Promise<void> {
-    console.log('[Krisp] init — audioContext state:', opts.audioContext.state)
-    await this.krisp.init(opts as Parameters<typeof this.krisp.init>[0])
+    // Use the main AudioContext (gainNode's context) for Krisp, NOT LiveKit's context.
+    //
+    // LiveKit's internal AudioContext is typically suspended when this runs — it only
+    // resumes after room.startAudio(), which is called *after* publishTrack(). A suspended
+    // context won't run AudioWorklets, so Krisp's WASM model never activates and raw
+    // (noisy) audio passes through instead of being filtered.
+    //
+    // The main context is kept running by gesture-resumed listeners in useMicTrack, so
+    // Krisp's worklet starts immediately. All nodes (krispSource, gainNode, destNode,
+    // micDest) are in the same context — no cross-context MediaStreamTrack bridge needed.
+    const ctx = this.gainNode.context as AudioContext
+    console.log('[Krisp] init — mainCtx state:', ctx.state, '| livekitCtx state:', opts.audioContext.state)
+    await this.krisp.init({
+      ...(opts as Parameters<typeof this.krisp.init>[0]),
+      audioContext: ctx,
+    })
     const krispOut = this.krisp.processedTrack
     if (!krispOut) throw new Error('[GainKrispProcessor] Krisp did not produce a processedTrack after init')
     console.log('[Krisp] init OK — processedTrack:', krispOut.label, '| readyState:', krispOut.readyState)
 
-    // Use gainNode's own AudioContext — LiveKit supplies its own context in opts
-    // which is different from the main audioCtx; mixing them causes InvalidAccessError.
-    const ctx = this.gainNode.context as AudioContext
     try { this.micSourceNode.disconnect(this.gainNode) } catch { /* already disconnected */ }
 
     this.destNode = ctx.createMediaStreamDestination()
