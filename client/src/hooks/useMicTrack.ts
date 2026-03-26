@@ -1,8 +1,10 @@
 // Owns the local microphone pipeline — mic is acquired with LiveKit
 // `createLocalAudioTrack` (constraints + device handling align with the SDK).
 // Proximity vs zone switches which LiveKit room carries voice, but the same
-// hardware stream backs whichever path publishes. Krisp is applied on that
-// publisher after publish (LiveKit docs: RoomEvent.LocalTrackPublished).
+// hardware stream backs whichever path publishes. Krisp runs on the real
+// capture LocalAudioTrack from createLocalAudioTrack (setProcessor uses
+// applyConstraints — Web Audio destination tracks throw OverconstrainedError).
+// The denoised track feeds the VAD gate → user gain → publish stream.
 //
 // Responsibilities:
 //   - createLocalAudioTrack / shared AudioContext
@@ -16,6 +18,7 @@ import { useEffect, useRef, useState } from 'react'
 import { MicVAD } from '@ricky0123/vad-web'
 import { createLocalAudioTrack, type LocalAudioTrack } from 'livekit-client'
 import { isKrispNoiseFilterSupported } from '@livekit/krisp-noise-filter'
+import { applyKrispNoiseFilterFromDocs } from '../utils/voiceRoom'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -162,10 +165,19 @@ export function useMicTrack(): MicTrack {
           return
         }
         sourceLocalAudioRef.current = localTrack
-        const rawStream = localTrack.mediaStream ?? new MediaStream([localTrack.mediaStreamTrack])
+        const rawTrack = localTrack.mediaStreamTrack
+        const rawStream = localTrack.mediaStream ?? new MediaStream([rawTrack])
         rawMicStreamRef.current = rawStream
 
-        const micSource = ctx.createMediaStreamSource(rawStream)
+        let sendInputStream: MediaStream = rawStream
+        if (isKrispNoiseFilterSupported()) {
+          const ok = await applyKrispNoiseFilterFromDocs(localTrack, 'mic-pipeline')
+          if (ok && !disposed) {
+            sendInputStream = new MediaStream([localTrack.mediaStreamTrack])
+          }
+        }
+
+        const micSource = ctx.createMediaStreamSource(sendInputStream)
         micSourceNodeRef.current = micSource
         const vadGate = ctx.createGain()
         vadGate.gain.value = 0
