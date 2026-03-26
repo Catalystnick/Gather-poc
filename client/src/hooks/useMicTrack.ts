@@ -5,13 +5,15 @@
 // publisher after publish (LiveKit docs: RoomEvent.LocalTrackPublished).
 //
 // Responsibilities:
-//   - createLocalAudioTrack / AudioContext / AnalyserNode
-//   - Local speaking detection (RMS + hysteresis)
+//   - createLocalAudioTrack / shared AudioContext
+//   - Silero VAD (@ricky0123/vad-web) on same mic stream; analyser RMS fallback
+//   - VAD gate on send path (Web Audio gain 0 when not locally “speaking”)
 //   - Mute state (propagated to all registered published clones)
 //   - Headphone detection and echo-cancel toggle
 //   - Audio settings version migration
 
 import { useEffect, useRef, useState } from 'react'
+import { MicVAD } from '@ricky0123/vad-web'
 import { createLocalAudioTrack, type LocalAudioTrack } from 'livekit-client'
 import { isKrispNoiseFilterSupported } from '@livekit/krisp-noise-filter'
 
@@ -58,11 +60,20 @@ function loadMicGain(): number {
   } catch { return 1 }
 }
 
+/** Trailing-slash base for VAD worklet + ONNX + ORT WASM (vite static copy → site root). */
+function vadAssetBase(): string {
+  const b = import.meta.env.BASE_URL || '/'
+  return b.endsWith('/') ? b : `${b}/`
+}
+
 // ─── Public interface ─────────────────────────────────────────────────────────
 
 export interface MicTrack {
   // Stable refs — safe to use inside async callbacks across renders.
+  /** LiveKit capture stream (hardware) — AEC/constraints, not for send; input to Web Audio graph. */
   rawMicStreamRef: React.MutableRefObject<MediaStream | null>
+  /** VAD-gated + user-gain processed stream — publish this track to LiveKit. */
+  sendMicStreamRef: React.MutableRefObject<MediaStream | null>
   audioCtxRef:     React.MutableRefObject<AudioContext | null>
   micGainNodeRef:  React.MutableRefObject<GainNode | null>
   micSourceNodeRef: React.MutableRefObject<MediaStreamAudioSourceNode | null>
@@ -95,10 +106,14 @@ export function useMicTrack(): MicTrack {
   const [headphonePrompt,   setHeadphonePrompt]   = useState<string | null>(null)
   const [echoCancelEnabled, setEchoCancelEnabled] = useState(true)
   const [isReady,           setIsReady]           = useState(false)
+  /** null = VAD not resolved yet; silero = @ricky0123/vad-web; analyser = RMS fallback */
+  const [vadBackend,       setVadBackend]        = useState<'silero' | 'analyser' | null>(null)
 
   const rawMicStreamRef  = useRef<MediaStream | null>(null)
+  const sendMicStreamRef = useRef<MediaStream | null>(null)
   const audioCtxRef      = useRef<AudioContext | null>(null)
   const micGainNodeRef = useRef<GainNode | null>(null)
+  const vadGateGainRef   = useRef<GainNode | null>(null)
   const micSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null)
   const localAnalyserRef = useRef<AnalyserNode | null>(null)
 
@@ -112,10 +127,12 @@ export function useMicTrack(): MicTrack {
   const publishedClonesRef = useRef<Set<MediaStreamTrack>>(new Set())
   /** LiveKit handle for the captured mic — stopped on unmount. */
   const sourceLocalAudioRef = useRef<LocalAudioTrack | null>(null)
+  const micVadRef            = useRef<MicVAD | null>(null)
 
   // ── Mic setup ──────────────────────────────────────────────────────────────
   useEffect(() => {
     ensureMigration()
+    let disposed = false
     const ctx = new AudioContextCtor()
     audioCtxRef.current = ctx
     void ctx.resume().catch(() => {})
@@ -129,52 +146,123 @@ export function useMicTrack(): MicTrack {
       (navigator as unknown as { audioSession: { type: string } }).audioSession.type = 'play-and-record'
     }
 
-    if (!navigator.mediaDevices) return
-
-    void createLocalAudioTrack(getMicCaptureOptions()).then(localTrack => {
-      if (ctx.state === 'closed') {
-        void localTrack.stop()
-        return
-      }
-      sourceLocalAudioRef.current = localTrack
-      const rawStream = localTrack.mediaStream ?? new MediaStream([localTrack.mediaStreamTrack])
-      rawMicStreamRef.current = rawStream
-
-      const micSource = ctx.createMediaStreamSource(rawStream)
-      micSourceNodeRef.current = micSource
-      const gainNode = ctx.createGain()
-      gainNode.gain.value = micGainRef.current
-      micGainNodeRef.current = gainNode
-      // Keep a stable gain graph alive for custom Krisp processor wiring.
-      const micDest = ctx.createMediaStreamDestination()
-      micSource.connect(gainNode).connect(micDest)
-
-      // Analyser taps directly from the raw stream for local speaking detection
-      const analyser = ctx.createAnalyser()
-      analyser.fftSize = 256
-      ctx.createMediaStreamSource(rawStream).connect(analyser)
-      localAnalyserRef.current = analyser
-
-      void ctx.resume().catch(() => {})
-      setIsReady(true)
-    }).catch(err => console.error('[mic] createLocalAudioTrack failed:', err))
-
-    return () => {
+    if (!navigator.mediaDevices) {
+      void ctx.close()
+      audioCtxRef.current = null
       window.removeEventListener('pointerdown', resumeOnGesture)
       window.removeEventListener('keydown',     resumeOnGesture)
       window.removeEventListener('touchstart',  resumeOnGesture)
-      sourceLocalAudioRef.current?.stop()
-      sourceLocalAudioRef.current = null
-      rawMicStreamRef.current = null
-      micSourceNodeRef.current = null
-      micGainNodeRef.current = null
-      localAnalyserRef.current = null
-      void ctx.close()
+      return () => {}
+    }
+
+    void createLocalAudioTrack(getMicCaptureOptions())
+      .then(async localTrack => {
+        if (ctx.state === 'closed' || disposed) {
+          void localTrack.stop()
+          return
+        }
+        sourceLocalAudioRef.current = localTrack
+        const rawStream = localTrack.mediaStream ?? new MediaStream([localTrack.mediaStreamTrack])
+        rawMicStreamRef.current = rawStream
+
+        const micSource = ctx.createMediaStreamSource(rawStream)
+        micSourceNodeRef.current = micSource
+        const vadGate = ctx.createGain()
+        vadGate.gain.value = 0
+        vadGateGainRef.current = vadGate
+        const userGain = ctx.createGain()
+        userGain.gain.value = micGainRef.current
+        micGainNodeRef.current = userGain
+        const micDest = ctx.createMediaStreamDestination()
+        sendMicStreamRef.current = micDest.stream
+        micSource.connect(vadGate).connect(userGain).connect(micDest)
+
+        const analyser = ctx.createAnalyser()
+        analyser.fftSize = 256
+        ctx.createMediaStreamSource(rawStream).connect(analyser)
+        localAnalyserRef.current = analyser
+
+        void ctx.resume().catch(() => {})
+        setIsReady(true)
+
+        const base = vadAssetBase()
+        try {
+          const vad = await MicVAD.new({
+            startOnLoad: false,
+            model: 'v5',
+            audioContext: ctx,
+            getStream: async () => rawStream,
+            pauseStream: async () => {},
+            resumeStream: async () => rawStream,
+            baseAssetPath: base,
+            onnxWASMBasePath: base,
+            processorType: 'AudioWorklet',
+            onSpeechStart: () => {
+              if (disposed || mutedRef.current) return
+              setIsLocalSpeaking(true)
+              const gv = vadGateGainRef.current
+              if (gv && ctx.state !== 'closed') gv.gain.setTargetAtTime(1, ctx.currentTime, 0.02)
+            },
+            onSpeechEnd: () => {
+              if (disposed) return
+              setIsLocalSpeaking(false)
+              const gv = vadGateGainRef.current
+              if (gv && ctx.state !== 'closed' && !mutedRef.current) {
+                gv.gain.setTargetAtTime(0, ctx.currentTime, 0.02)
+              }
+            },
+            onVADMisfire: () => {
+              if (disposed) return
+              setIsLocalSpeaking(false)
+              const gv = vadGateGainRef.current
+              if (gv && ctx.state !== 'closed' && !mutedRef.current) {
+                gv.gain.setTargetAtTime(0, ctx.currentTime, 0.02)
+              }
+            },
+          })
+          if (disposed) {
+            await vad.destroy().catch(() => {})
+            return
+          }
+          await vad.start()
+          if (disposed) {
+            await vad.destroy().catch(() => {})
+            return
+          }
+          micVadRef.current = vad
+          setVadBackend('silero')
+        } catch (e) {
+          console.warn('[mic] Silero VAD unavailable, using analyser gate:', e)
+          if (!disposed) setVadBackend('analyser')
+        }
+      })
+      .catch(err => console.error('[mic] createLocalAudioTrack failed:', err))
+
+    return () => {
+      disposed = true
+      void (async () => {
+        const vad = micVadRef.current
+        micVadRef.current = null
+        if (vad) await vad.destroy().catch(() => {})
+        window.removeEventListener('pointerdown', resumeOnGesture)
+        window.removeEventListener('keydown',     resumeOnGesture)
+        window.removeEventListener('touchstart',  resumeOnGesture)
+        sourceLocalAudioRef.current?.stop()
+        sourceLocalAudioRef.current = null
+        rawMicStreamRef.current = null
+        sendMicStreamRef.current = null
+        micSourceNodeRef.current = null
+        micGainNodeRef.current = null
+        vadGateGainRef.current = null
+        localAnalyserRef.current = null
+        await ctx.close()
+      })()
     }
   }, [])
 
-  // ── Speaking detection interval ────────────────────────────────────────────
+  // ── Speaking detection (analyser fallback when Silero did not load) ──────
   useEffect(() => {
+    if (vadBackend !== 'analyser') return
     const buf = new Uint8Array(128)
     const id = setInterval(() => {
       const analyser = localAnalyserRef.current
@@ -191,9 +279,15 @@ export function useMicTrack(): MicTrack {
       )
       wasSpeaking.current = speaking
       setIsLocalSpeaking(speaking)
+      const gv = vadGateGainRef.current
+      const actx = audioCtxRef.current
+      if (gv && actx) {
+        const target = speaking ? 1 : 0
+        gv.gain.setTargetAtTime(target, actx.currentTime, 0.02)
+      }
     }, 100)
     return () => clearInterval(id)
-  }, [])
+  }, [vadBackend])
 
   // ── Headphone detection ────────────────────────────────────────────────────
   useEffect(() => {
@@ -251,9 +345,18 @@ export function useMicTrack(): MicTrack {
     setIsMuted(prev => {
       const next = !prev
       mutedRef.current = next
-      rawMicStreamRef.current?.getAudioTracks().forEach(t => { t.enabled = !next })
       publishedClonesRef.current.forEach(t => { t.enabled = !next })
-      if (next) { wasSpeaking.current = false; speakingFrames.current = 0; setIsLocalSpeaking(false) }
+      if (next) {
+        wasSpeaking.current = false
+        speakingFrames.current = 0
+        setIsLocalSpeaking(false)
+        void micVadRef.current?.pause().catch(() => {})
+        const gv = vadGateGainRef.current
+        const actx = audioCtxRef.current
+        if (gv && actx) gv.gain.setTargetAtTime(0, actx.currentTime, 0.02)
+      } else {
+        void micVadRef.current?.start().catch(() => {})
+      }
       return next
     })
   }
@@ -290,7 +393,7 @@ export function useMicTrack(): MicTrack {
   }
 
   return {
-    rawMicStreamRef, audioCtxRef, micGainNodeRef, micSourceNodeRef, mutedRef, micGainRef,
+    rawMicStreamRef, sendMicStreamRef, audioCtxRef, micGainNodeRef, micSourceNodeRef, mutedRef, micGainRef,
     isMuted, toggleMute,
     micGain, setMicGain,
     isLocalSpeaking,

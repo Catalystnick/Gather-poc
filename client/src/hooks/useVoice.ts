@@ -9,8 +9,8 @@
 //
 // Voice is proximity XOR zone for UX: while activeZoneKey is set, proximity peer
 // subscriptions are suppressed (gating) and zone owns who you hear.
-// One underlying getUserMedia stream (useMicTrack); publishing uses a LocalAudioTrack
-// built from that stream for the active path. Krisp is attached after publish via
+// One underlying capture from useMicTrack; LiveKit publish uses the VAD-gated
+// Web Audio send stream (not the raw hardware track). Krisp is attached after publish via
 // RoomEvent.LocalTrackPublished (LiveKit Krisp docs).
 
 import { useEffect, useRef, useState } from 'react'
@@ -416,12 +416,12 @@ export function useVoice(
 
     zoneRoomRef.current = room
 
-    const rawTrack = mic.rawMicStreamRef.current?.getAudioTracks()[0]
-    if (rawTrack) {
-      console.log('[voice][zone] publish mic | zone:', targetKey, '| source id:', rawTrack.id, '| state:', rawTrack.readyState)
-      mic.addPublishedClone(rawTrack)
-      zonePublishedCloneRef.current = rawTrack
-      const localTrack = createLocalMicTrack(rawTrack, mic.audioCtxRef.current ?? undefined)
+    const sendTrack = mic.sendMicStreamRef.current?.getAudioTracks()[0]
+    if (sendTrack) {
+      console.log('[voice][zone] publish mic | zone:', targetKey, '| track id:', sendTrack.id, '| state:', sendTrack.readyState)
+      mic.addPublishedClone(sendTrack)
+      zonePublishedCloneRef.current = sendTrack
+      const localTrack = createLocalMicTrack(sendTrack, mic.audioCtxRef.current ?? undefined)
       zoneLocalTrackRef.current = localTrack
       console.log('[voice][zone] localTrack ready | sid?:', localTrack.sid ?? 'n/a', '| mediaStreamTrack id:', localTrack.mediaStreamTrack.id)
       await room.localParticipant.publishTrack(localTrack, AUDIO_PUBLISH_OPTS)
@@ -537,19 +537,19 @@ export function useVoice(
         else if (ctx?.state === 'suspended') setAudioBlocked(true)
         setProximityRoomReady(true)
 
-        const rawTrack = mic.rawMicStreamRef.current?.getAudioTracks()[0]
-        if (rawTrack) {
+        const sendTrack = mic.sendMicStreamRef.current?.getAudioTracks()[0]
+        if (sendTrack) {
           if (cancelled) {
             await room.disconnect(false).catch(() => {})
             return
           }
-          console.log('[voice][krisp][join] publish mic | proximity | trackId:', rawTrack.id)
-          console.log('[voice][proximity] source raw | id:', rawTrack.id, '| state:', rawTrack.readyState, '| enabled:', rawTrack.enabled)
-          mic.addPublishedClone(rawTrack)
-          proximityPublishedCloneRef.current = rawTrack
-          const localTrack = createLocalMicTrack(rawTrack, mic.audioCtxRef.current ?? undefined)
+          console.log('[voice][krisp][join] publish mic | proximity | trackId:', sendTrack.id)
+          console.log('[voice][proximity] send (VAD + gain) | id:', sendTrack.id, '| state:', sendTrack.readyState, '| enabled:', sendTrack.enabled)
+          mic.addPublishedClone(sendTrack)
+          proximityPublishedCloneRef.current = sendTrack
+          const localTrack = createLocalMicTrack(sendTrack, mic.audioCtxRef.current ?? undefined)
           if (cancelled) {
-            mic.removePublishedClone(rawTrack)
+            mic.removePublishedClone(sendTrack)
             proximityPublishedCloneRef.current = null
             try { await localTrack.stopProcessor() } catch { /* ignore */ }
             await room.disconnect(false).catch(() => {})
@@ -560,7 +560,7 @@ export function useVoice(
           await room.localParticipant.publishTrack(localTrack, AUDIO_PUBLISH_OPTS)
             .catch(err => console.warn('[voice] proximity publish failed:', err))
           if (cancelled) {
-            mic.removePublishedClone(rawTrack)
+            mic.removePublishedClone(sendTrack)
             proximityPublishedCloneRef.current = null
             proximityLocalTrackRef.current = null
             try { await safeUnpublishUserMicTrack(room, localTrack) } catch { /* ignore */ }
