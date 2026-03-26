@@ -28,8 +28,6 @@ const DIRTV = 9
 const GRASS  = 49
 const GRASSV = 25
 
-export const GRASS_IDS = new Set([GRASS, GRASSV])
-
 // ─── MAP — flat Uint8Array, row-major: index = row * COLS + col ───────────────
 // Load priority: worldMap.ts (permanent) → localStorage draft → procedural hash
 
