@@ -2,9 +2,7 @@
 // Extracted to eliminate duplication between the two room slots in useVoice.
 
 import { Room, Track, AudioPresets, type LocalTrackPublication, type LocalAudioTrack, type RemoteAudioTrack } from 'livekit-client'
-import { isKrispNoiseFilterSupported } from '@livekit/krisp-noise-filter'
-import { GainKrispProcessor } from './GainKrispProcessor'
-import type { MicTrack } from '../hooks/useMicTrack'
+import { isKrispNoiseFilterSupported, KrispNoiseFilter } from '@livekit/krisp-noise-filter'
 
 // ─── Shared constants ─────────────────────────────────────────────────────────
 
@@ -86,40 +84,29 @@ export function attachRemoteAudio(track: RemoteAudioTrack, volume: number): HTML
 }
 
 // ─── Krisp noise filter setup ─────────────────────────────────────────────────
-// Called from the proximity room's RoomEvent.LocalTrackPublished handler only.
-// Zone rooms publish a clone of processedMicStreamRef which is already Krisp-filtered
-// via the proximity room's GainKrispProcessor (mic → Krisp → gainNode → micDest).
+// Official LiveKit pattern: KrispNoiseFilter applied directly via setProcessor.
+// Both rooms publish a clone of processedMicStreamRef (gain already applied upstream),
+// so Krisp receives the correctly-levelled signal without any custom routing.
 
 export async function applyKrisp(
   publication: Pick<LocalTrackPublication, 'source' | 'track'> & { track?: unknown },
-  mic: MicTrack,
   label: string,
 ): Promise<void> {
   if (publication.source !== Track.Source.Microphone) return
 
   const track = publication.track as LocalAudioTrack | undefined | null
-  // Avoid relying on `instanceof LocalAudioTrack` which can fail across bundling boundaries.
-  // Instead, check for an audio track with a setProcessor method.
   if (!track || track.kind !== Track.Kind.Audio || typeof (track as LocalAudioTrack).setProcessor !== 'function') {
     console.warn(`[Krisp][${label}] mic published but track is not a LocalAudioTrack — NC skipped`)
     return
   }
-
-  console.log(`[Krisp][${label}] mic published — applying NC | track:`, track.mediaStreamTrack.label)
   if (!isKrispNoiseFilterSupported()) {
     console.warn(`[Krisp][${label}] not supported — NC skipped`)
     return
   }
-  const gainNode = mic.micGainNodeRef.current
-  const srcNode  = mic.micSourceNodeRef.current
-  if (!gainNode || !srcNode) {
-    console.warn(`[Krisp][${label}] gain/source nodes not ready — NC skipped`)
-    return
-  }
-  const processor = new GainKrispProcessor(gainNode, srcNode)
+  console.log(`[Krisp][${label}] applying NC | track:`, track.mediaStreamTrack.label)
   try {
     await track.setProcessor(
-      processor as unknown as Parameters<typeof track.setProcessor>[0],
+      KrispNoiseFilter() as unknown as Parameters<typeof track.setProcessor>[0],
     )
     console.log(`[Krisp][${label}] processor set OK`)
   } catch (err) {

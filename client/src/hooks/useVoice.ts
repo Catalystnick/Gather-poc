@@ -297,9 +297,9 @@ export function useVoice(
       setConnectedPeers(new Set(zoneEntries.current.keys()))
     })
 
-    // No LocalTrackPublished / applyKrisp here — the processedMicStream is already
-    // Krisp-filtered via the proximity room's GainKrispProcessor (mic → Krisp → gainNode → micDest).
-    // Applying a second Krisp instance would double-process and corrupt the audio.
+    room.on(RoomEvent.LocalTrackPublished, async publication => {
+      await applyKrisp(publication as Parameters<typeof applyKrisp>[0], 'zone')
+    })
 
     room.on(RoomEvent.Disconnected, () => {
       if (zoneRoomRef.current !== room) return
@@ -422,7 +422,7 @@ export function useVoice(
         room.on(RoomEvent.Reconnected,  () => setProximityRoomReady(true))
 
         room.on(RoomEvent.LocalTrackPublished, async publication => {
-          await applyKrisp(publication as Parameters<typeof applyKrisp>[0], mic, 'proximity')
+          await applyKrisp(publication as Parameters<typeof applyKrisp>[0], 'proximity')
         })
 
         room.on(RoomEvent.TrackPublished, (publication: RemoteTrackPublication, participant: RemoteParticipant) => {
@@ -444,13 +444,12 @@ export function useVoice(
         else if (ctx?.state === 'suspended') setAudioBlocked(true)
         setProximityRoomReady(true)
 
-        // Publish a clone of the raw hardware track. LiveKit calls track.stop() on
-        // disconnect (stopLocalTrackOnUnpublish defaults to true). Cloning ensures a
-        // socket reconnect can publish a fresh clone while the original hardware track
-        // in rawMicStreamRef remains active for GainKrispProcessor and useMicTrack cleanup.
-        const micTrack = mic.rawMicStreamRef.current?.getAudioTracks()[0]
-        if (micTrack) {
-          await room.localParticipant.publishTrack(micTrack.clone(), AUDIO_PUBLISH_OPTS)
+        // Publish from processedMicStreamRef (rawMic → gainNode → micDest) so that
+        // mic gain, mute, and the voice gate are all applied before Krisp sees the signal.
+        // Clone so LiveKit's track.stop() on disconnect doesn't kill the shared micDest stream.
+        const processedTrack = mic.processedMicStreamRef.current?.getAudioTracks()[0]
+        if (processedTrack) {
+          await room.localParticipant.publishTrack(processedTrack.clone(), AUDIO_PUBLISH_OPTS)
         }
 
         // Subscribe to existing in-range participants

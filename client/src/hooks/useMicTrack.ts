@@ -142,7 +142,9 @@ export function useMicTrack(): MicTrack {
       const micSource = ctx.createMediaStreamSource(rawStream)
       micSourceNodeRef.current = micSource
 
-      // Route: mic → gain → destination (Krisp will intercept this chain when published)
+      // Route: mic → gain → destination. Both rooms publish clones of micDest.stream
+      // (processedMicStreamRef) and apply KrispNoiseFilter via LocalTrackPublished.
+      // Gain, mute, and voice gate all operate on gainNode before Krisp sees the signal.
       const micDest = ctx.createMediaStreamDestination()
       micSource.connect(gainNode).connect(micDest)
       processedMicStreamRef.current = micDest.stream
