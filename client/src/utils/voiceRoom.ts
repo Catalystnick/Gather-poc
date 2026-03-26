@@ -10,7 +10,9 @@ import type { MicTrack } from '../hooks/useMicTrack'
 
 export const ROOM_NAME        = 'gather-world'
 export const ZONE_ROOM_PREFIX = 'gather-world-zone-'
-export const TOKEN_TTL_MS     = 55_000  // tokens valid ~60s; re-fetch at 55s
+// Server issues tokens with ttl: '2h' (see server/index.js).
+// Cache them client-side to avoid rate-limit / cold-start churn during zone transitions.
+export const TOKEN_TTL_MS     = 105 * 60_000
 export const AUDIO_PUBLISH_OPTS = {
   source: Track.Source.Microphone,
   name: 'mic',

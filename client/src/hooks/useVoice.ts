@@ -112,6 +112,7 @@ export function useVoice(
 
   // ── Token cache ────────────────────────────────────────────────────────────
   const tokenCacheRef = useRef<Record<string, CachedToken>>({})
+  const tokenInFlightRef = useRef<Set<string>>(new Set())
 
   // ── Zone transition guards ─────────────────────────────────────────────────
   const activeZoneKeyRef  = useRef<string | null>(null)
@@ -194,9 +195,12 @@ export function useVoice(
   }
 
   async function fetchZoneToken(identity: string, zoneKey: string): Promise<CachedToken | null> {
+    if (tokenInFlightRef.current.has(zoneKey)) return null
+    tokenInFlightRef.current.add(zoneKey)
     const roomName = `${ZONE_ROOM_PREFIX}${zoneKey}`
     console.log('[voice] fetching token | zone:', zoneKey)
     const cached = await fetchToken(identity, roomName, accessTokenRef.current)
+      .finally(() => tokenInFlightRef.current.delete(zoneKey))
     if (cached) {
       tokenCacheRef.current[zoneKey] = cached
       console.log('[voice] token cached | zone:', zoneKey, '| age:', Math.round((Date.now() - cached.fetchedAt) / 1000), 's')
@@ -460,7 +464,7 @@ export function useVoice(
 
       // Prefetch token for nearby zones to minimise audio gap on entry
       const prefetchKey = getPrefetchZoneKey(x, z)
-      if (prefetchKey && !getCachedToken(prefetchKey)) {
+      if (prefetchKey && !getCachedToken(prefetchKey) && !tokenInFlightRef.current.has(prefetchKey)) {
         console.log('[voice] prefetch triggered | zone:', prefetchKey)
         void fetchZoneToken(identity, prefetchKey)
       }
