@@ -16,30 +16,6 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null)
 
-function getAuthRedirectUrl(): string {
-  const runtimeBase = window.location.origin
-  const envBase = (import.meta.env.VITE_APP_URL as string | undefined)?.trim()
-  const normalizedRuntimeBase = runtimeBase.replace(/\/$/, '')
-
-  if (!envBase) return `${normalizedRuntimeBase}/auth/callback`
-
-  try {
-    const normalizedEnvBase = new URL(envBase).toString().replace(/\/$/, '')
-    const runtimeOrigin = new URL(normalizedRuntimeBase).origin
-    const envOrigin = new URL(normalizedEnvBase).origin
-
-    if (envOrigin !== runtimeOrigin) {
-      console.warn('[auth] ignoring VITE_APP_URL due to origin mismatch:', normalizedEnvBase, '!=', runtimeOrigin)
-      return `${normalizedRuntimeBase}/auth/callback`
-    }
-
-    return `${normalizedEnvBase}/auth/callback`
-  } catch {
-    console.warn('[auth] ignoring invalid VITE_APP_URL:', envBase)
-    return `${normalizedRuntimeBase}/auth/callback`
-  }
-}
-
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [session, setSession] = useState<Session | null>(null)
@@ -84,17 +60,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signUpWithEmail = useCallback(async (email: string, password: string) => {
     console.log('[auth] signUpWithEmail →', email)
-    const { error } = await supabase.auth.signUp({ email, password, options: { emailRedirectTo: getAuthRedirectUrl() } })
+    const { error } = await supabase.auth.signUp({ email, password, options: { emailRedirectTo: import.meta.env.VITE_APP_URL as string } })
     if (error) console.warn('[auth] signUpWithEmail error:', error.message)
     return error
   }, [])
 
   const signInWithGoogle = useCallback(async () => {
-    const redirectTo = getAuthRedirectUrl()
-    console.log('[auth] signInWithGoogle → redirectTo:', redirectTo)
+    console.log('[auth] signInWithGoogle → redirectTo:', import.meta.env.VITE_APP_URL)
     await supabase.auth.signInWithOAuth({
       provider: 'google',
-      options: { redirectTo },
+      options: { redirectTo: import.meta.env.VITE_APP_URL as string },
     })
   }, [])
 
