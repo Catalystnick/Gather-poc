@@ -27,6 +27,7 @@ import {
   ROOM_NAME, ZONE_ROOM_PREFIX,
   type CachedToken, type TokenIntent,
   createRoom, fetchToken, fetchTokenDetailed, tokenIsValid, attachRemoteAudio,
+  attachMicKrispOnLocalTrackPublished,
   createLocalMicTrack,
   AUDIO_PUBLISH_OPTS,
 } from '../utils/voiceRoom'
@@ -150,6 +151,8 @@ export function useVoice(
   const pendingZoneRef    = useRef<string | null | undefined>(undefined)
   const debounceTicksRef  = useRef(0)
   const generationRef     = useRef(0)
+  /** Krisp is always requested when supported (no UI toggle). */
+  const krispEnabledRef   = useRef(true)
 
   // ── Stable value refs ──────────────────────────────────────────────────────
   const remoteGainRef    = useRef(remoteGain)
@@ -350,6 +353,7 @@ export function useVoice(
 
     // Build zone room
     const room = createRoom(mic.audioCtxRef.current)
+    attachMicKrispOnLocalTrackPublished(room, krispEnabledRef, 'zone', () => {})
 
     room.on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
       if (track.kind !== Track.Kind.Audio) return
@@ -470,6 +474,7 @@ export function useVoice(
         if (!token) throw new Error('proximity token fetch failed')
 
         room = createRoom(mic.audioCtxRef.current)
+        attachMicKrispOnLocalTrackPublished(room, krispEnabledRef, 'proximity', () => {})
 
         room.on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
           if (track.kind !== Track.Kind.Audio) return

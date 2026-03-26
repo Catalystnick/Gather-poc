@@ -18,7 +18,7 @@ import { useEffect, useRef, useState } from 'react'
 import { MicVAD } from '@ricky0123/vad-web'
 import { createLocalAudioTrack, type LocalAudioTrack } from 'livekit-client'
 import { isKrispNoiseFilterSupported } from '@livekit/krisp-noise-filter'
-import { applyKrispNoiseFilterFromDocs } from '../utils/voiceRoom'
+
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -169,16 +169,7 @@ export function useMicTrack(): MicTrack {
         const rawStream = localTrack.mediaStream ?? new MediaStream([rawTrack])
         rawMicStreamRef.current = rawStream
 
-        let sendInputStream: MediaStream = rawStream
-        if (isKrispNoiseFilterSupported()) {
-          localTrack.setAudioContext(ctx)
-          const ok = await applyKrispNoiseFilterFromDocs(localTrack, 'mic-pipeline')
-          if (ok && !disposed) {
-            sendInputStream = new MediaStream([localTrack.mediaStreamTrack])
-          }
-        }
-
-        const micSource = ctx.createMediaStreamSource(sendInputStream)
+        const micSource = ctx.createMediaStreamSource(rawStream)
         micSourceNodeRef.current = micSource
         const vadGate = ctx.createGain()
         vadGate.gain.value = 0
