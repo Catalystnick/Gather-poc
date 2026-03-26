@@ -23,13 +23,12 @@ import {
   type LocalAudioTrack,
   type RemoteParticipant, type RemoteTrackPublication, type RemoteAudioTrack,
 } from 'livekit-client'
-import { getZoneKey, getPrefetchZoneKey } from '../utils/zoneDetection'
+import { getZoneKey } from '../utils/zoneDetection'
 import {
   ROOM_NAME, ZONE_ROOM_PREFIX,
   type CachedToken, type TokenIntent,
   createRoom, fetchToken, fetchTokenDetailed, tokenIsValid, attachRemoteAudio,
-  attachMicKrispOnLocalTrackPublished, createLocalMicTrack, syncKrispEnabledOnLocalTrack,
-  getLocalPublishedMicTrack,
+  attachMicKrispOnLocalTrackPublished, createLocalMicTrack,
   AUDIO_PUBLISH_OPTS,
 } from '../utils/voiceRoom'
 
@@ -50,7 +49,6 @@ const DEFAULT_PLAYBACK_BOOST     = 1.75
 const MIN_PLAYBACK_BOOST         = 1
 const MAX_PLAYBACK_BOOST         = 4
 const ROLLOFF_STORAGE_KEY = 'gather_poc_rolloff'
-const KRISP_ENABLED_STORAGE_KEY = 'gather_poc_krisp_enabled'
 
 export type VoiceMode = 'proximity' | 'zone' | 'switching'
 
@@ -85,14 +83,6 @@ function loadRolloff(): number {
     const v = Number(localStorage.getItem(ROLLOFF_STORAGE_KEY))
     return Number.isNaN(v) ? DEFAULT_ROLLOFF : Math.max(0.1, v)
   } catch { return DEFAULT_ROLLOFF }
-}
-
-function loadKrispEnabled(): boolean {
-  try {
-    const raw = localStorage.getItem(KRISP_ENABLED_STORAGE_KEY)
-    if (raw === null) return true
-    return raw !== '0'
-  } catch { return true }
 }
 
 function loadPlaybackBoost(): number {
@@ -132,8 +122,6 @@ export function useVoice(
   const [proximityRoomReady,  setProximityRoomReady]  = useState(false)
   const [mode,                setMode]                = useState<VoiceMode>('proximity')
   const [activeZoneKey,       setActiveZoneKey]       = useState<string | null>(null)
-  const [krispEnabled,        setKrispEnabled]        = useState(loadKrispEnabled)
-  const [krispNoiseFilterPending, setKrispNoiseFilterPending] = useState(false)
   const [playbackBoost,      setPlaybackBoostState]   = useState(loadPlaybackBoost)
 
   // ── Room refs ──────────────────────────────────────────────────────────────
@@ -163,7 +151,8 @@ export function useVoice(
   const pendingZoneRef    = useRef<string | null | undefined>(undefined)
   const debounceTicksRef  = useRef(0)
   const generationRef     = useRef(0)
-  const krispAppliedRef   = useRef<{ proximity: boolean; zone: boolean }>({ proximity: false, zone: false })
+  /** Krisp is always requested when supported (no UI toggle). */
+  const krispEnabledRef   = useRef(true)
 
   // ── Stable value refs ──────────────────────────────────────────────────────
   const remoteGainRef    = useRef(remoteGain)
@@ -176,8 +165,6 @@ export function useVoice(
   accessTokenRef.current = accessToken
   const remotePlayersRef = useRef(remotePlayers)
   remotePlayersRef.current = remotePlayers
-  const krispEnabledRef = useRef(krispEnabled)
-  krispEnabledRef.current = krispEnabled
 
   // ── Sync helpers ───────────────────────────────────────────────────────────
 
@@ -310,7 +297,7 @@ export function useVoice(
     const cancelled = () => generationRef.current !== myGen
     console.log('[voice] zone transition | from:', activeZoneKeyRef.current, '→', targetKey, '| gen:', myGen)
     if (targetKey) {
-      console.log('[voice][krisp][zone-enter] begin | zone:', targetKey, '| enabled:', krispEnabledRef.current)
+      console.log('[voice][krisp][zone-enter] begin | zone:', targetKey)
     }
     syncMode('switching')
 
@@ -366,9 +353,7 @@ export function useVoice(
 
     // Build zone room
     const room = createRoom(mic.audioCtxRef.current)
-    attachMicKrispOnLocalTrackPublished(room, krispEnabledRef, 'zone', applied => {
-      krispAppliedRef.current.zone = applied
-    })
+    attachMicKrispOnLocalTrackPublished(room, krispEnabledRef, 'zone', () => {})
 
     room.on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
       if (track.kind !== Track.Kind.Audio) return
@@ -486,9 +471,7 @@ export function useVoice(
         if (!token) throw new Error('proximity token fetch failed')
 
         room = createRoom(mic.audioCtxRef.current)
-        attachMicKrispOnLocalTrackPublished(room, krispEnabledRef, 'proximity', applied => {
-          krispAppliedRef.current.proximity = applied
-        })
+        attachMicKrispOnLocalTrackPublished(room, krispEnabledRef, 'proximity', () => {})
 
         room.on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
           if (track.kind !== Track.Kind.Audio) return
@@ -560,7 +543,7 @@ export function useVoice(
             await room.disconnect(false).catch(() => {})
             return
           }
-          console.log('[voice][krisp][join] publish mic | proximity | enabled:', krispEnabledRef.current, '| trackId:', rawTrack.id)
+          console.log('[voice][krisp][join] publish mic | proximity | trackId:', rawTrack.id)
           console.log('[voice][proximity] source raw | id:', rawTrack.id, '| state:', rawTrack.readyState, '| enabled:', rawTrack.enabled)
           mic.addPublishedClone(rawTrack)
           proximityPublishedCloneRef.current = rawTrack
@@ -643,16 +626,6 @@ export function useVoice(
     const id = setInterval(() => {
       const { x, z } = localPositionRef.current
       const detected = getZoneKey(x, z)
-      const prefetchKey = getPrefetchZoneKey(x, z)
-
-      // Prefetch is for approach only. Never prefetch while already inside
-      // a zone (detected !== null) or while in an active transition.
-      if (detected === null && modeRef.current === 'proximity' && targetZoneRef.current === undefined) {
-        if (prefetchKey && !getCachedToken(prefetchKey, 'prefetch') && !tokenInFlightRef.current.has(prefetchKey)) {
-          console.log('[voice] prefetch triggered | zone:', prefetchKey)
-          void fetchZoneToken(identity, prefetchKey, 'prefetch')
-        }
-      }
 
       // Zone speaking detection (runs regardless of debounce/transition state)
       if (modeRef.current === 'zone' && zoneRoomRef.current) {
@@ -849,32 +822,11 @@ export function useVoice(
     try { localStorage.setItem(PLAYBACK_BOOST_STORAGE_KEY, String(next)) } catch { /* ignore */ }
   }
 
-  /** Same semantics as `@livekit/components-react/krisp` `setNoiseFilterEnabled` (processor setEnabled, no republish). */
-  function setKrispNoiseFilterEnabled(next: boolean) {
-    setKrispEnabled(next)
-    krispEnabledRef.current = next
-    try { localStorage.setItem(KRISP_ENABLED_STORAGE_KEY, next ? '1' : '0') } catch { /* ignore */ }
-    void (async () => {
-      setKrispNoiseFilterPending(true)
-      try {
-        const p =
-          proximityLocalTrackRef.current ?? getLocalPublishedMicTrack(proximityRoomRef.current)
-        const z = zoneLocalTrackRef.current ?? getLocalPublishedMicTrack(zoneRoomRef.current)
-        if (p) krispAppliedRef.current.proximity = await syncKrispEnabledOnLocalTrack(p, next, 'proximity-toggle')
-        if (z) krispAppliedRef.current.zone = await syncKrispEnabledOnLocalTrack(z, next, 'zone-toggle')
-      } finally {
-        setKrispNoiseFilterPending(false)
-      }
-    })()
-  }
-
   // ── Return unified VoiceState ──────────────────────────────────────────────
 
   return {
     muted:              mic.isMuted,
     toggleMute:         mic.toggleMute,
-    micGain:            mic.micGain,
-    setMicGain:         mic.setMicGain,
     isLocalSpeaking:    mic.isLocalSpeaking,
     headphonePrompt:    mic.headphonePrompt,
     confirmHeadphones:  mic.confirmHeadphones,
@@ -885,9 +837,6 @@ export function useVoice(
     setRemoteGain,
     playbackBoost,
     setPlaybackBoost,
-    krispEnabled,
-    krispNoiseFilterPending,
-    setKrispNoiseFilterEnabled,
     audioBlocked,
     audioInterrupted,
     mode,

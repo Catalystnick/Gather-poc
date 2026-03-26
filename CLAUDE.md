@@ -37,7 +37,7 @@ A multiplayer virtual space with proximity-based voice chat, top-down 3D renderi
 - Audio settings persisted in `localStorage` with a version key for migrations
 - Server validates all incoming socket data (position bounds, name length, speed checks)
 - Chat rate-limited server-side to 500ms min interval per player
-- LiveKit token endpoint rate-limited to 10 req/60s per IP
+- LiveKit token endpoint rate-limited to 40 req/60s per authenticated user (`sub`)
 
 ## Architecture Docs
 

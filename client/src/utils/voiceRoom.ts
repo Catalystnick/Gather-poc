@@ -147,17 +147,6 @@ function isLiveKitKrispProcessor(
   )
 }
 
-/** Published local mic for this room (fallback when a ref is null or out of sync). */
-export function getLocalPublishedMicTrack(room: Room | null): LocalAudioTrack | null {
-  if (!room?.localParticipant) return null
-  for (const pub of room.localParticipant.trackPublications.values()) {
-    if (pub.source !== Track.Source.Microphone) continue
-    const t = pub.track
-    if (t instanceof LocalAudioTrack) return t
-  }
-  return null
-}
-
 /** Matches LiveKit Krisp docs: dynamic import, setProcessor, setEnabled(true). */
 export async function applyKrispNoiseFilterFromDocs(
   track: LocalAudioTrack,
@@ -181,10 +170,10 @@ export async function applyKrispNoiseFilterFromDocs(
 }
 
 /**
- * Same behavior as `@livekit/components-react/krisp` useKrispNoiseFilter: toggle via
- * `setEnabled`, or call {@link applyKrispNoiseFilterFromDocs} when enabling with no processor yet.
+ * Enable/disable Krisp on an existing processor, or attach if `enabled` and none yet.
+ * Used when toggling was supported and for post-publish cancel if ref flips (unused when Krisp is always on).
  */
-export async function syncKrispEnabledOnLocalTrack(
+async function syncKrispEnabledOnLocalTrack(
   track: LocalAudioTrack,
   enabled: boolean,
   label: string,

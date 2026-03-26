@@ -4,8 +4,6 @@ import type { VoiceMode } from '../hooks/useVoice'
 export interface VoiceState {
   muted: boolean
   toggleMute: () => void
-  micGain: number
-  setMicGain: (v: number) => void
   isLocalSpeaking: boolean
   speakingPeers: Set<string>
   connectedPeers: Set<string>
@@ -15,10 +13,6 @@ export interface VoiceState {
   /** Linear multiplier (1–4) on remote voice; uses Web Audio gain when room has `webAudioMix`. */
   playbackBoost: number
   setPlaybackBoost: (v: number) => void
-  krispEnabled: boolean
-  /** Mirrors `useKrispNoiseFilter` from `@livekit/components-react/krisp` — implemented in Gather voice. */
-  krispNoiseFilterPending: boolean
-  setKrispNoiseFilterEnabled: (enabled: boolean) => void
   headphonePrompt: string | null
   confirmHeadphones: (accept: boolean) => void
   audioBlocked?: boolean

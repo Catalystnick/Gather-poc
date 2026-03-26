@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react'
-import { useKrispNoiseFilter } from '../../hooks/useKrispNoiseFilter'
 import { useVoice } from '../../contexts/VoiceContext'
 
 // Slider soft-max: dragging covers 0–SLIDER_MAX.
@@ -93,12 +92,9 @@ function ModeLabel({ mode, activeZoneKey }: { mode: string; activeZoneKey: strin
 }
 
 export default function VoiceControls() {
-  const krisp = useKrispNoiseFilter()
   const {
     muted,
     toggleMute,
-    micGain,
-    setMicGain,
     remoteGain,
     setRemoteGain,
     playbackBoost,
@@ -141,19 +137,6 @@ export default function VoiceControls() {
           <button style={styles.btn} onClick={toggleMute} title={muted ? 'Unmute' : 'Mute'}>
             {muted ? '🔇 Muted' : '🎤 Live'}
           </button>
-          <label
-            style={{ ...styles.btn, borderColor: krisp.isNoiseFilterEnabled ? '#16a34a' : '#6b7280', cursor: krisp.isNoiseFilterPending ? 'wait' : 'pointer' }}
-            title="Krisp noise cancellation (same API as components-react useKrispNoiseFilter)"
-          >
-            <input
-              type="checkbox"
-              style={{ marginRight: 6, verticalAlign: 'middle' }}
-              checked={krisp.isNoiseFilterEnabled}
-              disabled={krisp.isNoiseFilterPending}
-              onChange={(ev) => krisp.setNoiseFilterEnabled(ev.target.checked)}
-            />
-            Krisp
-          </label>
           <ModeLabel mode={mode} activeZoneKey={activeZoneKey} />
         </div>
         <GainControl
@@ -176,16 +159,6 @@ export default function VoiceControls() {
           precision={2}
           unit="×"
           title="Extra gain for remote audio (Web Audio; 1 = normal, up to 4×)"
-        />
-        <GainControl
-          label="🎙 Mic Gain"
-          value={micGain}
-          onChange={setMicGain}
-          sliderMax={3}
-          step={0.05}
-          precision={2}
-          unit="x"
-          title="Microphone send gain"
         />
       </div>
     </>

@@ -17,12 +17,15 @@ app.use(cors({
 }))
 app.use(express.json())
 
+// Per authenticated user (not just IP) so NAT / mobile gateways don’t share one bucket.
+// Proximity + zone join + brief 403/429 retries need headroom; zone prefetch was removed client-side.
 const tokenLimiter = rateLimit({
   windowMs: 60_000,
-  max: 10,
+  max: 40,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many requests, please try again later.' },
+  keyGenerator: (req) => (req.user?.sub ? `lk:${req.user.sub}` : req.ip),
 })
 
 // LiveKit token endpoint — requires LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET
