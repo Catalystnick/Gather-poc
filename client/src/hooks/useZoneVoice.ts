@@ -21,6 +21,7 @@ import { getZoneKey, getPrefetchZoneKey } from '../utils/zoneDetection'
 const TOKEN_TTL_MS        = 55_000  // tokens valid ~60s; re-fetch at 55s
 const ZONE_DEBOUNCE_TICKS = 2       // 2 × 100ms = 200ms stable dwell before switching
 const ROOM_PREFIX         = 'gather-world-zone-'
+const GAIN_STORAGE_KEY    = 'gather_poc_remote_gain'
 
 function getTokenUrl(): string {
   const base = (import.meta.env as { VITE_SERVER_URL?: string }).VITE_SERVER_URL || ''
@@ -43,6 +44,15 @@ export interface ZoneVoiceState {
 interface CachedToken { token: string; url: string; fetchedAt: number }
 interface RemoteEntry  { track: RemoteAudioTrack; audio: HTMLAudioElement }
 
+function loadRemoteGain(): number {
+  try {
+    const raw = localStorage.getItem(GAIN_STORAGE_KEY)
+    if (raw === null) return 1
+    const v = Number(raw)
+    return Number.isNaN(v) ? 1 : Math.max(0, v)
+  } catch { return 1 }
+}
+
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useZoneVoice(
@@ -56,6 +66,7 @@ export function useZoneVoice(
   const [connectedPeers, setConnectedPeers] = useState<Set<string>>(new Set())
   const [speakingPeers,  setSpeakingPeers]  = useState<Set<string>>(new Set())
   const [mode,           setMode]           = useState<VoiceMode>('proximity')
+  const [remoteGain,     setRemoteGain]     = useState(loadRemoteGain)
 
   // Stable refs — read inside async callbacks without stale closure risk
   const activeZoneKeyRef = useRef<string | null>(null)
@@ -67,6 +78,8 @@ export function useZoneVoice(
   const generationRef    = useRef(0)
   const accessTokenRef   = useRef(accessToken)
   accessTokenRef.current = accessToken
+  const remoteGainRef    = useRef(remoteGain)
+  remoteGainRef.current  = remoteGain
 
   // Debounce — zone key must stay stable for ZONE_DEBOUNCE_TICKS before we switch
   const pendingZoneRef   = useRef<string | null | undefined>(undefined)
@@ -207,7 +220,9 @@ export function useZoneVoice(
       audio.setAttribute('playsinline', 'true')
       audio.style.display = 'none'
       document.body.appendChild(audio)
-      audioTrack.setVolume(1)
+      const appliedGain = Math.min(1, Math.max(0, remoteGainRef.current))
+      audio.volume = appliedGain
+      audioTrack.setVolume(appliedGain)
       remoteEntries.current.set(participant.identity, { track: audioTrack, audio })
       setConnectedPeers(new Set(remoteEntries.current.keys()))
       void audio.play().catch(err => console.warn('[zone voice] audio.play blocked:', err))
@@ -378,6 +393,24 @@ export function useZoneVoice(
       debounceTicksRef.current = 0
     }
   }, [socket?.id, mic.isReady])
+
+  // Keep zone speaker level aligned with proximity's shared gain setting.
+  // VoiceControls updates this key via useLiveKitVoice.setRemoteGain.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const next = loadRemoteGain()
+      if (next !== remoteGainRef.current) {
+        setRemoteGain(next)
+      }
+
+      const appliedGain = Math.min(1, Math.max(0, remoteGainRef.current))
+      for (const entry of remoteEntries.current.values()) {
+        entry.audio.volume = appliedGain
+        entry.track.setVolume(appliedGain)
+      }
+    }, 150)
+    return () => clearInterval(id)
+  }, [])
 
   // ── Speaking detection ────────────────────────────────────────────────────
 

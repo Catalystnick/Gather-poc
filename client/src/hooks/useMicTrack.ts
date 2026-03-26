@@ -102,6 +102,7 @@ export function useMicTrack(): MicTrack {
   const mutedRef   = useRef(false)
   const micGainRef = useRef(loadMicGain())
   const duckedRef  = useRef(false)
+  const gateOpenRef = useRef(false)
   const echoCancelRef = useRef(true)
   const speakingFrames = useRef(0)
   const wasSpeaking    = useRef(false)
@@ -177,7 +178,10 @@ export function useMicTrack(): MicTrack {
         (wasSpeaking.current && speakingFrames.current > -SPEAKING_HYSTERESIS_DOWN)
       )
       wasSpeaking.current = speaking
+      gateOpenRef.current = speaking
       setIsLocalSpeaking(speaking)
+      // Keep transmit gain aligned with gate state even when no peers are active.
+      applyEffectiveMicGain(micGainRef.current, duckedRef.current)
     }, 100)
     return () => clearInterval(id)
   }, [])
@@ -228,7 +232,8 @@ export function useMicTrack(): MicTrack {
     const ctx  = audioCtxRef.current
     const node = micGainNodeRef.current
     if (!ctx || !node) return
-    const effective = mutedRef.current ? 0 : baseGain
+    // Voice gate: require local speech detection before transmitting mic audio.
+    const effective = mutedRef.current ? 0 : (gateOpenRef.current ? baseGain : 0)
     const target    = duck ? effective * DUCKING_FACTOR : effective
     node.gain.setTargetAtTime(target, ctx.currentTime, duck ? DUCK_ATTACK_TC : DUCK_RELEASE_TC)
     duckedRef.current = duck && effective > 0
