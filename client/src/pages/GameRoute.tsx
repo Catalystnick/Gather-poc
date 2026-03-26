@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { Navigate } from "react-router-dom";
 import { Leva } from "leva";
 import { useAuth } from "../contexts/AuthContext";
 import AvatarSelect from "../components/ui/AvatarSelect";
@@ -22,20 +21,8 @@ function loadSaved(): Player | null {
 }
 
 export default function GameRoute() {
-  const { isAuthenticated, isLoading, session } = useAuth();
+  const { session } = useAuth();
   const [player, setPlayer] = useState<Player | null>(null);
-
-  console.log("[GameRoute] isLoading:", isLoading, "| isAuthenticated:", isAuthenticated);
-
-  if (isLoading) {
-    console.log("[GameRoute] waiting for auth session...");
-    return null;
-  }
-
-  if (!isAuthenticated) {
-    console.log("[GameRoute] not authenticated → redirecting to /login");
-    return <Navigate to="/login" replace />;
-  }
 
   console.log("[GameRoute] authenticated | user:", session?.user?.email, "| token length:", session?.access_token?.length);
 
