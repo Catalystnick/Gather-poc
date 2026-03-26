@@ -177,6 +177,17 @@ export function useVoice(
     })
   }
 
+  function safeUnpublishLocalTrack(room: Room, track: LocalAudioTrack) {
+    const pubs = [...room.localParticipant.trackPublications.values()]
+    const pub = pubs.find(p => p.track === track || (track.sid && p.trackSid === track.sid))
+    if (!pub) return
+    try {
+      room.localParticipant.unpublishTrack(track)
+    } catch {
+      /* ignore */
+    }
+  }
+
   // ── Proximity entry cleanup ────────────────────────────────────────────────
 
   function cleanupProximityEntry(identity: string) {
@@ -209,9 +220,9 @@ export function useVoice(
 
   // ── Token cache helpers ────────────────────────────────────────────────────
 
-  function getCachedToken(zoneKey: string): CachedToken | null {
+  function getCachedToken(zoneKey: string, intent: TokenIntent): CachedToken | null {
     const c = tokenCacheRef.current[zoneKey]
-    if (!c || !tokenIsValid(c)) {
+    if (!c || c.intent !== intent || !tokenIsValid(c)) {
       if (c) delete tokenCacheRef.current[zoneKey]
       return null
     }
@@ -263,6 +274,9 @@ export function useVoice(
     const myGen = ++generationRef.current
     const cancelled = () => generationRef.current !== myGen
     console.log('[voice] zone transition | from:', activeZoneKeyRef.current, '→', targetKey, '| gen:', myGen)
+    if (targetKey) {
+      console.log('[voice][krisp][zone-enter] begin | zone:', targetKey, '| enabled:', krispEnabledRef.current)
+    }
     syncMode('switching')
 
     // Capture old room state before clearing refs, then fire-and-forget cleanup
@@ -279,7 +293,7 @@ export function useVoice(
       void (async () => {
         try {
           if (oldLocalTrack) {
-            try { oldRoom.localParticipant.unpublishTrack(oldLocalTrack) } catch { /* ignore */ }
+            safeUnpublishLocalTrack(oldRoom, oldLocalTrack)
           }
           if (oldClone) mic.removePublishedClone(oldClone)
         } catch { /* ignore */ }
@@ -300,7 +314,7 @@ export function useVoice(
     }
 
     // Resolve token (cached first)
-    let token = getCachedToken(targetKey)
+    let token = getCachedToken(targetKey, 'join')
     if (token) {
       console.log('[voice] using cached token | zone:', targetKey)
     } else {
@@ -393,11 +407,9 @@ export function useVoice(
       )
       krispAppliedRef.current.zone = krispApplied
       console.log('[voice][krisp] zone applied:', krispApplied)
+      console.log('[voice][krisp][zone-enter] publish-ready | zone:', targetKey, '| enabled:', krispEnabledRef.current, '| applied:', krispApplied, '| trackId:', rawTrack.id)
       if (krispEnabledRef.current && !krispApplied) {
-        console.warn('[voice][zone] Krisp unavailable/failed; skipping zone publish to avoid unprocessed private-room audio')
-        mic.removePublishedClone(rawTrack)
-        zonePublishedCloneRef.current = null
-        return
+        console.warn('[voice][zone] Krisp unavailable/failed; publishing without Krisp so zone audio stays connected')
       }
       zoneLocalTrackRef.current = localTrack
       console.log('[voice][zone] localTrack ready | sid?:', localTrack.sid ?? 'n/a', '| mediaStreamTrack id:', localTrack.mediaStreamTrack.id)
@@ -502,6 +514,7 @@ export function useVoice(
         // Clone the raw mic track and apply Krisp before publishing.
         const rawTrack = mic.rawMicStreamRef.current?.getAudioTracks()[0]
         if (rawTrack) {
+          console.log('[voice][krisp][join] begin | room: proximity | enabled:', krispEnabledRef.current, '| trackId:', rawTrack.id)
           console.log('[voice][proximity] source raw | id:', rawTrack.id, '| state:', rawTrack.readyState, '| enabled:', rawTrack.enabled)
           mic.addPublishedClone(rawTrack)
           proximityPublishedCloneRef.current = rawTrack
@@ -515,6 +528,7 @@ export function useVoice(
           )
           krispAppliedRef.current.proximity = krispApplied
           console.log('[voice][krisp] proximity applied:', krispApplied)
+          console.log('[voice][krisp][join] publish-ready | room: proximity | enabled:', krispEnabledRef.current, '| applied:', krispApplied, '| trackId:', rawTrack.id)
           proximityLocalTrackRef.current = localTrack
           console.log('[voice][proximity] localTrack ready | sid?:', localTrack.sid ?? 'n/a', '| mediaStreamTrack id:', localTrack.mediaStreamTrack.id)
           await room.localParticipant.publishTrack(localTrack, AUDIO_PUBLISH_OPTS)
@@ -567,14 +581,13 @@ export function useVoice(
       const { x, z } = localPositionRef.current
       const detected = getZoneKey(x, z)
       const prefetchKey = getPrefetchZoneKey(x, z)
-      console.log('[voice][zone-debug] detected:', detected, '| prefetchKey:', prefetchKey, '| mode:', modeRef.current, '| targetZone:', targetZoneRef.current)
 
       // Prefetch is for approach only. Never prefetch while already inside
       // a zone (detected !== null) or while in an active transition.
       if (detected === null && modeRef.current === 'proximity' && targetZoneRef.current === undefined) {
-      if (prefetchKey && !getCachedToken(prefetchKey) && !tokenInFlightRef.current.has(prefetchKey)) {
+        if (prefetchKey && !getCachedToken(prefetchKey, 'prefetch') && !tokenInFlightRef.current.has(prefetchKey)) {
           console.log('[voice] prefetch triggered | zone:', prefetchKey)
-        void fetchZoneToken(identity, prefetchKey, 'prefetch')
+          void fetchZoneToken(identity, prefetchKey, 'prefetch')
         }
       }
 
@@ -625,7 +638,7 @@ export function useVoice(
         const localTrack = zoneLocalTrackRef.current
         zoneLocalTrackRef.current = null
         if (room && localTrack) {
-          try { room.localParticipant.unpublishTrack(localTrack) } catch { /* ignore */ }
+          safeUnpublishLocalTrack(room, localTrack)
         }
         const clone = zonePublishedCloneRef.current
         zonePublishedCloneRef.current = null
@@ -789,7 +802,7 @@ export function useVoice(
       localRef.current = null
       cloneRef.current = null
       if (oldLocal) {
-        try { room.localParticipant.unpublishTrack(oldLocal) } catch { /* ignore */ }
+        safeUnpublishLocalTrack(room, oldLocal)
       }
       if (oldClone) {
         mic.removePublishedClone(oldClone)
