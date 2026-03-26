@@ -4,6 +4,8 @@ import type { VoiceMode } from '../hooks/useVoice'
 export interface VoiceState {
   muted: boolean
   toggleMute: () => void
+  micGain: number
+  setMicGain: (v: number) => void
   isLocalSpeaking: boolean
   speakingPeers: Set<string>
   connectedPeers: Set<string>

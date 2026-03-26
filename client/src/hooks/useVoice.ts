@@ -7,9 +7,9 @@
 // Proximity room: always connected when mic is ready. Distance-gated subscriptions.
 // Zone room: created/destroyed as the player enters/leaves zone boundaries.
 //
-// Both rooms publish a raw hardware track clone. Krisp noise cancellation is
-// applied per-room before publishing via createKrispLocalTrack. Mute propagates to all
-// registered clones via mic.addPublishedClone / mic.removePublishedClone.
+// Both rooms publish from the same raw hardware mic track (no clones). Krisp is
+// applied before publish via createKrispLocalTrack, using GainKrispProcessor
+// when gain/source nodes are available so the chain is raw -> Krisp -> gain -> publish.
 
 import { useEffect, useRef, useState } from 'react'
 import type { Socket } from 'socket.io-client'
@@ -209,9 +209,9 @@ export function useVoice(
 
   // ── Token cache helpers ────────────────────────────────────────────────────
 
-  function getCachedToken(zoneKey: string, intent: TokenIntent): CachedToken | null {
+  function getCachedToken(zoneKey: string): CachedToken | null {
     const c = tokenCacheRef.current[zoneKey]
-    if (!c || c.intent !== intent || !tokenIsValid(c)) {
+    if (!c || !tokenIsValid(c)) {
       if (c) delete tokenCacheRef.current[zoneKey]
       return null
     }
@@ -280,12 +280,8 @@ export function useVoice(
         try {
           if (oldLocalTrack) {
             try { oldRoom.localParticipant.unpublishTrack(oldLocalTrack) } catch { /* ignore */ }
-            try { oldLocalTrack.stop() } catch { /* ignore */ }
           }
-          if (oldClone) {
-            mic.removePublishedClone(oldClone)
-            try { oldClone.stop() } catch { /* ignore */ }
-          }
+          if (oldClone) mic.removePublishedClone(oldClone)
         } catch { /* ignore */ }
         await oldRoom.disconnect().catch(() => {})
       })()
@@ -304,7 +300,7 @@ export function useVoice(
     }
 
     // Resolve token (cached first)
-    let token = getCachedToken(targetKey, 'join')
+    let token = getCachedToken(targetKey)
     if (token) {
       console.log('[voice] using cached token | zone:', targetKey)
     } else {
@@ -386,17 +382,20 @@ export function useVoice(
     const rawTrack = mic.rawMicStreamRef.current?.getAudioTracks()[0]
     if (rawTrack) {
       console.log('[voice][zone] path=raw-plus-krisp | zone:', targetKey, '| source id:', rawTrack.id, '| state:', rawTrack.readyState)
-      const clone = rawTrack.clone()
-      mic.addPublishedClone(clone)
-      zonePublishedCloneRef.current = clone
-      console.log('[voice][zone] clone | id:', clone.id, '| state:', clone.readyState, '| enabled:', clone.enabled)
-      const { localTrack, krispApplied } = await createKrispLocalTrack(clone, 'zone', mic.audioCtxRef.current ?? undefined, krispEnabledRef.current)
+      zonePublishedCloneRef.current = rawTrack
+      const { localTrack, krispApplied } = await createKrispLocalTrack(
+        rawTrack,
+        'zone',
+        mic.audioCtxRef.current ?? undefined,
+        krispEnabledRef.current,
+        mic.micGainNodeRef.current,
+        mic.micSourceNodeRef.current,
+      )
       krispAppliedRef.current.zone = krispApplied
       console.log('[voice][krisp] zone applied:', krispApplied)
       if (krispEnabledRef.current && !krispApplied) {
         console.warn('[voice][zone] Krisp unavailable/failed; skipping zone publish to avoid unprocessed private-room audio')
-        mic.removePublishedClone(clone)
-        try { clone.stop() } catch { /* ignore */ }
+        mic.removePublishedClone(rawTrack)
         zonePublishedCloneRef.current = null
         return
       }
@@ -414,13 +413,10 @@ export function useVoice(
       zoneRoomRef.current = null
       const localTrack = zoneLocalTrackRef.current
       zoneLocalTrackRef.current = null
-      if (localTrack) try { localTrack.stop() } catch { /* ignore */ }
+      void localTrack
       const clone = zonePublishedCloneRef.current
       zonePublishedCloneRef.current = null
-      if (clone) {
-        mic.removePublishedClone(clone)
-        try { clone.stop() } catch { /* ignore */ }
-      }
+      if (clone) mic.removePublishedClone(clone)
       return
     }
 
@@ -507,11 +503,16 @@ export function useVoice(
         const rawTrack = mic.rawMicStreamRef.current?.getAudioTracks()[0]
         if (rawTrack) {
           console.log('[voice][proximity] source raw | id:', rawTrack.id, '| state:', rawTrack.readyState, '| enabled:', rawTrack.enabled)
-          const clone = rawTrack.clone()
-          mic.addPublishedClone(clone)
-          proximityPublishedCloneRef.current = clone
-          console.log('[voice][proximity] clone | id:', clone.id, '| state:', clone.readyState, '| enabled:', clone.enabled)
-          const { localTrack, krispApplied } = await createKrispLocalTrack(clone, 'proximity', mic.audioCtxRef.current ?? undefined, krispEnabledRef.current)
+          mic.addPublishedClone(rawTrack)
+          proximityPublishedCloneRef.current = rawTrack
+          const { localTrack, krispApplied } = await createKrispLocalTrack(
+            rawTrack,
+            'proximity',
+            mic.audioCtxRef.current ?? undefined,
+            krispEnabledRef.current,
+            mic.micGainNodeRef.current,
+            mic.micSourceNodeRef.current,
+          )
           krispAppliedRef.current.proximity = krispApplied
           console.log('[voice][krisp] proximity applied:', krispApplied)
           proximityLocalTrackRef.current = localTrack
@@ -545,13 +546,10 @@ export function useVoice(
       setProximityRoomReady(false)
       const localTrack = proximityLocalTrackRef.current
       proximityLocalTrackRef.current = null
-      if (localTrack) try { localTrack.stop() } catch { /* ignore */ }
+      void localTrack
       const clone = proximityPublishedCloneRef.current
       proximityPublishedCloneRef.current = null
-      if (clone) {
-        mic.removePublishedClone(clone)
-        try { clone.stop() } catch { /* ignore */ }
-      }
+      if (clone) mic.removePublishedClone(clone)
       if (room) { room.disconnect(); proximityRoomRef.current = null }
       cleanupAllProximity()
       subscribedIds.current.clear()
@@ -574,7 +572,7 @@ export function useVoice(
       // Prefetch is for approach only. Never prefetch while already inside
       // a zone (detected !== null) or while in an active transition.
       if (detected === null && modeRef.current === 'proximity' && targetZoneRef.current === undefined) {
-      if (prefetchKey && !getCachedToken(prefetchKey, 'prefetch') && !tokenInFlightRef.current.has(prefetchKey)) {
+      if (prefetchKey && !getCachedToken(prefetchKey) && !tokenInFlightRef.current.has(prefetchKey)) {
           console.log('[voice] prefetch triggered | zone:', prefetchKey)
         void fetchZoneToken(identity, prefetchKey, 'prefetch')
         }
@@ -629,13 +627,9 @@ export function useVoice(
         if (room && localTrack) {
           try { room.localParticipant.unpublishTrack(localTrack) } catch { /* ignore */ }
         }
-        if (localTrack) try { localTrack.stop() } catch { /* ignore */ }
         const clone = zonePublishedCloneRef.current
         zonePublishedCloneRef.current = null
-        if (clone) {
-          mic.removePublishedClone(clone)
-          try { clone.stop() } catch { /* ignore */ }
-        }
+        if (clone) mic.removePublishedClone(clone)
       } catch { /* ignore */ }
       cleanupAllZone()
       room?.disconnect()
@@ -796,28 +790,27 @@ export function useVoice(
       cloneRef.current = null
       if (oldLocal) {
         try { room.localParticipant.unpublishTrack(oldLocal) } catch { /* ignore */ }
-        try { oldLocal.stop() } catch { /* ignore */ }
       }
       if (oldClone) {
         mic.removePublishedClone(oldClone)
-        try { oldClone.stop() } catch { /* ignore */ }
       }
 
-      const clone = publishSource.clone()
-      mic.addPublishedClone(clone)
-      cloneRef.current = clone
+      const source = publishSource
+      mic.addPublishedClone(source)
+      cloneRef.current = source
       const { localTrack, krispApplied } = await createKrispLocalTrack(
-        clone,
+        source,
         `${label}-republish`,
         mic.audioCtxRef.current ?? undefined,
         krispEnabled,
+        mic.micGainNodeRef.current,
+        mic.micSourceNodeRef.current,
       )
       if (label === 'proximity') krispAppliedRef.current.proximity = krispApplied
       else krispAppliedRef.current.zone = krispApplied
       console.log(`[voice][krisp] ${label} applied after toggle:`, krispApplied, '| enabled:', krispEnabled)
       if (strictWhenEnabled && krispEnabled && !krispApplied) {
-        mic.removePublishedClone(clone)
-        try { clone.stop() } catch { /* ignore */ }
+        mic.removePublishedClone(source)
         cloneRef.current = null
         return
       }
@@ -834,6 +827,8 @@ export function useVoice(
   return {
     muted:              mic.isMuted,
     toggleMute:         mic.toggleMute,
+    micGain:            mic.micGain,
+    setMicGain:         mic.setMicGain,
     isLocalSpeaking:    mic.isLocalSpeaking,
     headphonePrompt:    mic.headphonePrompt,
     confirmHeadphones:  mic.confirmHeadphones,

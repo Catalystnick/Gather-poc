@@ -18,6 +18,7 @@ import { isKrispNoiseFilterSupported } from '@livekit/krisp-noise-filter'
 const SPEAKING_THRESHOLD       = 20
 const SPEAKING_HYSTERESIS_UP   = 2   // frames above threshold → speaking
 const SPEAKING_HYSTERESIS_DOWN = 5   // frames below threshold → silent
+const MIC_GAIN_STORAGE_KEY = 'gather_poc_mic_gain'
 const AUDIO_SETTINGS_VERSION_KEY = 'gather_poc_audio_settings_version'
 const AUDIO_SETTINGS_VERSION     = '2026-03-native-v1'
 
@@ -46,16 +47,27 @@ function ensureMigration() {
   } catch { /* storage unavailable */ }
 }
 
+function loadMicGain(): number {
+  try {
+    const v = Number(localStorage.getItem(MIC_GAIN_STORAGE_KEY))
+    return Number.isNaN(v) ? 1 : Math.max(0, v)
+  } catch { return 1 }
+}
+
 // ─── Public interface ─────────────────────────────────────────────────────────
 
 export interface MicTrack {
   // Stable refs — safe to use inside async callbacks across renders.
   rawMicStreamRef: React.MutableRefObject<MediaStream | null>
   audioCtxRef:     React.MutableRefObject<AudioContext | null>
+  micGainNodeRef:  React.MutableRefObject<GainNode | null>
+  micSourceNodeRef: React.MutableRefObject<MediaStreamAudioSourceNode | null>
   mutedRef:        React.MutableRefObject<boolean>
   // React state (triggers re-renders for UI)
   isMuted:          boolean
   toggleMute:       () => void
+  micGain:          number
+  setMicGain:       (v: number) => void
   isLocalSpeaking:  boolean
   headphonePrompt:  string | null
   confirmHeadphones: (accept: boolean) => void
@@ -72,6 +84,7 @@ export interface MicTrack {
 
 export function useMicTrack(): MicTrack {
   const [isMuted,           setIsMuted]           = useState(false)
+  const [micGain,           setMicGainState]      = useState(loadMicGain)
   const [isLocalSpeaking,   setIsLocalSpeaking]   = useState(false)
   const [headphonePrompt,   setHeadphonePrompt]   = useState<string | null>(null)
   const [echoCancelEnabled, setEchoCancelEnabled] = useState(true)
@@ -79,9 +92,12 @@ export function useMicTrack(): MicTrack {
 
   const rawMicStreamRef  = useRef<MediaStream | null>(null)
   const audioCtxRef      = useRef<AudioContext | null>(null)
+  const micGainNodeRef = useRef<GainNode | null>(null)
+  const micSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null)
   const localAnalyserRef = useRef<AnalyserNode | null>(null)
 
   const mutedRef          = useRef(false)
+  const micGainRef        = useRef(loadMicGain())
   const echoCancelRef     = useRef(true)
   const speakingFrames    = useRef(0)
   const wasSpeaking       = useRef(false)
@@ -111,6 +127,15 @@ export function useMicTrack(): MicTrack {
       if (ctx.state === 'closed') { rawStream.getTracks().forEach(t => t.stop()); return }
       rawMicStreamRef.current = rawStream
 
+      const micSource = ctx.createMediaStreamSource(rawStream)
+      micSourceNodeRef.current = micSource
+      const gainNode = ctx.createGain()
+      gainNode.gain.value = micGainRef.current
+      micGainNodeRef.current = gainNode
+      // Keep a stable gain graph alive for custom Krisp processor wiring.
+      const micDest = ctx.createMediaStreamDestination()
+      micSource.connect(gainNode).connect(micDest)
+
       // Analyser taps directly from the raw stream for local speaking detection
       const analyser = ctx.createAnalyser()
       analyser.fftSize = 256
@@ -126,6 +151,8 @@ export function useMicTrack(): MicTrack {
       window.removeEventListener('keydown',     resumeOnGesture)
       window.removeEventListener('touchstart',  resumeOnGesture)
       rawMicStreamRef.current?.getTracks().forEach(t => t.stop())
+      micSourceNodeRef.current = null
+      micGainNodeRef.current = null
       void ctx.close()
     }
   }, [])
@@ -215,6 +242,16 @@ export function useMicTrack(): MicTrack {
     })
   }
 
+  function setMicGain(value: number) {
+    const next = Math.max(0, value)
+    setMicGainState(next)
+    micGainRef.current = next
+    const node = micGainNodeRef.current
+    const ctx = audioCtxRef.current
+    if (node && ctx) node.gain.setTargetAtTime(next, ctx.currentTime, 0.03)
+    try { localStorage.setItem(MIC_GAIN_STORAGE_KEY, String(next)) } catch { /* ignore */ }
+  }
+
   async function confirmHeadphones(accept: boolean) {
     setHeadphonePrompt(null)
     if (!accept) {
@@ -237,8 +274,9 @@ export function useMicTrack(): MicTrack {
   }
 
   return {
-    rawMicStreamRef, audioCtxRef, mutedRef,
+    rawMicStreamRef, audioCtxRef, micGainNodeRef, micSourceNodeRef, mutedRef,
     isMuted, toggleMute,
+    micGain, setMicGain,
     isLocalSpeaking,
     headphonePrompt, confirmHeadphones,
     echoCancelEnabled, toggleEchoCancel,

@@ -3,6 +3,7 @@
 
 import { Room, Track, AudioPresets, LocalAudioTrack, type RemoteAudioTrack } from 'livekit-client'
 import { isKrispNoiseFilterSupported, KrispNoiseFilter } from '@livekit/krisp-noise-filter'
+import { GainKrispProcessor } from './GainKrispProcessor'
 
 // ─── Shared constants ─────────────────────────────────────────────────────────
 
@@ -119,6 +120,8 @@ export async function createKrispLocalTrack(
   label: string,
   audioCtx?: AudioContext,
   krispEnabled = true,
+  gainNode?: GainNode | null,
+  micSourceNode?: MediaStreamAudioSourceNode | null,
 ): Promise<{ localTrack: LocalAudioTrack; krispApplied: boolean }> {
   const localTrack = new LocalAudioTrack(rawClone, undefined, true, audioCtx)
   if (!krispEnabled) {
@@ -131,7 +134,13 @@ export async function createKrispLocalTrack(
   }
   console.log(`[Krisp][${label}] applying NC | track:`, rawClone.label)
   try {
-    await localTrack.setProcessor(KrispNoiseFilter())
+    if (gainNode && micSourceNode) {
+      await localTrack.setProcessor(
+        new GainKrispProcessor(gainNode, micSourceNode) as unknown as Parameters<typeof localTrack.setProcessor>[0],
+      )
+    } else {
+      await localTrack.setProcessor(KrispNoiseFilter())
+    }
     console.log(`[Krisp][${label}] processor set OK`)
     return { localTrack, krispApplied: true }
   } catch (err) {

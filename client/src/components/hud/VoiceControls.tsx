@@ -95,6 +95,8 @@ export default function VoiceControls() {
   const {
     muted,
     toggleMute,
+    micGain,
+    setMicGain,
     remoteGain,
     setRemoteGain,
     krispEnabled,
@@ -155,6 +157,16 @@ export default function VoiceControls() {
           precision={2}
           unit=""
           title="Playback volume (0–1)"
+        />
+        <GainControl
+          label="🎙 Mic Gain"
+          value={micGain}
+          onChange={setMicGain}
+          sliderMax={3}
+          step={0.05}
+          precision={2}
+          unit="x"
+          title="Microphone send gain"
         />
       </div>
     </>
