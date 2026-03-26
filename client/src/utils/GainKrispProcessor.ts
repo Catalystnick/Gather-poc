@@ -28,9 +28,11 @@ export class GainKrispProcessor {
   }
 
   async init(opts: AudioProcessorOpts): Promise<void> {
+    console.log('[Krisp] init — audioContext state:', opts.audioContext.state)
     await this.krisp.init(opts as Parameters<typeof this.krisp.init>[0])
     const krispOut = this.krisp.processedTrack
     if (!krispOut) throw new Error('[GainKrispProcessor] Krisp did not produce a processedTrack after init')
+    console.log('[Krisp] init OK — processedTrack:', krispOut.label, '| readyState:', krispOut.readyState)
 
     // Use gainNode's own AudioContext — LiveKit supplies its own context in opts
     // which is different from the main audioCtx; mixing them causes InvalidAccessError.
@@ -40,19 +42,24 @@ export class GainKrispProcessor {
     this.destNode = ctx.createMediaStreamDestination()
     ctx.createMediaStreamSource(new MediaStream([krispOut])).connect(this.gainNode).connect(this.destNode)
     this.processedTrack = this.destNode.stream.getAudioTracks()[0]
+    console.log('[Krisp] audio graph rewired — chain: mic → Krisp → gain → dest')
   }
 
   async onPublish(room: Room): Promise<void> {
+    console.log('[Krisp] onPublish — enabling NC')
     await this.krisp.onPublish(room)
     await this.krisp.setEnabled(true)
+    console.log('[Krisp] NC enabled')
   }
 
   async restart(opts: AudioProcessorOpts): Promise<void> {
+    console.log('[Krisp] restart')
     await this.destroy()
     await this.init(opts)
   }
 
   async destroy(): Promise<void> {
+    console.log('[Krisp] destroy — rewiring mic → gain directly')
     await this.krisp.destroy()
     try { this.micSourceNode.connect(this.gainNode) } catch { /* ignore */ }
     this.destNode = undefined

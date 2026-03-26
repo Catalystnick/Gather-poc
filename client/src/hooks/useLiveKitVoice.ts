@@ -195,14 +195,24 @@ export function useLiveKitVoice(
         // Apply Krisp on every publish (also fires on reconnect — NC is never silently lost)
         room.on(RoomEvent.LocalTrackPublished, async (publication) => {
           if (publication.source !== Track.Source.Microphone || !(publication.track instanceof LocalAudioTrack)) return
-          if (!isKrispNoiseFilterSupported()) { console.error('[Krisp] Not supported'); return }
-          const gainNode  = mic.micGainNodeRef.current
-          const srcNode   = mic.micSourceNodeRef.current
-          if (!gainNode || !srcNode) { console.error('[Krisp] Nodes not ready'); return }
+          console.log('[Krisp][proximity] local mic published — applying NC | track:', publication.track.mediaStreamTrack.label)
+          if (!isKrispNoiseFilterSupported()) {
+            console.warn('[Krisp][proximity] not supported on this browser/device — NC skipped')
+            return
+          }
+          const gainNode = mic.micGainNodeRef.current
+          const srcNode  = mic.micSourceNodeRef.current
+          if (!gainNode || !srcNode) {
+            console.warn('[Krisp][proximity] gain/source nodes not ready — NC skipped')
+            return
+          }
           const processor = new GainKrispProcessor(gainNode, srcNode)
           try {
             await publication.track.setProcessor(processor as unknown as Parameters<typeof publication.track.setProcessor>[0])
-          } catch (err) { console.error('[Krisp] Failed:', err) }
+            console.log('[Krisp][proximity] processor set OK')
+          } catch (err) {
+            console.error('[Krisp][proximity] setProcessor failed:', err)
+          }
         })
 
         room.on(RoomEvent.TrackPublished, (publication: RemoteTrackPublication, participant: RemoteParticipant) => {

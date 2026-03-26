@@ -23,30 +23,6 @@ const OZ = -(ROWS * TILE_SIZE) / 2
 const USED_IDS = [...new Set(WORLD_FENCES.map(f => f.fenceId))].sort((a, b) => a - b)
 const TEXTURE_PATHS = USED_IDS.map(id => `/floor-map/2-Objects/2-Fence/${id}.png`)
 
-console.log('[Fence] ── module evaluated ──────────────────────────────')
-console.log('[Fence] WORLD_FENCES count:', WORLD_FENCES.length)
-console.log('[Fence] USED_IDS:', USED_IDS)
-console.log('[Fence] TEXTURE_PATHS:', TEXTURE_PATHS)
-console.log('[Fence] window.location.origin:', typeof window !== 'undefined' ? window.location.origin : '(SSR)')
-
-// Probe every texture URL with fetch so they appear in the Network tab
-// and we can see exactly which paths succeed (200) or fail (404/error).
-if (typeof window !== 'undefined') {
-  console.log('[Fence] probing asset URLs via fetch …')
-  TEXTURE_PATHS.forEach(path => {
-    const url = window.location.origin + path
-    fetch(url, { method: 'HEAD' })
-      .then(r => {
-        if (r.ok) {
-          console.log(`[Fence] ✓ ${r.status} ${url}`)
-        } else {
-          console.error(`[Fence] ✗ ${r.status} ${url}`)
-        }
-      })
-      .catch(err => console.error(`[Fence] ✗ fetch error for ${url}:`, err))
-  })
-}
-
 // renderOrder scale: 1 world unit → 100 sort units, giving sub-tile precision.
 const RENDER_SCALE = 100
 
@@ -103,19 +79,8 @@ function FenceGroup({ fences, texture, renderOrder }: FenceGroupProps) {
 // ─── Fence ────────────────────────────────────────────────────────────────────
 
 export default function Fence() {
-  console.log('[Fence] component render — calling useTexture with', TEXTURE_PATHS.length, 'path(s):', TEXTURE_PATHS)
-
-  const textures = useTexture(TEXTURE_PATHS, (loaded) => {
-    const arr = Array.isArray(loaded) ? loaded : [loaded]
-    console.log('[Fence] useTexture onLoad fired — all textures ready:')
-    arr.forEach((t, i) => {
-      const img = t.image as HTMLImageElement | undefined
-      console.log(`  [${i}] path="${TEXTURE_PATHS[i]}" size=${img?.naturalWidth ?? img?.width}×${img?.naturalHeight ?? img?.height} uuid=${t.uuid}`)
-    })
-  })
+  const textures = useTexture(TEXTURE_PATHS)
   const texArr = Array.isArray(textures) ? textures : [textures]
-
-  console.log('[Fence] useTexture returned', texArr.length, 'texture(s) (Suspense resolved)')
 
   useMemo(() => {
     for (const t of texArr) {
@@ -144,8 +109,6 @@ export default function Fence() {
     }
     return map
   }, [])
-
-  console.log('[Fence] grouped buckets:', grouped.size, '| fenceIds in map:', [...texByFenceId.keys()])
 
   return (
     <group>

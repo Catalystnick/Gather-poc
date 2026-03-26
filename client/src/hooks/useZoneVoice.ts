@@ -218,18 +218,26 @@ export function useZoneVoice(
         publication.source !== Track.Source.Microphone ||
         !(publication.track instanceof LocalAudioTrack)
       ) return
-      console.log('[zone voice] local mic published, applying Krisp')
-      if (!isKrispNoiseFilterSupported()) { console.warn('[zone voice] Krisp not supported'); return }
+      console.log('[Krisp][zone] local mic published — applying NC | track:', publication.track.mediaStreamTrack.label)
+      if (!isKrispNoiseFilterSupported()) {
+        console.warn('[Krisp][zone] not supported on this browser/device — NC skipped')
+        return
+      }
       const gainNode = mic.micGainNodeRef.current
       const srcNode  = mic.micSourceNodeRef.current
-      if (!gainNode || !srcNode) { console.warn('[zone voice] Krisp: gain/source nodes not ready'); return }
+      if (!gainNode || !srcNode) {
+        console.warn('[Krisp][zone] gain/source nodes not ready — NC skipped')
+        return
+      }
       const processor = new GainKrispProcessor(gainNode, srcNode)
       try {
         await publication.track.setProcessor(
           processor as unknown as Parameters<typeof publication.track.setProcessor>[0],
         )
-        console.log('[zone voice] Krisp applied')
-      } catch (err) { console.error('[zone voice] Krisp failed:', err) }
+        console.log('[Krisp][zone] processor set OK')
+      } catch (err) {
+        console.error('[Krisp][zone] setProcessor failed:', err)
+      }
     })
 
     room.on(RoomEvent.Disconnected, () => {
