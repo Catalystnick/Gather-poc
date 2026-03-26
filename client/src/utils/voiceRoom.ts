@@ -1,7 +1,7 @@
 // Shared primitives for proximity and zone LiveKit rooms.
 // Extracted to eliminate duplication between the two room slots in useVoice.
 
-import { Room, Track, AudioPresets, LocalAudioTrack, type RemoteAudioTrack } from 'livekit-client'
+import { Room, Track, AudioPresets, type LocalTrackPublication, type LocalAudioTrack, type RemoteAudioTrack } from 'livekit-client'
 import { isKrispNoiseFilterSupported } from '@livekit/krisp-noise-filter'
 import { GainKrispProcessor } from './GainKrispProcessor'
 import type { MicTrack } from '../hooks/useMicTrack'
@@ -87,12 +87,21 @@ export function attachRemoteAudio(track: RemoteAudioTrack, volume: number): HTML
 // Called from RoomEvent.LocalTrackPublished — applies NC on every publish/reconnect.
 
 export async function applyKrisp(
-  publication: { source: Track.Source; track: LocalAudioTrack | null | undefined },
+  publication: Pick<LocalTrackPublication, 'source' | 'track'> & { track?: unknown },
   mic: MicTrack,
   label: string,
 ): Promise<void> {
-  if (publication.source !== Track.Source.Microphone || !(publication.track instanceof LocalAudioTrack)) return
-  console.log(`[Krisp][${label}] mic published — applying NC | track:`, publication.track.mediaStreamTrack.label)
+  if (publication.source !== Track.Source.Microphone) return
+
+  const track = publication.track as LocalAudioTrack | undefined | null
+  // Avoid relying on `instanceof LocalAudioTrack` which can fail across bundling boundaries.
+  // Instead, check for an audio track with a setProcessor method.
+  if (!track || track.kind !== Track.Kind.Audio || typeof (track as LocalAudioTrack).setProcessor !== 'function') {
+    console.warn(`[Krisp][${label}] mic published but track is not a LocalAudioTrack — NC skipped`)
+    return
+  }
+
+  console.log(`[Krisp][${label}] mic published — applying NC | track:`, track.mediaStreamTrack.label)
   if (!isKrispNoiseFilterSupported()) {
     console.warn(`[Krisp][${label}] not supported — NC skipped`)
     return
@@ -105,8 +114,8 @@ export async function applyKrisp(
   }
   const processor = new GainKrispProcessor(gainNode, srcNode)
   try {
-    await publication.track.setProcessor(
-      processor as unknown as Parameters<typeof publication.track.setProcessor>[0],
+    await track.setProcessor(
+      processor as unknown as Parameters<typeof track.setProcessor>[0],
     )
     console.log(`[Krisp][${label}] processor set OK`)
   } catch (err) {
