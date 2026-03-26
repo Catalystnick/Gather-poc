@@ -69,6 +69,13 @@ function rnnoiseWorkletUrl(): string {
   return new URL('NoiseSuppressorWorklet.js', `${window.location.origin}${vadAssetBase()}`).href
 }
 
+/** Silero tuning: softer fricatives (h, n, th) need lower thresholds + shorter min segment + longer hang-on. */
+const VAD_POSITIVE_SPEECH_THRESHOLD = 0.14
+const VAD_NEGATIVE_SPEECH_THRESHOLD = 0.08
+const VAD_MIN_SPEECH_MS           = 200
+const VAD_REDEMPTION_MS          = 2_000
+const VAD_PRE_SPEECH_PAD_MS      = 1_000
+
 /**
  * mic → [RNNoise?] → fan-out: vadGate → destination, analyser, vadTapDestination.
  * Uses the same `AudioContext` as the rest of the graph (usually 48 kHz in Chrome); avoid a separate
@@ -150,7 +157,11 @@ export async function startSileroVad(options: {
     return await MicVAD.new({
       startOnLoad: false,
       model: 'v5',
-      positiveSpeechThreshold: 0.22,
+      positiveSpeechThreshold: VAD_POSITIVE_SPEECH_THRESHOLD,
+      negativeSpeechThreshold: VAD_NEGATIVE_SPEECH_THRESHOLD,
+      minSpeechMs: VAD_MIN_SPEECH_MS,
+      redemptionMs: VAD_REDEMPTION_MS,
+      preSpeechPadMs: VAD_PRE_SPEECH_PAD_MS,
       audioContext: ctx,
       getStream: async () => mediaStream,
       pauseStream: async () => {},

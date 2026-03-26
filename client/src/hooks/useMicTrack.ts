@@ -16,7 +16,8 @@ import {
   type SendPathGraph,
 } from '../utils/micPipeline'
 
-const SPEAKING_THRESHOLD         = 20
+/** Byte-frequency RMS gate (analyser fallback only); lower = pick up softer consonants. */
+const SPEAKING_THRESHOLD         = 14
 const SPEAKING_HYSTERESIS_UP     = 2
 const SPEAKING_HYSTERESIS_DOWN = 5
 
