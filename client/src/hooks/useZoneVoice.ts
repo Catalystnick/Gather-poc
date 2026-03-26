@@ -158,9 +158,14 @@ export function useZoneVoice(
       setSpeakingPeers(new Set())
       // Unpublish mic with stopOnUnpublish=false before disconnect so the raw
       // MediaStreamTrack is not stopped — it is shared with the proximity room.
-      const rawTrack = mic.rawMicStreamRef.current?.getAudioTracks()[0]
-      if (rawTrack) {
-        await oldRoom.localParticipant.unpublishTrack(rawTrack, false).catch(() => {})
+      // Look up the LocalTrack from the publication rather than passing rawTrack
+      // directly: after setProcessor the LocalAudioTrack wraps processedTrack, so
+      // unpublishTrack(rawTrack) may silently miss and disconnect() then stops it.
+      const micPub = [...oldRoom.localParticipant.trackPublications.values()]
+        .find(pub => pub.source === Track.Source.Microphone)
+      if (micPub?.track) {
+        console.log('[zone voice] unpublishing mic before disconnect | stopOnUnpublish: false')
+        await oldRoom.localParticipant.unpublishTrack(micPub.track, false).catch(() => {})
       }
       await oldRoom.disconnect().catch(() => {})
     }

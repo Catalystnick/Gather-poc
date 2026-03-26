@@ -1,10 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useVoice } from '../../contexts/VoiceContext'
 
-const IS_MOBILE = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-const IS_IOS    = /iPhone|iPad|iPod/i.test(navigator.userAgent);
-const PLATFORM_LABEL = IS_IOS ? 'iOS' : /Android/i.test(navigator.userAgent) ? 'Android' : 'Mobile';
-
 // Slider soft-max: dragging covers 0–SLIDER_MAX.
 // Values above this are still reachable via the text input.
 const SLIDER_MAX = 10;
@@ -126,11 +122,6 @@ export default function VoiceControls() {
         </div>
       )}
       <div style={styles.wrapper}>
-        {IS_MOBILE && (
-          <div style={styles.mobileBadge} title={`Detected platform: ${PLATFORM_LABEL}`}>
-            📱 {PLATFORM_LABEL}
-          </div>
-        )}
         <div style={styles.muteRow}>
           <button style={styles.btn} onClick={toggleMute} title={muted ? 'Unmute' : 'Mute'}>
             {muted ? '🔇 Muted' : '🎤 Live'}
@@ -219,17 +210,6 @@ const styles: Record<string, React.CSSProperties> = {
   gainUnit: {
     fontSize: 12,
     color: '#aaa',
-  },
-  mobileBadge: {
-    fontSize: 11,
-    fontWeight: 600,
-    color: '#a5f3fc',
-    background: 'rgba(0,0,0,0.55)',
-    border: '1px solid rgba(165,243,252,0.3)',
-    padding: '3px 10px',
-    borderRadius: 20,
-    letterSpacing: '0.03em',
-    pointerEvents: 'none' as const,
   },
   blockedBanner: {
     position: 'fixed',

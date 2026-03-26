@@ -23,10 +23,6 @@ const DUCK_ATTACK_TC  = 0.02
 const DUCK_RELEASE_TC = 0.14
 const DUCKING_FACTOR  = 0.25
 
-const IS_MOBILE = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
-  typeof navigator !== 'undefined' ? navigator.userAgent : '',
-)
-
 const AudioContextCtor: typeof AudioContext =
   window.AudioContext ??
   (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
@@ -56,8 +52,8 @@ function loadMicGain(): number {
   ensureMigration()
   try {
     const v = Number(localStorage.getItem(MIC_GAIN_STORAGE_KEY))
-    return Number.isNaN(v) ? (IS_MOBILE ? 2.0 : 1) : Math.max(0, v)
-  } catch { return IS_MOBILE ? 2.0 : 1 }
+    return Number.isNaN(v) ? 1 : Math.max(0, v)
+  } catch { return 1 }
 }
 
 // ─── Public interface ─────────────────────────────────────────────────────────
