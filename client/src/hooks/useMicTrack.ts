@@ -258,9 +258,18 @@ export function useMicTrack(): MicTrack {
     try { localStorage.setItem(MIC_GAIN_STORAGE_KEY, String(next)) } catch { /* ignore */ }
   }
 
-  function confirmHeadphones(accept: boolean) {
+  async function confirmHeadphones(accept: boolean) {
     setHeadphonePrompt(null)
-    if (!accept) headphoneIdRef.current = null
+    if (!accept) {
+      headphoneIdRef.current = null
+      return
+    }
+
+    // User confirmed headphones are in use → disable AEC for better quality.
+    setEchoCancelEnabled(false)
+    echoCancelRef.current = false
+    const track = rawMicStreamRef.current?.getAudioTracks()[0]
+    await track?.applyConstraints({ echoCancellation: false }).catch(() => {})
   }
 
   async function toggleEchoCancel() {
