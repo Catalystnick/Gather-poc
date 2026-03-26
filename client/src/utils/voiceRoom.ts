@@ -120,9 +120,10 @@ export function attachRemoteAudio(track: RemoteAudioTrack, linearGain: number): 
 // ─── Local mic track (Krisp attached after publish — see LiveKit docs) ─────────
 
 /**
- * Publish this track first; use {@link attachMicKrispOnLocalTrackPublished} on the room
- * so Krisp runs in `RoomEvent.LocalTrackPublished` like the official docs.
- * `audioContext` should be the running graph from useMicTrack.
+ * Wrap the shared capture track for LiveKit publish. Mic acquisition uses
+ * `createLocalAudioTrack` in useMicTrack; this is a user-managed `LocalAudioTrack`
+ * (`userProvided: true`) plus `audioContext` for room `webAudioMix`.
+ * Publish first; then {@link attachMicKrispOnLocalTrackPublished} applies Krisp on `LocalTrackPublished`.
  */
 export function createLocalMicTrack(
   rawClone: MediaStreamTrack,

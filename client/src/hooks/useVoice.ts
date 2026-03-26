@@ -7,8 +7,11 @@
 // Proximity room: always connected when mic is ready. Distance-gated subscriptions.
 // Zone room: created/destroyed as the player enters/leaves zone boundaries.
 //
-// Both rooms publish from the same raw hardware mic track. Krisp is attached
-// after publish via RoomEvent.LocalTrackPublished (LiveKit Krisp docs).
+// Voice is proximity XOR zone for UX: while activeZoneKey is set, proximity peer
+// subscriptions are suppressed (gating) and zone owns who you hear.
+// One underlying getUserMedia stream (useMicTrack); publishing uses a LocalAudioTrack
+// built from that stream for the active path. Krisp is attached after publish via
+// RoomEvent.LocalTrackPublished (LiveKit Krisp docs).
 
 import { useEffect, useRef, useState } from 'react'
 import type { Socket } from 'socket.io-client'

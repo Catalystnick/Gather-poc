@@ -1,16 +1,18 @@
-// Owns the local microphone pipeline — one getUserMedia call shared across all
-// LiveKit rooms (proximity + zone). One mic stream; each room publishes its own
-// LocalAudioTrack from that source. Krisp is applied after publish (LiveKit docs:
-// RoomEvent.LocalTrackPublished + KrispNoiseFilter).
+// Owns the local microphone pipeline — mic is acquired with LiveKit
+// `createLocalAudioTrack` (constraints + device handling align with the SDK).
+// Proximity vs zone switches which LiveKit room carries voice, but the same
+// hardware stream backs whichever path publishes. Krisp is applied on that
+// publisher after publish (LiveKit docs: RoomEvent.LocalTrackPublished).
 //
 // Responsibilities:
-//   - getUserMedia / AudioContext / AnalyserNode
+//   - createLocalAudioTrack / AudioContext / AnalyserNode
 //   - Local speaking detection (RMS + hysteresis)
 //   - Mute state (propagated to all registered published clones)
 //   - Headphone detection and echo-cancel toggle
 //   - Audio settings version migration
 
 import { useEffect, useRef, useState } from 'react'
+import { createLocalAudioTrack, type LocalAudioTrack } from 'livekit-client'
 import { isKrispNoiseFilterSupported } from '@livekit/krisp-noise-filter'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -26,13 +28,15 @@ const AudioContextCtor: typeof AudioContext =
   window.AudioContext ??
   (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
 
-const AUDIO_CONSTRAINTS: MediaStreamConstraints = {
-  audio: {
+/** Options for `createLocalAudioTrack` — Krisp wants minimal browser NC when supported. */
+function getMicCaptureOptions() {
+  const krisp = isKrispNoiseFilterSupported()
+  return {
     echoCancellation: true,
-    noiseSuppression: !isKrispNoiseFilterSupported(), // native NS only when Krisp unavailable
-    autoGainControl:  true,
-  } as MediaTrackConstraints,
-  video: false,
+    autoGainControl: true,
+    noiseSuppression: !krisp,
+    ...(krisp ? { voiceIsolation: false } : {}),
+  }
 }
 
 let migrationChecked = false
@@ -106,6 +110,8 @@ export function useMicTrack(): MicTrack {
   const prevOutputIds     = useRef<Set<string>>(new Set())
   const headphoneIdRef    = useRef<string | null>(null)
   const publishedClonesRef = useRef<Set<MediaStreamTrack>>(new Set())
+  /** LiveKit handle for the captured mic — stopped on unmount. */
+  const sourceLocalAudioRef = useRef<LocalAudioTrack | null>(null)
 
   // ── Mic setup ──────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -125,8 +131,13 @@ export function useMicTrack(): MicTrack {
 
     if (!navigator.mediaDevices) return
 
-    navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS).then(rawStream => {
-      if (ctx.state === 'closed') { rawStream.getTracks().forEach(t => t.stop()); return }
+    void createLocalAudioTrack(getMicCaptureOptions()).then(localTrack => {
+      if (ctx.state === 'closed') {
+        void localTrack.stop()
+        return
+      }
+      sourceLocalAudioRef.current = localTrack
+      const rawStream = localTrack.mediaStream ?? new MediaStream([localTrack.mediaStreamTrack])
       rawMicStreamRef.current = rawStream
 
       const micSource = ctx.createMediaStreamSource(rawStream)
@@ -146,15 +157,18 @@ export function useMicTrack(): MicTrack {
 
       void ctx.resume().catch(() => {})
       setIsReady(true)
-    }).catch(err => console.error('[mic] getUserMedia denied:', err))
+    }).catch(err => console.error('[mic] createLocalAudioTrack failed:', err))
 
     return () => {
       window.removeEventListener('pointerdown', resumeOnGesture)
       window.removeEventListener('keydown',     resumeOnGesture)
       window.removeEventListener('touchstart',  resumeOnGesture)
-      rawMicStreamRef.current?.getTracks().forEach(t => t.stop())
+      sourceLocalAudioRef.current?.stop()
+      sourceLocalAudioRef.current = null
+      rawMicStreamRef.current = null
       micSourceNodeRef.current = null
       micGainNodeRef.current = null
+      localAnalyserRef.current = null
       void ctx.close()
     }
   }, [])
