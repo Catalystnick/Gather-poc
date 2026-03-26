@@ -24,7 +24,7 @@ import type { PlacementHUDState } from './PlacementHUD'
 import type { PlacedFence } from '../../data/worldMap'
 
 const FENCE_PATHS = Array.from({ length: 10 }, (_, i) =>
-  `/floor map/2 Objects/2 Fence/${i + 1}.png`
+  `/floor-map/2-Objects/2-Fence/${i + 1}.png`
 )
 
 const TILE_SIZE = 1

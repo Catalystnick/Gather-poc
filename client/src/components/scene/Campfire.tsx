@@ -9,7 +9,7 @@ const FPS = 8
 const SIZE = (32 / 32) * 2
 
 export default function Campfire() {
-  const tex = useTexture('/floor map/3 Animated Objects/2 Campfire/2.png')
+  const tex = useTexture('/floor-map/3-Animated-Objects/2-Campfire/2.png')
 
   // Clone so we can mutate offset without affecting other users of the texture
   const sprite = useMemo(() => {

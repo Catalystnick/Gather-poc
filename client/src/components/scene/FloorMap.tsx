@@ -16,7 +16,7 @@ const TOTAL = COLS * ROWS
 const REPEAT = (1 / ATLAS_COLS).toFixed(8)
 
 function tilePath(id: number) {
-  return `/floor map/1 Tiles/FieldsTile_${String(id).padStart(2, '0')}.png`
+  return `/floor-map/1-Tiles/FieldsTile_${String(id).padStart(2, '0')}.png`
 }
 
 // Build URL map for all 64 tiles (keys: "t1"…"t64")

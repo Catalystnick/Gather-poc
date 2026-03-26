@@ -57,7 +57,7 @@ function FencePreviewOverlay({ fenceId }: FencePreviewProps) {
         FENCE #{fenceId}
       </div>
       <img
-        src={`/floor map/2 Objects/2 Fence/${fenceId}.png`}
+        src={`/floor-map/2-Objects/2-Fence/${fenceId}.png`}
         style={{ imageRendering: 'pixelated', maxWidth: 80, maxHeight: 80 }}
         alt={`fence sprite ${fenceId}`}
       />
