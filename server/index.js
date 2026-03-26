@@ -43,7 +43,7 @@ if (!LIVEKIT_URL) {
 }
 
 app.post('/livekit/token', requireAuth, tokenLimiter, async (req, res) => {
-  const { roomName, identity, name } = req.body || {}
+  const { roomName, identity, name, intent } = req.body || {}
   if (!identity || typeof identity !== 'string') {
     return res.status(400).json({ error: 'identity required' })
   }
@@ -54,11 +54,12 @@ app.post('/livekit/token', requireAuth, tokenLimiter, async (req, res) => {
   if (!authedUserId || authedUserId !== identity) {
     return res.status(403).json({ error: 'identity mismatch' })
   }
+  const tokenIntent = intent === 'prefetch' ? 'prefetch' : 'join'
   const zoneMatch = roomName.match(ZONE_ROOM_PATTERN)
   if (zoneMatch) {
     const requestedZone = zoneMatch[1]
     const player = players[authedUserId]
-    if (!player || player.zoneKey !== requestedZone) {
+    if (tokenIntent === 'join' && (!player || player.zoneKey !== requestedZone)) {
       return res.status(403).json({ error: 'zone_access_denied' })
     }
   }
@@ -68,15 +69,15 @@ app.post('/livekit/token', requireAuth, tokenLimiter, async (req, res) => {
   try {
     const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
       identity,
-      ttl: '2h',
+      ttl: tokenIntent === 'prefetch' ? '30s' : '2h',
       name: name || identity,
     })
     at.addGrant({
       roomJoin: true,
       room: roomName,
-      canPublish: true,
-      canSubscribe: true,
-      canUpdateOwnMetadata: true,
+      canPublish: tokenIntent === 'join',
+      canSubscribe: tokenIntent === 'join',
+      canUpdateOwnMetadata: tokenIntent === 'join',
     })
     const token = await at.toJwt()
     res.json({ token, url: LIVEKIT_URL })

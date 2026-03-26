@@ -19,7 +19,17 @@ export const AUDIO_PUBLISH_OPTS = {
 
 // ─── Token cache entry ────────────────────────────────────────────────────────
 
-export interface CachedToken { token: string; url: string; fetchedAt: number }
+export type TokenIntent = 'join' | 'prefetch'
+export interface CachedToken {
+  token: string
+  url: string
+  fetchedAt: number
+  intent: TokenIntent
+}
+export interface TokenFetchResult {
+  cached: CachedToken | null
+  status: number | null
+}
 
 export function tokenIsValid(c: CachedToken): boolean {
   return Date.now() - c.fetchedAt < TOKEN_TTL_MS
@@ -34,31 +44,42 @@ export function getTokenUrl(): string {
 
 // ─── Fetch token ──────────────────────────────────────────────────────────────
 
-export async function fetchToken(
+export async function fetchTokenDetailed(
   identity: string,
   roomName: string,
   accessToken: string,
-): Promise<CachedToken | null> {
+  intent: TokenIntent = 'join',
+): Promise<TokenFetchResult> {
   try {
     const res = await fetch(getTokenUrl(), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
-      body: JSON.stringify({ roomName, identity, name: identity }),
+      body: JSON.stringify({ roomName, identity, name: identity, intent }),
     })
     if (!res.ok) {
       console.warn('[voiceRoom] token HTTP error | room:', roomName, '| status:', res.status)
-      return null
+      return { cached: null, status: res.status }
     }
     const { token, url } = (await res.json()) as { token?: string; url?: string }
     if (!token || !url) {
       console.warn('[voiceRoom] token response missing fields | room:', roomName)
-      return null
+      return { cached: null, status: res.status }
     }
-    return { token, url, fetchedAt: Date.now() }
+    return { cached: { token, url, fetchedAt: Date.now(), intent }, status: res.status }
   } catch (err) {
     console.warn('[voiceRoom] token fetch threw | room:', roomName, '| err:', err)
-    return null
+    return { cached: null, status: null }
   }
+}
+
+export async function fetchToken(
+  identity: string,
+  roomName: string,
+  accessToken: string,
+  intent: TokenIntent = 'join',
+): Promise<CachedToken | null> {
+  const result = await fetchTokenDetailed(identity, roomName, accessToken, intent)
+  return result.cached
 }
 
 // ─── Room factory ─────────────────────────────────────────────────────────────

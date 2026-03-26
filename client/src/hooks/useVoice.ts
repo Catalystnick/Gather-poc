@@ -24,8 +24,8 @@ import {
 import { getZoneKey, getPrefetchZoneKey } from '../utils/zoneDetection'
 import {
   ROOM_NAME, ZONE_ROOM_PREFIX,
-  type CachedToken,
-  createRoom, fetchToken, tokenIsValid, attachRemoteAudio, createKrispLocalTrack, AUDIO_PUBLISH_OPTS,
+  type CachedToken, type TokenIntent,
+  createRoom, fetchToken, fetchTokenDetailed, tokenIsValid, attachRemoteAudio, createKrispLocalTrack, AUDIO_PUBLISH_OPTS,
 } from '../utils/voiceRoom'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -209,9 +209,9 @@ export function useVoice(
 
   // ── Token cache helpers ────────────────────────────────────────────────────
 
-  function getCachedToken(zoneKey: string): CachedToken | null {
+  function getCachedToken(zoneKey: string, intent: TokenIntent): CachedToken | null {
     const c = tokenCacheRef.current[zoneKey]
-    if (!c || !tokenIsValid(c)) {
+    if (!c || c.intent !== intent || !tokenIsValid(c)) {
       if (c) delete tokenCacheRef.current[zoneKey]
       return null
     }
@@ -223,7 +223,7 @@ export function useVoice(
     return Math.max(0, blockedUntil - Date.now())
   }
 
-  async function fetchZoneToken(identity: string, zoneKey: string): Promise<CachedToken | null> {
+  async function fetchZoneToken(identity: string, zoneKey: string, intent: TokenIntent): Promise<CachedToken | null> {
     const cooldownMs = getZoneTokenCooldownMs(zoneKey)
     if (cooldownMs > 0) {
       console.warn('[voice] zone token cooldown active | zone:', zoneKey, '| retry in ms:', cooldownMs)
@@ -232,21 +232,27 @@ export function useVoice(
     if (tokenInFlightRef.current.has(zoneKey)) return null
     tokenInFlightRef.current.add(zoneKey)
     const roomName = `${ZONE_ROOM_PREFIX}${zoneKey}`
-    console.log('[voice] fetching token | zone:', zoneKey)
-    const cached = await fetchToken(identity, roomName, accessTokenRef.current)
+    console.log('[voice] fetching token | zone:', zoneKey, '| intent:', intent)
+    const result = await fetchTokenDetailed(identity, roomName, accessTokenRef.current, intent)
       .finally(() => tokenInFlightRef.current.delete(zoneKey))
+    const cached = result.cached
     if (cached) {
       tokenCacheRef.current[zoneKey] = cached
       zoneTokenBackoffMsRef.current[zoneKey] = 0
       zoneTokenBlockedUntilRef.current[zoneKey] = 0
       console.log('[voice] token cached | zone:', zoneKey, '| age:', Math.round((Date.now() - cached.fetchedAt) / 1000), 's')
     } else {
-      const prev = zoneTokenBackoffMsRef.current[zoneKey] || 0
-      const next = Math.min(60_000, prev > 0 ? prev * 2 : 5_000)
+      let next = 2_000
+      if (result.status === 429) {
+        const prev = zoneTokenBackoffMsRef.current[zoneKey] || 0
+        next = Math.min(60_000, prev > 0 ? prev * 2 : 5_000)
+      } else if (result.status === 403) {
+        // Likely zone membership propagation race. Retry soon.
+        next = 500
+      }
       zoneTokenBackoffMsRef.current[zoneKey] = next
       zoneTokenBlockedUntilRef.current[zoneKey] = Date.now() + next
-      console.warn('[voice] token fetch failed | zone:', zoneKey, '| backoff ms:', next)
-      console.warn('[voice] token fetch failed | zone:', zoneKey)
+      console.warn('[voice] token fetch failed | zone:', zoneKey, '| status:', result.status, '| backoff ms:', next)
     }
     return cached
   }
@@ -298,11 +304,11 @@ export function useVoice(
     }
 
     // Resolve token (cached first)
-    let token = getCachedToken(targetKey)
+    let token = getCachedToken(targetKey, 'join')
     if (token) {
       console.log('[voice] using cached token | zone:', targetKey)
     } else {
-      token = await fetchZoneToken(identity, targetKey)
+      token = await fetchZoneToken(identity, targetKey, 'join')
     }
     if (cancelled()) { console.log('[voice] cancelled after token | gen:', myGen); return }
     if (!token) {
@@ -387,7 +393,7 @@ export function useVoice(
       const { localTrack, krispApplied } = await createKrispLocalTrack(clone, 'zone', mic.audioCtxRef.current ?? undefined, krispEnabledRef.current)
       krispAppliedRef.current.zone = krispApplied
       console.log('[voice][krisp] zone applied:', krispApplied)
-      if (!krispApplied) {
+      if (krispEnabledRef.current && !krispApplied) {
         console.warn('[voice][zone] Krisp unavailable/failed; skipping zone publish to avoid unprocessed private-room audio')
         mic.removePublishedClone(clone)
         try { clone.stop() } catch { /* ignore */ }
@@ -568,9 +574,9 @@ export function useVoice(
       // Prefetch is for approach only. Never prefetch while already inside
       // a zone (detected !== null) or while in an active transition.
       if (detected === null && modeRef.current === 'proximity' && targetZoneRef.current === undefined) {
-        if (prefetchKey && !getCachedToken(prefetchKey) && !tokenInFlightRef.current.has(prefetchKey)) {
+      if (prefetchKey && !getCachedToken(prefetchKey, 'prefetch') && !tokenInFlightRef.current.has(prefetchKey)) {
           console.log('[voice] prefetch triggered | zone:', prefetchKey)
-          void fetchZoneToken(identity, prefetchKey)
+        void fetchZoneToken(identity, prefetchKey, 'prefetch')
         }
       }
 
