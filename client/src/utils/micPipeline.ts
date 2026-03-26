@@ -52,6 +52,12 @@ export type SendPathGraph = {
   micSource: MediaStreamAudioSourceNode
   /** RNNoise AudioWorklet; null if worklet failed to load. */
   rnnoise: AudioWorkletNode | null
+  /**
+   * RNNoise is mono-in / mono-out on ch0; the worklet still exposes 2 outs with R silent.
+   * `ChannelSplitter(1)` keeps only input channel 0; `ChannelMerger(2)` fans that bus to L+R.
+   * (Same idea as duplicating `input[0]` to every `output[channel]` inside a tiny pass-through worklet.)
+   */
+  rnnoiseStereoFix: { splitter: ChannelSplitterNode; merger: ChannelMergerNode } | null
   /** Denoised stream for Silero only (not published directly). */
   vadTapDestination: MediaStreamAudioDestinationNode
   vadGate: GainNode
@@ -65,6 +71,8 @@ function rnnoiseWorkletUrl(): string {
 
 /**
  * mic → [RNNoise?] → fan-out: vadGate → destination, analyser, vadTapDestination.
+ * Uses the same `AudioContext` as the rest of the graph (usually 48 kHz in Chrome); avoid a separate
+ * context at another rate or resamplers can skew pitch/latency relative to RNNoise’s frame size.
  */
 export async function buildSendPathGraph(ctx: AudioContext, mediaStream: MediaStream): Promise<SendPathGraph> {
   const micSource = ctx.createMediaStreamSource(mediaStream)
@@ -77,11 +85,18 @@ export async function buildSendPathGraph(ctx: AudioContext, mediaStream: MediaSt
 
   let tail: AudioNode = micSource
   let rnnoise: AudioWorkletNode | null = null
+  let rnnoiseStereoFix: SendPathGraph['rnnoiseStereoFix'] = null
   try {
     await ctx.audioWorklet.addModule(rnnoiseWorkletUrl())
     rnnoise = new AudioWorkletNode(ctx, NoiseSuppressorWorklet_Name)
     micSource.connect(rnnoise)
-    tail = rnnoise
+    const splitter = ctx.createChannelSplitter(1)
+    const merger = ctx.createChannelMerger(2)
+    rnnoise.connect(splitter)
+    splitter.connect(merger, 0, 0)
+    splitter.connect(merger, 0, 1)
+    rnnoiseStereoFix = { splitter, merger }
+    tail = merger
   } catch (err) {
     console.warn('[mic] RNNoise worklet unavailable — continuing without it:', err)
   }
@@ -91,15 +106,17 @@ export async function buildSendPathGraph(ctx: AudioContext, mediaStream: MediaSt
   tail.connect(analyser)
   tail.connect(vadTapDestination)
 
-  return { micSource, rnnoise, vadTapDestination, vadGate, destination, analyser }
+  return { micSource, rnnoise, rnnoiseStereoFix, vadTapDestination, vadGate, destination, analyser }
 }
 
 export function teardownSendPathGraph(graph: SendPathGraph): void {
-  try { graph.micSource.disconnect() } catch { /* ignore */ }
-  try { graph.rnnoise?.disconnect() } catch { /* ignore */ }
   try { graph.vadGate.disconnect() } catch { /* ignore */ }
   try { graph.analyser.disconnect() } catch { /* ignore */ }
   try { graph.vadTapDestination.disconnect() } catch { /* ignore */ }
+  try { graph.rnnoiseStereoFix?.merger.disconnect() } catch { /* ignore */ }
+  try { graph.rnnoiseStereoFix?.splitter.disconnect() } catch { /* ignore */ }
+  try { graph.rnnoise?.disconnect() } catch { /* ignore */ }
+  try { graph.micSource.disconnect() } catch { /* ignore */ }
 }
 
 export async function createCaptureTrack(): Promise<{ capture: LocalAudioTrack; mediaStream: MediaStream }> {
