@@ -13,7 +13,9 @@ export interface VoiceState {
   remoteGain: number
   setRemoteGain: (v: number) => void
   krispEnabled: boolean
-  toggleKrispEnabled: () => void
+  /** Mirrors `useKrispNoiseFilter` from `@livekit/components-react/krisp` — implemented in Gather voice. */
+  krispNoiseFilterPending: boolean
+  setKrispNoiseFilterEnabled: (enabled: boolean) => void
   headphonePrompt: string | null
   confirmHeadphones: (accept: boolean) => void
   audioBlocked?: boolean

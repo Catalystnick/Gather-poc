@@ -7,8 +7,8 @@
 // Proximity room: always connected when mic is ready. Distance-gated subscriptions.
 // Zone room: created/destroyed as the player enters/leaves zone boundaries.
 //
-// Both rooms publish from the same raw hardware mic track. Krisp then mic gain
-// (per-room processor — see KrispWithMicGainProcessor).
+// Both rooms publish from the same raw hardware mic track. Krisp is attached
+// after publish via RoomEvent.LocalTrackPublished (LiveKit Krisp docs).
 
 import { useEffect, useRef, useState } from 'react'
 import type { Socket } from 'socket.io-client'
@@ -24,7 +24,9 @@ import { getZoneKey, getPrefetchZoneKey } from '../utils/zoneDetection'
 import {
   ROOM_NAME, ZONE_ROOM_PREFIX,
   type CachedToken, type TokenIntent,
-  createRoom, fetchToken, fetchTokenDetailed, tokenIsValid, attachRemoteAudio, createKrispLocalTrack, AUDIO_PUBLISH_OPTS,
+  createRoom, fetchToken, fetchTokenDetailed, tokenIsValid, attachRemoteAudio,
+  attachMicKrispOnLocalTrackPublished, createLocalMicTrack, syncKrispEnabledOnLocalTrack,
+  AUDIO_PUBLISH_OPTS,
 } from '../utils/voiceRoom'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -113,6 +115,7 @@ export function useVoice(
   const [mode,                setMode]                = useState<VoiceMode>('proximity')
   const [activeZoneKey,       setActiveZoneKey]       = useState<string | null>(null)
   const [krispEnabled,        setKrispEnabled]        = useState(loadKrispEnabled)
+  const [krispNoiseFilterPending, setKrispNoiseFilterPending] = useState(false)
 
   // ── Room refs ──────────────────────────────────────────────────────────────
   const proximityRoomRef         = useRef<Room | null>(null)
@@ -142,8 +145,6 @@ export function useVoice(
   const debounceTicksRef  = useRef(0)
   const generationRef     = useRef(0)
   const krispAppliedRef   = useRef<{ proximity: boolean; zone: boolean }>({ proximity: false, zone: false })
-  const proximityPostGainRef = useRef<GainNode | null>(null)
-  const zonePostGainRef      = useRef<GainNode | null>(null)
 
   // ── Stable value refs ──────────────────────────────────────────────────────
   const remoteGainRef    = useRef(remoteGain)
@@ -156,18 +157,6 @@ export function useVoice(
   remotePlayersRef.current = remotePlayers
   const krispEnabledRef = useRef(krispEnabled)
   krispEnabledRef.current = krispEnabled
-
-  // Publish path: mic gain after Krisp (separate GainNode per room).
-  useEffect(() => {
-    const ctx = mic.audioCtxRef.current
-    if (!ctx) return
-    const t = ctx.currentTime
-    const g = Math.max(0, mic.micGain)
-    const a = proximityPostGainRef.current
-    const b = zonePostGainRef.current
-    if (a) a.gain.setTargetAtTime(g, t, 0.03)
-    if (b) b.gain.setTargetAtTime(g, t, 0.03)
-  }, [mic.micGain])
 
   // ── Sync helpers ───────────────────────────────────────────────────────────
 
@@ -190,12 +179,24 @@ export function useVoice(
     })
   }
 
-  function safeUnpublishLocalTrack(room: Room, track: LocalAudioTrack) {
+  /**
+   * Remove mic from the LiveKit PC without calling MediaStreamTrack.stop() — the same
+   * hardware track must stay alive for useMicTrack / the next publish.
+   */
+  async function safeUnpublishUserMicTrack(room: Room, track: LocalAudioTrack) {
     const pubs = [...room.localParticipant.trackPublications.values()]
     const pub = pubs.find(p => p.track === track || (track.sid && p.trackSid === track.sid))
-    if (!pub) return
+    if (!pub) {
+      try { await track.stopProcessor() } catch { /* ignore */ }
+      return
+    }
     try {
-      room.localParticipant.unpublishTrack(track)
+      await room.localParticipant.unpublishTrack(track, false)
+    } catch {
+      /* ignore */
+    }
+    try {
+      await track.stopProcessor()
     } catch {
       /* ignore */
     }
@@ -306,11 +307,11 @@ export function useVoice(
       void (async () => {
         try {
           if (oldLocalTrack) {
-            safeUnpublishLocalTrack(oldRoom, oldLocalTrack)
+            await safeUnpublishUserMicTrack(oldRoom, oldLocalTrack)
           }
           if (oldClone) mic.removePublishedClone(oldClone)
         } catch { /* ignore */ }
-        await oldRoom.disconnect().catch(() => {})
+        await oldRoom.disconnect(false).catch(() => {})
       })()
     }
 
@@ -344,6 +345,9 @@ export function useVoice(
 
     // Build zone room
     const room = createRoom()
+    attachMicKrispOnLocalTrackPublished(room, krispEnabledRef, 'zone', applied => {
+      krispAppliedRef.current.zone = applied
+    })
 
     room.on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
       if (track.kind !== Track.Kind.Audio) return
@@ -395,35 +399,19 @@ export function useVoice(
     }
     if (cancelled()) {
       console.log('[voice] cancelled after connect | gen:', myGen)
-      await room.disconnect().catch(() => {})
+      await room.disconnect(false).catch(() => {})
       return
     }
     console.log('[voice] zone connected | zone:', targetKey, '| participants:', room.remoteParticipants.size)
 
     zoneRoomRef.current = room
 
-    // Always create a dedicated zone LocalAudioTrack from a raw clone and apply Krisp
-    // before publish. LocalAudioTrack.mediaStreamTrack may still point to the source
-    // input handle even when a processor is active, so cloning it is not a reliable
-    // way to inherit processed output.
     const rawTrack = mic.rawMicStreamRef.current?.getAudioTracks()[0]
     if (rawTrack) {
-      console.log('[voice][zone] path=raw-plus-krisp | zone:', targetKey, '| source id:', rawTrack.id, '| state:', rawTrack.readyState)
+      console.log('[voice][zone] publish mic | zone:', targetKey, '| source id:', rawTrack.id, '| state:', rawTrack.readyState)
+      mic.addPublishedClone(rawTrack)
       zonePublishedCloneRef.current = rawTrack
-      const { localTrack, krispApplied } = await createKrispLocalTrack(
-        rawTrack,
-        'zone',
-        mic.audioCtxRef.current ?? undefined,
-        krispEnabledRef.current,
-        mic.micGainRef,
-        zonePostGainRef,
-      )
-      krispAppliedRef.current.zone = krispApplied
-      console.log('[voice][krisp] zone applied:', krispApplied)
-      console.log('[voice][krisp][zone-enter] publish-ready | zone:', targetKey, '| enabled:', krispEnabledRef.current, '| applied:', krispApplied, '| trackId:', rawTrack.id)
-      if (krispEnabledRef.current && !krispApplied) {
-        console.warn('[voice][zone] Krisp unavailable/failed; publishing without Krisp so zone audio stays connected')
-      }
+      const localTrack = createLocalMicTrack(rawTrack, mic.audioCtxRef.current ?? undefined)
       zoneLocalTrackRef.current = localTrack
       console.log('[voice][zone] localTrack ready | sid?:', localTrack.sid ?? 'n/a', '| mediaStreamTrack id:', localTrack.mediaStreamTrack.id)
       await room.localParticipant.publishTrack(localTrack, AUDIO_PUBLISH_OPTS)
@@ -434,11 +422,15 @@ export function useVoice(
     }
     if (cancelled()) {
       console.log('[voice] cancelled after publish | gen:', myGen)
-      await room.disconnect().catch(() => {})
-      zoneRoomRef.current = null
-      const localTrack = zoneLocalTrackRef.current
+      const localTrackCleanup = zoneLocalTrackRef.current
       zoneLocalTrackRef.current = null
-      void localTrack
+      if (localTrackCleanup && room) {
+        try { await safeUnpublishUserMicTrack(room, localTrackCleanup) } catch { /* ignore */ }
+      } else if (localTrackCleanup) {
+        try { await localTrackCleanup.stopProcessor() } catch { /* ignore */ }
+      }
+      await room.disconnect(false).catch(() => {})
+      zoneRoomRef.current = null
       const clone = zonePublishedCloneRef.current
       zonePublishedCloneRef.current = null
       if (clone) mic.removePublishedClone(clone)
@@ -459,13 +451,19 @@ export function useVoice(
     if (!socket?.id || !mic.isReady) return
     const identity = userId
     let room: Room | null = null
+    /** Dev Strict Mode remounts immediately; finish async work only if still active. */
+    let cancelled  = false
 
     async function connect() {
       try {
         const token = await fetchToken(identity, ROOM_NAME, accessTokenRef.current)
+        if (cancelled) return
         if (!token) throw new Error('proximity token fetch failed')
 
         room = createRoom()
+        attachMicKrispOnLocalTrackPublished(room, krispEnabledRef, 'proximity', applied => {
+          krispAppliedRef.current.proximity = applied
+        })
 
         room.on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
           if (track.kind !== Track.Kind.Audio) return
@@ -517,6 +515,10 @@ export function useVoice(
         })
 
         await room.connect(token.url, token.token, { autoSubscribe: false })
+        if (cancelled) {
+          await room.disconnect(false).catch(() => {})
+          return
+        }
         proximityRoomRef.current = room
 
         const ctx = mic.audioCtxRef.current
@@ -524,32 +526,41 @@ export function useVoice(
         else if (ctx?.state === 'suspended') setAudioBlocked(true)
         setProximityRoomReady(true)
 
-        // Clone the raw mic track and apply Krisp before publishing.
         const rawTrack = mic.rawMicStreamRef.current?.getAudioTracks()[0]
         if (rawTrack) {
-          console.log('[voice][krisp][join] begin | room: proximity | enabled:', krispEnabledRef.current, '| trackId:', rawTrack.id)
+          if (cancelled) {
+            await room.disconnect(false).catch(() => {})
+            return
+          }
+          console.log('[voice][krisp][join] publish mic | proximity | enabled:', krispEnabledRef.current, '| trackId:', rawTrack.id)
           console.log('[voice][proximity] source raw | id:', rawTrack.id, '| state:', rawTrack.readyState, '| enabled:', rawTrack.enabled)
           mic.addPublishedClone(rawTrack)
           proximityPublishedCloneRef.current = rawTrack
-          const { localTrack, krispApplied } = await createKrispLocalTrack(
-            rawTrack,
-            'proximity',
-            mic.audioCtxRef.current ?? undefined,
-            krispEnabledRef.current,
-            mic.micGainRef,
-            proximityPostGainRef,
-          )
-          krispAppliedRef.current.proximity = krispApplied
-          console.log('[voice][krisp] proximity applied:', krispApplied)
-          console.log('[voice][krisp][join] publish-ready | room: proximity | enabled:', krispEnabledRef.current, '| applied:', krispApplied, '| trackId:', rawTrack.id)
+          const localTrack = createLocalMicTrack(rawTrack, mic.audioCtxRef.current ?? undefined)
+          if (cancelled) {
+            mic.removePublishedClone(rawTrack)
+            proximityPublishedCloneRef.current = null
+            try { await localTrack.stopProcessor() } catch { /* ignore */ }
+            await room.disconnect(false).catch(() => {})
+            return
+          }
           proximityLocalTrackRef.current = localTrack
           console.log('[voice][proximity] localTrack ready | sid?:', localTrack.sid ?? 'n/a', '| mediaStreamTrack id:', localTrack.mediaStreamTrack.id)
           await room.localParticipant.publishTrack(localTrack, AUDIO_PUBLISH_OPTS)
             .catch(err => console.warn('[voice] proximity publish failed:', err))
-          console.log('[voice][proximity] publish attempted | mediaStreamTrack id:', localTrack.mediaStreamTrack.id)
+          if (cancelled) {
+            mic.removePublishedClone(rawTrack)
+            proximityPublishedCloneRef.current = null
+            proximityLocalTrackRef.current = null
+            try { await safeUnpublishUserMicTrack(room, localTrack) } catch { /* ignore */ }
+            await room.disconnect(false).catch(() => {})
+            return
+          }
+          console.log('[voice][proximity] publish attempted (Krisp via LocalTrackPublished) | mediaStreamTrack id:', localTrack.mediaStreamTrack.id)
         }
 
         // Subscribe to existing in-range participants
+        if (cancelled) return
         for (const participant of room.remoteParticipants.values()) {
           const player = remotePlayersRef.current.get(participant.identity)
           if (!player || player.zoneKey !== null || activeZoneKeyRef.current !== null) continue
@@ -570,16 +581,27 @@ export function useVoice(
     void connect()
 
     return () => {
+      cancelled = true
       setProximityRoomReady(false)
-      const localTrack = proximityLocalTrackRef.current
+      const localTrackCleanup = proximityLocalTrackRef.current
       proximityLocalTrackRef.current = null
-      void localTrack
       const clone = proximityPublishedCloneRef.current
       proximityPublishedCloneRef.current = null
       if (clone) mic.removePublishedClone(clone)
-      if (room) { room.disconnect(); proximityRoomRef.current = null }
+      const r = room
+      proximityRoomRef.current = null
       cleanupAllProximity()
       subscribedIds.current.clear()
+      void (async () => {
+        try {
+          if (r && localTrackCleanup) {
+            await safeUnpublishUserMicTrack(r, localTrackCleanup)
+          } else if (localTrackCleanup) {
+            try { await localTrackCleanup.stopProcessor() } catch { /* ignore */ }
+          }
+          if (r) await r.disconnect(false).catch(() => {})
+        } catch { /* ignore */ }
+      })()
     }
   }, [socket?.id, mic.isReady])
 
@@ -646,19 +668,19 @@ export function useVoice(
       generationRef.current++
       const room = zoneRoomRef.current
       zoneRoomRef.current = null
-      // Best-effort: unpublish + stop before disconnecting.
-      try {
-        const localTrack = zoneLocalTrackRef.current
-        zoneLocalTrackRef.current = null
-        if (room && localTrack) {
-          safeUnpublishLocalTrack(room, localTrack)
-        }
-        const clone = zonePublishedCloneRef.current
-        zonePublishedCloneRef.current = null
-        if (clone) mic.removePublishedClone(clone)
-      } catch { /* ignore */ }
+      const localTrack = zoneLocalTrackRef.current
+      zoneLocalTrackRef.current = null
+      const clone = zonePublishedCloneRef.current
+      zonePublishedCloneRef.current = null
+      if (clone) mic.removePublishedClone(clone)
       cleanupAllZone()
-      room?.disconnect()
+      void (async () => {
+        try {
+          if (room && localTrack) await safeUnpublishUserMicTrack(room, localTrack)
+          else if (localTrack) await localTrack.stopProcessor().catch(() => {})
+          if (room) await room.disconnect(false).catch(() => {})
+        } catch { /* ignore */ }
+      })()
       setConnectedPeers(new Set(subscribedIds.current))
       syncZoneKey(null)
       syncMode('proximity')
@@ -789,65 +811,23 @@ export function useVoice(
     try { localStorage.setItem(GAIN_STORAGE_KEY, String(next)) } catch { /* ignore */ }
   }
 
-  function toggleKrispEnabled() {
-    setKrispEnabled(prev => {
-      const next = !prev
-      try { localStorage.setItem(KRISP_ENABLED_STORAGE_KEY, next ? '1' : '0') } catch { /* ignore */ }
-      return next
-    })
+  /** Same semantics as `@livekit/components-react/krisp` `setNoiseFilterEnabled` (processor setEnabled, no republish). */
+  function setKrispNoiseFilterEnabled(next: boolean) {
+    setKrispEnabled(next)
+    krispEnabledRef.current = next
+    try { localStorage.setItem(KRISP_ENABLED_STORAGE_KEY, next ? '1' : '0') } catch { /* ignore */ }
+    void (async () => {
+      setKrispNoiseFilterPending(true)
+      try {
+        const p = proximityLocalTrackRef.current
+        const z = zoneLocalTrackRef.current
+        if (p) krispAppliedRef.current.proximity = await syncKrispEnabledOnLocalTrack(p, next, 'proximity-toggle')
+        if (z) krispAppliedRef.current.zone = await syncKrispEnabledOnLocalTrack(z, next, 'zone-toggle')
+      } finally {
+        setKrispNoiseFilterPending(false)
+      }
+    })()
   }
-
-  useEffect(() => {
-    const sourceTrack = mic.rawMicStreamRef.current?.getAudioTracks()[0]
-    if (!sourceTrack) return
-    const publishSource: MediaStreamTrack = sourceTrack
-
-    async function republishForRoom(
-      room: Room | null,
-      cloneRef: React.MutableRefObject<MediaStreamTrack | null>,
-      localRef: React.MutableRefObject<LocalAudioTrack | null>,
-      label: 'proximity' | 'zone',
-      strictWhenEnabled: boolean,
-    ) {
-      if (!room) return
-      const oldLocal = localRef.current
-      const oldClone = cloneRef.current
-      localRef.current = null
-      cloneRef.current = null
-      if (oldLocal) {
-        safeUnpublishLocalTrack(room, oldLocal)
-      }
-      if (oldClone) {
-        mic.removePublishedClone(oldClone)
-      }
-
-      const source = publishSource
-      mic.addPublishedClone(source)
-      cloneRef.current = source
-      const postGainSlot = label === 'proximity' ? proximityPostGainRef : zonePostGainRef
-      const { localTrack, krispApplied } = await createKrispLocalTrack(
-        source,
-        `${label}-republish`,
-        mic.audioCtxRef.current ?? undefined,
-        krispEnabled,
-        mic.micGainRef,
-        postGainSlot,
-      )
-      if (label === 'proximity') krispAppliedRef.current.proximity = krispApplied
-      else krispAppliedRef.current.zone = krispApplied
-      console.log(`[voice][krisp] ${label} applied after toggle:`, krispApplied, '| enabled:', krispEnabled)
-      if (strictWhenEnabled && krispEnabled && !krispApplied) {
-        mic.removePublishedClone(source)
-        cloneRef.current = null
-        return
-      }
-      localRef.current = localTrack
-      await room.localParticipant.publishTrack(localTrack, AUDIO_PUBLISH_OPTS).catch(() => {})
-    }
-
-    void republishForRoom(proximityRoomRef.current, proximityPublishedCloneRef, proximityLocalTrackRef, 'proximity', false)
-    void republishForRoom(zoneRoomRef.current, zonePublishedCloneRef, zoneLocalTrackRef, 'zone', true)
-  }, [krispEnabled, mic.isReady])
 
   // ── Return unified VoiceState ──────────────────────────────────────────────
 
@@ -865,7 +845,8 @@ export function useVoice(
     remoteGain,
     setRemoteGain,
     krispEnabled,
-    toggleKrispEnabled,
+    krispNoiseFilterPending,
+    setKrispNoiseFilterEnabled,
     audioBlocked,
     audioInterrupted,
     mode,

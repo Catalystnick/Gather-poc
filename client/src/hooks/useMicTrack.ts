@@ -1,7 +1,7 @@
 // Owns the local microphone pipeline — one getUserMedia call shared across all
-// LiveKit rooms (proximity + zone). Both rooms receive a MicTrack and publish
-// raw hardware track clones to their respective room. Krisp noise cancellation
-// is applied per-room via LocalTrackPublished.
+// LiveKit rooms (proximity + zone). One mic stream; each room publishes its own
+// LocalAudioTrack from that source. Krisp is applied after publish (LiveKit docs:
+// RoomEvent.LocalTrackPublished + KrispNoiseFilter).
 //
 // Responsibilities:
 //   - getUserMedia / AudioContext / AnalyserNode

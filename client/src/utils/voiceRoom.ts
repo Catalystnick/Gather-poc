@@ -1,9 +1,7 @@
 // Shared primitives for proximity and zone LiveKit rooms.
 // Extracted to eliminate duplication between the two room slots in useVoice.
 
-import { Room, Track, AudioPresets, LocalAudioTrack, type RemoteAudioTrack } from 'livekit-client'
-import { isKrispNoiseFilterSupported } from '@livekit/krisp-noise-filter'
-import { KrispWithMicGainProcessor } from './KrispWithMicGainProcessor'
+import { Room, RoomEvent, Track, AudioPresets, LocalAudioTrack, type RemoteAudioTrack } from 'livekit-client'
 
 // ─── Shared constants ─────────────────────────────────────────────────────────
 
@@ -86,7 +84,14 @@ export async function fetchToken(
 // ─── Room factory ─────────────────────────────────────────────────────────────
 
 export function createRoom(): Room {
-  const room = new Room({ adaptiveStream: false, dynacast: false, singlePeerConnection: true, webAudioMix: false })
+  const room = new Room({
+    adaptiveStream: false,
+    dynacast: false,
+    singlePeerConnection: true,
+    webAudioMix: false,
+    // Shared browser mic is owned by useMicTrack — never stop it on unpublish/disconnect.
+    stopLocalTrackOnUnpublish: false,
+  })
   ;(room as Room & { setMaxListeners?: (n: number) => void }).setMaxListeners?.(32)
   return room
 }
@@ -105,53 +110,90 @@ export function attachRemoteAudio(track: RemoteAudioTrack, volume: number): HTML
   return audio
 }
 
-// ─── Krisp noise filter setup ─────────────────────────────────────────────────
-// Krisp is applied to a LocalAudioTrack BEFORE publishing, not in a
-// LocalTrackPublished event handler. The event approach races with zone
-// transitions — applying it here ensures it runs in the correct async context
-// with the correct room, before the track enters the PeerConnection.
-//
-// audioCtx must be the same AudioContext owned by useMicTrack (already running).
-// Without it, LocalAudioTrack creates its own context internally which may start
-// suspended — Krisp's AudioWorkletNode then never processes audio.
-//
-// Mic gain is applied after Krisp (or after raw pass-through when Krisp is off).
-// postGainOut is set to the publish-path GainNode so useVoice can smooth updates.
+// ─── Local mic track (Krisp attached after publish — see LiveKit docs) ─────────
 
-export async function createKrispLocalTrack(
+/**
+ * Publish this track first; use {@link attachMicKrispOnLocalTrackPublished} on the room
+ * so Krisp runs in `RoomEvent.LocalTrackPublished` like the official docs.
+ * `audioContext` should be the running graph from useMicTrack.
+ */
+export function createLocalMicTrack(
   rawClone: MediaStreamTrack,
+  audioCtx?: AudioContext,
+): LocalAudioTrack {
+  return new LocalAudioTrack(rawClone, undefined, true, audioCtx)
+}
+
+/** Processor name from @livekit/krisp-noise-filter (matches components-react `useKrispNoiseFilter`). */
+export const LIVEKIT_KRISP_PROCESSOR_NAME = 'livekit-noise-filter'
+
+type KrispProcessorLike = { name?: string; setEnabled?: (enabled: boolean) => Promise<unknown> }
+
+/** Matches LiveKit Krisp docs: dynamic import, setProcessor, setEnabled(true). */
+export async function applyKrispNoiseFilterFromDocs(
+  track: LocalAudioTrack,
   label: string,
-  audioCtx: AudioContext | undefined,
-  krispEnabled: boolean,
-  micGainRef: { current: number },
-  postGainOut: { current: GainNode | null },
-): Promise<{ localTrack: LocalAudioTrack; krispApplied: boolean }> {
-  const localTrack = new LocalAudioTrack(rawClone, undefined, true, audioCtx)
-  const wantKrisp = krispEnabled && isKrispNoiseFilterSupported()
-  if (!krispEnabled) {
-    console.log(`[Krisp][${label}] disabled by user — publish gain only`)
-  } else if (!isKrispNoiseFilterSupported()) {
-    console.warn(`[Krisp][${label}] not supported — publish gain only`)
-  } else {
-    console.log(`[Krisp][${label}] NC + post-gain | track:`, rawClone.label)
+): Promise<boolean> {
+  const { KrispNoiseFilter, isKrispNoiseFilterSupported } = await import('@livekit/krisp-noise-filter')
+  if (!isKrispNoiseFilterSupported()) {
+    console.warn(`[Krisp][${label}] Krisp noise filter is currently not supported on this browser`)
+    return false
   }
   try {
-    const processor = new KrispWithMicGainProcessor(micGainRef, postGainOut, wantKrisp)
-    await localTrack.setProcessor(processor)
-    console.log(`[Krisp][${label}] processor set OK | nc:`, wantKrisp)
-    return { localTrack, krispApplied: wantKrisp }
+    const krispProcessor = KrispNoiseFilter()
+    console.log(`[Krisp][${label}] Enabling LiveKit Krisp noise filter`)
+    await track.setProcessor(krispProcessor)
+    await krispProcessor.setEnabled(true)
+    return true
   } catch (err) {
-    console.error(`[Krisp][${label}] setProcessor failed:`, err)
-    if (wantKrisp) {
-      try {
-        const fallback = new KrispWithMicGainProcessor(micGainRef, postGainOut, false)
-        await localTrack.setProcessor(fallback)
-        console.warn(`[Krisp][${label}] fell back to raw + post-gain`)
-        return { localTrack, krispApplied: false }
-      } catch (err2) {
-        console.error(`[Krisp][${label}] fallback setProcessor failed:`, err2)
-      }
-    }
-    return { localTrack, krispApplied: false }
+    console.error(`[Krisp][${label}] setProcessor / setEnabled failed:`, err)
+    return false
   }
+}
+
+/**
+ * Same behavior as `@livekit/components-react/krisp` useKrispNoiseFilter: toggle via
+ * `setEnabled`, or call {@link applyKrispNoiseFilterFromDocs} when enabling with no processor yet.
+ */
+export async function syncKrispEnabledOnLocalTrack(
+  track: LocalAudioTrack,
+  enabled: boolean,
+  label: string,
+): Promise<boolean> {
+  const proc = track.getProcessor() as KrispProcessorLike | undefined
+  if (proc?.name === LIVEKIT_KRISP_PROCESSOR_NAME && typeof proc.setEnabled === 'function') {
+    try {
+      await proc.setEnabled(enabled)
+      return enabled
+    } catch (err) {
+      console.error(`[Krisp][${label}] setEnabled(${enabled}) failed:`, err)
+      return !enabled
+    }
+  }
+  if (enabled) {
+    return applyKrispNoiseFilterFromDocs(track, `${label}-sync-on`)
+  }
+  return false
+}
+
+/**
+ * Register docs-style Krisp setup once per room (before connect / publish).
+ */
+export function attachMicKrispOnLocalTrackPublished(
+  room: Room,
+  krispEnabledRef: { current: boolean },
+  label: string,
+  onApplied: (applied: boolean) => void,
+): void {
+  room.on(RoomEvent.LocalTrackPublished, async publication => {
+    if (publication.source !== Track.Source.Microphone) return
+    const track = publication.track
+    if (!(track instanceof LocalAudioTrack)) return
+    if (!krispEnabledRef.current) {
+      onApplied(false)
+      return
+    }
+    const applied = await applyKrispNoiseFilterFromDocs(track, `${label}-published`)
+    onApplied(applied)
+  })
 }
