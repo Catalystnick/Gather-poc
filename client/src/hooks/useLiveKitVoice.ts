@@ -54,7 +54,9 @@ function distance(a: { x: number; y: number; z: number }, b: { x: number; y: num
 
 function loadRemoteGain(): number {
   try {
-    const v = Number(localStorage.getItem(GAIN_STORAGE_KEY))
+    const raw = localStorage.getItem(GAIN_STORAGE_KEY)
+    if (raw === null) return IS_MOBILE ? 3.0 : 1
+    const v = Number(raw)
     return Number.isNaN(v) ? (IS_MOBILE ? 3.0 : 1) : Math.max(0, v)
   } catch { return IS_MOBILE ? 1.5 : 1 }
 }
@@ -128,6 +130,7 @@ export function useLiveKitVoice(
     e.track.detach().forEach(el => el.remove())
     e.audio.remove()
     remoteEntries.current.delete(identity)
+    subscribedIds.current.delete(identity)
   }
 
   function cleanupAll() {

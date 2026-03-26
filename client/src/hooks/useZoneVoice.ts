@@ -77,8 +77,14 @@ export function useZoneVoice(
 
   // ── Helpers — stable across renders ──────────────────────────────────────
 
-  function syncMode(m: VoiceMode) { modeRef.current = m; setMode(m) }
-  function syncZoneKey(k: string | null) { activeZoneKeyRef.current = k; setActiveZoneKey(k) }
+  function syncMode(m: VoiceMode) {
+    console.log('[zone voice] mode:', modeRef.current, '→', m)
+    modeRef.current = m; setMode(m)
+  }
+  function syncZoneKey(k: string | null) {
+    console.log('[zone voice] activeZoneKey:', activeZoneKeyRef.current, '→', k)
+    activeZoneKeyRef.current = k; setActiveZoneKey(k)
+  }
 
   function cleanupEntry(identity: string) {
     const e = remoteEntries.current.get(identity)
@@ -150,6 +156,12 @@ export function useZoneVoice(
       cleanupAll()
       setConnectedPeers(new Set())
       setSpeakingPeers(new Set())
+      // Unpublish mic with stopOnUnpublish=false before disconnect so the raw
+      // MediaStreamTrack is not stopped — it is shared with the proximity room.
+      const rawTrack = mic.rawMicStreamRef.current?.getAudioTracks()[0]
+      if (rawTrack) {
+        await oldRoom.localParticipant.unpublishTrack(rawTrack, false).catch(() => {})
+      }
       await oldRoom.disconnect().catch(() => {})
     }
     if (cancelled()) { console.log('[zone voice] cancelled after old room disconnect | gen:', myGen); return }
@@ -173,6 +185,7 @@ export function useZoneVoice(
     if (cancelled()) { console.log('[zone voice] cancelled after token fetch | gen:', myGen); return }
     if (!cached) {
       console.warn('[zone voice] token fetch failed for zone:', targetKey, '— staying in proximity')
+      console.log('[zone voice] targetZone reset for retry | was:', targetZoneRef.current, '→', activeZoneKeyRef.current)
       targetZoneRef.current = activeZoneKeyRef.current  // allow retry on next boundary cross
       syncMode('proximity')
       return
@@ -247,6 +260,13 @@ export function useZoneVoice(
       cleanupAll()
       setConnectedPeers(new Set())
       setSpeakingPeers(new Set())
+      // Reset transition guards so the detector can immediately retry reconnection.
+      // Without this, activeZoneKeyRef still shows the old zone and the detector
+      // thinks the transition already succeeded — no retry ever fires.
+      console.log('[zone voice] unexpected disconnect — resetting guards | targetZone:', targetZoneRef.current, '→ undefined | activeZone:', activeZoneKeyRef.current, '→ null')
+      targetZoneRef.current = undefined
+      syncZoneKey(null)
+      syncMode('proximity')
     })
 
     // Connect
@@ -256,6 +276,7 @@ export function useZoneVoice(
     } catch (err) {
       console.warn('[zone voice] connect failed | zone:', targetKey, '| err:', err)
       if (!cancelled()) {
+        console.log('[zone voice] targetZone reset for retry | was:', targetZoneRef.current, '→', activeZoneKeyRef.current)
         targetZoneRef.current = activeZoneKeyRef.current  // allow retry
         syncMode('proximity')
       }
@@ -331,7 +352,7 @@ export function useZoneVoice(
       if (detectedZone === activeZoneKeyRef.current) return  // already in this zone
       if (detectedZone === targetZoneRef.current) return     // already transitioning to this zone
 
-      console.log('[zone voice] debounce settled | triggering transition → zone:', detectedZone)
+      console.log('[zone voice] debounce settled | triggering transition → zone:', detectedZone, '| targetZone:', targetZoneRef.current, '→', detectedZone)
       targetZoneRef.current = detectedZone
       void transitionToZone(identity, detectedZone)
     }, 100)
@@ -344,6 +365,10 @@ export function useZoneVoice(
       zoneRoomRef.current = null
       cleanupAll()
       room?.disconnect()
+      // Clear transition guards so a fresh effect run starts with a clean slate
+      console.log('[zone voice] detector cleanup — clearing guards | activeZone:', activeZoneKeyRef.current, '→ null | targetZone:', targetZoneRef.current, '→ undefined')
+      activeZoneKeyRef.current = null
+      targetZoneRef.current = undefined
     }
   }, [socket?.id, mic.isReady])
 
