@@ -13,25 +13,36 @@ interface GainControlProps {
   sliderMax?: number
   step?: number
   unit?: string
+  precision?: number
   title?: string
 }
 
-function GainControl({ label, value, onChange, min = 0, sliderMax = SLIDER_MAX, step = 0.1, unit = 'x', title }: GainControlProps) {
-  const [text, setText] = useState(value.toFixed(1))
+function GainControl({
+  label,
+  value,
+  onChange,
+  min = 0,
+  sliderMax = SLIDER_MAX,
+  step = 0.1,
+  unit = 'x',
+  precision = 1,
+  title,
+}: GainControlProps) {
+  const [text, setText] = useState(value.toFixed(precision))
   const [focused, setFocused] = useState(false)
 
   // When the slider (or any external source) changes the value, update the
   // text field — but only while the text field isn't actively being edited.
   useEffect(() => {
-    if (!focused) setText(value.toFixed(1))
-  }, [value, focused])
+    if (!focused) setText(value.toFixed(precision))
+  }, [value, focused, precision])
 
   function commitText(raw: string) {
     const v = parseFloat(raw)
     if (!Number.isNaN(v) && v >= min) {
       onChange(v)
     } else {
-      setText(value.toFixed(1))
+      setText(value.toFixed(precision))
     }
   }
 
@@ -128,7 +139,16 @@ export default function VoiceControls() {
           </button>
           <ModeLabel mode={mode} activeZoneKey={activeZoneKey} />
         </div>
-        <GainControl label="🔊 Speaker" value={remoteGain} onChange={setRemoteGain} />
+        <GainControl
+          label="🔊 Speaker"
+          value={remoteGain}
+          onChange={setRemoteGain}
+          sliderMax={1}
+          step={0.01}
+          precision={2}
+          unit=""
+          title="Playback volume (0–1)"
+        />
         <GainControl label="🎙 Mic"     value={micGain}    onChange={setMicGain} />
       </div>
     </>

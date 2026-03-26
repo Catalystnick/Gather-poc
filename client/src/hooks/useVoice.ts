@@ -60,7 +60,8 @@ function loadRemoteGain(): number {
     const raw = localStorage.getItem(GAIN_STORAGE_KEY)
     if (raw === null) return 1
     const v = Number(raw)
-    return Number.isNaN(v) ? 1 : Math.max(0, v)
+    if (Number.isNaN(v)) return 1
+    return Math.min(1, Math.max(0, v))
   } catch { return 1 }
 }
 
@@ -637,7 +638,7 @@ export function useVoice(
   // ── Remote gain setter ─────────────────────────────────────────────────────
 
   function setRemoteGain(value: number) {
-    const next = Math.max(0, value)
+    const next = Math.min(1, Math.max(0, value))
     setRemoteGainState(next)
     try { localStorage.setItem(GAIN_STORAGE_KEY, String(next)) } catch { /* ignore */ }
   }
