@@ -6,7 +6,6 @@ import * as THREE from "three";
 import FloorMap from "./FloorMap";
 import PlacementTool from "./PlacementTool";
 import PlacementHUD, { type PlacementHUDState } from "./PlacementHUD";
-import Vegetation from "./Vegetation";
 import Campfire from "./Campfire";
 import LocalPlayer from "../player/LocalPlayer";
 import RemotePlayer from "../player/RemotePlayer";
@@ -57,30 +56,30 @@ export default function World({ player }: Props) {
   const { messages, bubbles, sendMessage } = useChat(socket);
 
   // ── Voice coordinator ───────────────────────────────────────────────────
-  const mic          = useMicTrack()
-  const zoneVoice    = useZoneVoice(socket, localPositionRef, mic, accessToken)
-  const proximityVoice = useLiveKitVoice(socket, localPositionRef, remotePlayers, mic, zoneVoice.activeZoneKey, accessToken)
+  const mic = useMicTrack();
+  const zoneVoice = useZoneVoice(socket, localPositionRef, mic, accessToken);
+  const proximityVoice = useLiveKitVoice(socket, localPositionRef, remotePlayers, mic, zoneVoice.activeZoneKey, accessToken);
 
   // Unified voice state: zone room takes precedence when active
-  const inZone = zoneVoice.activeZoneKey !== null
+  const inZone = zoneVoice.activeZoneKey !== null;
   const voice = {
-    muted:                mic.isMuted,
-    toggleMute:           mic.toggleMute,
-    isLocalSpeaking:      mic.isLocalSpeaking,
-    micGain:              mic.micGain,
-    setMicGain:           mic.setMicGain,
-    headphonePrompt:      mic.headphonePrompt,
-    confirmHeadphones:    mic.confirmHeadphones,
-    connectedPeers:       inZone ? zoneVoice.connectedPeers : proximityVoice.connectedPeers,
-    speakingPeers:        inZone ? zoneVoice.speakingPeers  : proximityVoice.speakingPeers,
-    peerConnectionStates: inZone ? {}                        : proximityVoice.peerConnectionStates,
-    remoteGain:           proximityVoice.remoteGain,
-    setRemoteGain:        proximityVoice.setRemoteGain,
-    audioBlocked:         proximityVoice.audioBlocked,
-    audioInterrupted:     proximityVoice.audioInterrupted,
-    mode:                 zoneVoice.mode,
-    activeZoneKey:        zoneVoice.activeZoneKey,
-  }
+    muted: mic.isMuted,
+    toggleMute: mic.toggleMute,
+    isLocalSpeaking: mic.isLocalSpeaking,
+    micGain: mic.micGain,
+    setMicGain: mic.setMicGain,
+    headphonePrompt: mic.headphonePrompt,
+    confirmHeadphones: mic.confirmHeadphones,
+    connectedPeers: inZone ? zoneVoice.connectedPeers : proximityVoice.connectedPeers,
+    speakingPeers: inZone ? zoneVoice.speakingPeers : proximityVoice.speakingPeers,
+    peerConnectionStates: inZone ? {} : proximityVoice.peerConnectionStates,
+    remoteGain: proximityVoice.remoteGain,
+    setRemoteGain: proximityVoice.setRemoteGain,
+    audioBlocked: proximityVoice.audioBlocked,
+    audioInterrupted: proximityVoice.audioInterrupted,
+    mode: zoneVoice.mode,
+    activeZoneKey: zoneVoice.activeZoneKey,
+  };
 
   // Derive connection rows once per render rather than inline in JSX.
   const connectionRows = useMemo(
@@ -101,15 +100,16 @@ export default function World({ player }: Props) {
         <Canvas orthographic style={{ cursor: "grab" }}>
           <Suspense fallback={null}>
             <Perf position="top-left" />
-          <CameraRig targetRef={localPositionRef} />
+            <CameraRig targetRef={localPositionRef} />
             <Environment preset="city" />
             <FloorMap uvAttrRef={uvAttrRef} />
-            {/* <Vegetation /> */}
             <Campfire />
             <Zones />
             <Fence />
             {import.meta.env.DEV && <PlacementTool uvAttrRef={uvAttrRef} onHUDState={onHUDState} />}
-            {spawnPosition && <LocalPlayer player={player} onMove={emitMove} positionRef={localPositionRef} spawnPosition={spawnPosition} isSpeaking={voice.isLocalSpeaking} activeZoneKey={zoneVoice.activeZoneKey} />}
+            {spawnPosition && (
+              <LocalPlayer player={player} onMove={emitMove} positionRef={localPositionRef} spawnPosition={spawnPosition} isSpeaking={voice.isLocalSpeaking} activeZoneKey={zoneVoice.activeZoneKey} />
+            )}
             {Array.from(remotePlayers.values()).map((p) => (
               <RemotePlayer key={p.id} {...p} bubble={bubbles.get(p.id)} inRange={voice.connectedPeers.has(p.id)} isSpeaking={voice.speakingPeers.has(p.id)} />
             ))}
