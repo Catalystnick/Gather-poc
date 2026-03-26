@@ -97,8 +97,13 @@ export async function createKrispLocalTrack(
   rawClone: MediaStreamTrack,
   label: string,
   audioCtx?: AudioContext,
+  krispEnabled = true,
 ): Promise<{ localTrack: LocalAudioTrack; krispApplied: boolean }> {
   const localTrack = new LocalAudioTrack(rawClone, undefined, true, audioCtx)
+  if (!krispEnabled) {
+    console.log(`[Krisp][${label}] disabled by user`)
+    return { localTrack, krispApplied: false }
+  }
   if (!isKrispNoiseFilterSupported()) {
     console.warn(`[Krisp][${label}] not supported — NC skipped`)
     return { localTrack, krispApplied: false }

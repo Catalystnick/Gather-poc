@@ -39,6 +39,7 @@ const ZONE_DEBOUNCE_TICKS = 2
 
 const GAIN_STORAGE_KEY    = 'gather_poc_remote_gain'
 const ROLLOFF_STORAGE_KEY = 'gather_poc_rolloff'
+const KRISP_ENABLED_STORAGE_KEY = 'gather_poc_krisp_enabled'
 
 export type VoiceMode = 'proximity' | 'zone' | 'switching'
 
@@ -75,6 +76,14 @@ function loadRolloff(): number {
   } catch { return DEFAULT_ROLLOFF }
 }
 
+function loadKrispEnabled(): boolean {
+  try {
+    const raw = localStorage.getItem(KRISP_ENABLED_STORAGE_KEY)
+    if (raw === null) return true
+    return raw !== '0'
+  } catch { return true }
+}
+
 function dist3(
   a: { x: number; y: number; z: number },
   b: { x: number; y: number; z: number },
@@ -104,6 +113,7 @@ export function useVoice(
   const [proximityRoomReady,  setProximityRoomReady]  = useState(false)
   const [mode,                setMode]                = useState<VoiceMode>('proximity')
   const [activeZoneKey,       setActiveZoneKey]       = useState<string | null>(null)
+  const [krispEnabled,        setKrispEnabled]        = useState(loadKrispEnabled)
 
   // ── Room refs ──────────────────────────────────────────────────────────────
   const proximityRoomRef         = useRef<Room | null>(null)
@@ -122,6 +132,8 @@ export function useVoice(
   // ── Token cache ────────────────────────────────────────────────────────────
   const tokenCacheRef = useRef<Record<string, CachedToken>>({})
   const tokenInFlightRef = useRef<Set<string>>(new Set())
+  const zoneTokenBackoffMsRef = useRef<Record<string, number>>({})
+  const zoneTokenBlockedUntilRef = useRef<Record<string, number>>({})
 
   // ── Zone transition guards ─────────────────────────────────────────────────
   const activeZoneKeyRef  = useRef<string | null>(null)
@@ -141,6 +153,8 @@ export function useVoice(
   accessTokenRef.current = accessToken
   const remotePlayersRef = useRef(remotePlayers)
   remotePlayersRef.current = remotePlayers
+  const krispEnabledRef = useRef(krispEnabled)
+  krispEnabledRef.current = krispEnabled
 
   // ── Sync helpers ───────────────────────────────────────────────────────────
 
@@ -204,7 +218,17 @@ export function useVoice(
     return c
   }
 
+  function getZoneTokenCooldownMs(zoneKey: string): number {
+    const blockedUntil = zoneTokenBlockedUntilRef.current[zoneKey] ?? 0
+    return Math.max(0, blockedUntil - Date.now())
+  }
+
   async function fetchZoneToken(identity: string, zoneKey: string): Promise<CachedToken | null> {
+    const cooldownMs = getZoneTokenCooldownMs(zoneKey)
+    if (cooldownMs > 0) {
+      console.warn('[voice] zone token cooldown active | zone:', zoneKey, '| retry in ms:', cooldownMs)
+      return null
+    }
     if (tokenInFlightRef.current.has(zoneKey)) return null
     tokenInFlightRef.current.add(zoneKey)
     const roomName = `${ZONE_ROOM_PREFIX}${zoneKey}`
@@ -213,8 +237,15 @@ export function useVoice(
       .finally(() => tokenInFlightRef.current.delete(zoneKey))
     if (cached) {
       tokenCacheRef.current[zoneKey] = cached
+      zoneTokenBackoffMsRef.current[zoneKey] = 0
+      zoneTokenBlockedUntilRef.current[zoneKey] = 0
       console.log('[voice] token cached | zone:', zoneKey, '| age:', Math.round((Date.now() - cached.fetchedAt) / 1000), 's')
     } else {
+      const prev = zoneTokenBackoffMsRef.current[zoneKey] || 0
+      const next = Math.min(60_000, prev > 0 ? prev * 2 : 5_000)
+      zoneTokenBackoffMsRef.current[zoneKey] = next
+      zoneTokenBlockedUntilRef.current[zoneKey] = Date.now() + next
+      console.warn('[voice] token fetch failed | zone:', zoneKey, '| backoff ms:', next)
       console.warn('[voice] token fetch failed | zone:', zoneKey)
     }
     return cached
@@ -353,7 +384,7 @@ export function useVoice(
       mic.addPublishedClone(clone)
       zonePublishedCloneRef.current = clone
       console.log('[voice][zone] clone | id:', clone.id, '| state:', clone.readyState, '| enabled:', clone.enabled)
-      const { localTrack, krispApplied } = await createKrispLocalTrack(clone, 'zone', mic.audioCtxRef.current ?? undefined)
+      const { localTrack, krispApplied } = await createKrispLocalTrack(clone, 'zone', mic.audioCtxRef.current ?? undefined, krispEnabledRef.current)
       krispAppliedRef.current.zone = krispApplied
       console.log('[voice][krisp] zone applied:', krispApplied)
       if (!krispApplied) {
@@ -474,7 +505,7 @@ export function useVoice(
           mic.addPublishedClone(clone)
           proximityPublishedCloneRef.current = clone
           console.log('[voice][proximity] clone | id:', clone.id, '| state:', clone.readyState, '| enabled:', clone.enabled)
-          const { localTrack, krispApplied } = await createKrispLocalTrack(clone, 'proximity', mic.audioCtxRef.current ?? undefined)
+          const { localTrack, krispApplied } = await createKrispLocalTrack(clone, 'proximity', mic.audioCtxRef.current ?? undefined, krispEnabledRef.current)
           krispAppliedRef.current.proximity = krispApplied
           console.log('[voice][krisp] proximity applied:', krispApplied)
           proximityLocalTrackRef.current = localTrack
@@ -530,12 +561,17 @@ export function useVoice(
 
     const id = setInterval(() => {
       const { x, z } = localPositionRef.current
-
-      // Prefetch token for nearby zones to minimise audio gap on entry
+      const detected = getZoneKey(x, z)
       const prefetchKey = getPrefetchZoneKey(x, z)
-      if (prefetchKey && !getCachedToken(prefetchKey) && !tokenInFlightRef.current.has(prefetchKey)) {
-        console.log('[voice] prefetch triggered | zone:', prefetchKey)
-        void fetchZoneToken(identity, prefetchKey)
+      console.log('[voice][zone-debug] detected:', detected, '| prefetchKey:', prefetchKey, '| mode:', modeRef.current, '| targetZone:', targetZoneRef.current)
+
+      // Prefetch is for approach only. Never prefetch while already inside
+      // a zone (detected !== null) or while in an active transition.
+      if (detected === null && modeRef.current === 'proximity' && targetZoneRef.current === undefined) {
+        if (prefetchKey && !getCachedToken(prefetchKey) && !tokenInFlightRef.current.has(prefetchKey)) {
+          console.log('[voice] prefetch triggered | zone:', prefetchKey)
+          void fetchZoneToken(identity, prefetchKey)
+        }
       }
 
       // Zone speaking detection (runs regardless of debounce/transition state)
@@ -547,8 +583,7 @@ export function useVoice(
         setSpeakingPeers(nextSpeaking)
       }
 
-      // Debounce zone boundary detection
-      const detected = getZoneKey(x, z)
+      // Debounce zone boundary detection (entry/exit only from actual zone state).
       if (detected !== pendingZoneRef.current) {
         if (detected !== activeZoneKeyRef.current) {
           console.log('[voice] zone boundary crossed | detected:', detected, '| pos:', x.toFixed(1), z.toFixed(1))
@@ -561,6 +596,13 @@ export function useVoice(
       if (debounceTicksRef.current < ZONE_DEBOUNCE_TICKS) return
       if (detected === activeZoneKeyRef.current) return
       if (detected === targetZoneRef.current) return
+      if (detected) {
+        const cooldownMs = getZoneTokenCooldownMs(detected)
+        if (cooldownMs > 0) {
+          // Keep the user in proximity mode while token endpoint is cooling down.
+          return
+        }
+      }
 
       console.log('[voice] zone debounce settled | triggering transition → zone:', detected,
         '| targetZone:', targetZoneRef.current, '→', detected)
@@ -721,6 +763,66 @@ export function useVoice(
     try { localStorage.setItem(GAIN_STORAGE_KEY, String(next)) } catch { /* ignore */ }
   }
 
+  function toggleKrispEnabled() {
+    setKrispEnabled(prev => {
+      const next = !prev
+      try { localStorage.setItem(KRISP_ENABLED_STORAGE_KEY, next ? '1' : '0') } catch { /* ignore */ }
+      return next
+    })
+  }
+
+  useEffect(() => {
+    const sourceTrack = mic.rawMicStreamRef.current?.getAudioTracks()[0]
+    if (!sourceTrack) return
+    const publishSource: MediaStreamTrack = sourceTrack
+
+    async function republishForRoom(
+      room: Room | null,
+      cloneRef: React.MutableRefObject<MediaStreamTrack | null>,
+      localRef: React.MutableRefObject<LocalAudioTrack | null>,
+      label: 'proximity' | 'zone',
+      strictWhenEnabled: boolean,
+    ) {
+      if (!room) return
+      const oldLocal = localRef.current
+      const oldClone = cloneRef.current
+      localRef.current = null
+      cloneRef.current = null
+      if (oldLocal) {
+        try { room.localParticipant.unpublishTrack(oldLocal) } catch { /* ignore */ }
+        try { oldLocal.stop() } catch { /* ignore */ }
+      }
+      if (oldClone) {
+        mic.removePublishedClone(oldClone)
+        try { oldClone.stop() } catch { /* ignore */ }
+      }
+
+      const clone = publishSource.clone()
+      mic.addPublishedClone(clone)
+      cloneRef.current = clone
+      const { localTrack, krispApplied } = await createKrispLocalTrack(
+        clone,
+        `${label}-republish`,
+        mic.audioCtxRef.current ?? undefined,
+        krispEnabled,
+      )
+      if (label === 'proximity') krispAppliedRef.current.proximity = krispApplied
+      else krispAppliedRef.current.zone = krispApplied
+      console.log(`[voice][krisp] ${label} applied after toggle:`, krispApplied, '| enabled:', krispEnabled)
+      if (strictWhenEnabled && krispEnabled && !krispApplied) {
+        mic.removePublishedClone(clone)
+        try { clone.stop() } catch { /* ignore */ }
+        cloneRef.current = null
+        return
+      }
+      localRef.current = localTrack
+      await room.localParticipant.publishTrack(localTrack, AUDIO_PUBLISH_OPTS).catch(() => {})
+    }
+
+    void republishForRoom(proximityRoomRef.current, proximityPublishedCloneRef, proximityLocalTrackRef, 'proximity', false)
+    void republishForRoom(zoneRoomRef.current, zonePublishedCloneRef, zoneLocalTrackRef, 'zone', true)
+  }, [krispEnabled, mic.isReady])
+
   // ── Return unified VoiceState ──────────────────────────────────────────────
 
   return {
@@ -734,6 +836,8 @@ export function useVoice(
     peerConnectionStates,
     remoteGain,
     setRemoteGain,
+    krispEnabled,
+    toggleKrispEnabled,
     audioBlocked,
     audioInterrupted,
     mode,

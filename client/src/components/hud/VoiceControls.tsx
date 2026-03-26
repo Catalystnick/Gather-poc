@@ -97,6 +97,8 @@ export default function VoiceControls() {
     toggleMute,
     remoteGain,
     setRemoteGain,
+    krispEnabled,
+    toggleKrispEnabled,
     headphonePrompt,
     confirmHeadphones,
     audioBlocked,
@@ -134,6 +136,13 @@ export default function VoiceControls() {
         <div style={styles.muteRow}>
           <button style={styles.btn} onClick={toggleMute} title={muted ? 'Unmute' : 'Mute'}>
             {muted ? '🔇 Muted' : '🎤 Live'}
+          </button>
+          <button
+            style={{ ...styles.btn, borderColor: krispEnabled ? '#16a34a' : '#6b7280' }}
+            onClick={toggleKrispEnabled}
+            title="Toggle Krisp noise cancellation"
+          >
+            {krispEnabled ? 'Krisp: ON' : 'Krisp: OFF'}
           </button>
           <ModeLabel mode={mode} activeZoneKey={activeZoneKey} />
         </div>
