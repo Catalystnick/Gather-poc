@@ -84,16 +84,10 @@ function FenceGroup({ fences, texture, renderOrder }: FenceGroupProps) {
 
 export default function Fence() {
   console.log('[Fence] component mounting, loading textures:', TEXTURE_PATHS)
-  const textures = useTexture(
-    TEXTURE_PATHS,
-    (loaded) => {
-      const arr = Array.isArray(loaded) ? loaded : [loaded]
-      console.log('[Fence] textures loaded OK:', arr.map((t, i) => `${TEXTURE_PATHS[i]} → ${t.image?.width}×${t.image?.height}`))
-    },
-    (err) => {
-      console.error('[Fence] texture load FAILED:', err)
-    },
-  )
+  const textures = useTexture(TEXTURE_PATHS, (loaded) => {
+    const arr = Array.isArray(loaded) ? loaded : [loaded]
+    console.log('[Fence] textures loaded OK:', arr.map((t, i) => `${TEXTURE_PATHS[i]} → ${t.image?.width}×${t.image?.height}`))
+  })
   const texArr = Array.isArray(textures) ? textures : [textures]
 
   useMemo(() => {
