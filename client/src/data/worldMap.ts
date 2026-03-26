@@ -99,3 +99,60 @@ export const WORLD_ZONES = [
     height: 20,
   },
 ];
+
+// Zone fence layout — one entry per sprite tile.
+// Entrance gaps are 6 tiles wide, 9 cols from the left edge of each zone.
+//
+//  Dev    (cols  0–24, rows  0–19) → top row 0, bottom row 20, entrance cols  9–14
+//  Design (cols 34–59, rows  0–19) → top row 0, bottom row 20, entrance cols 43–48
+//  Game   (cols 14–46, rows 40–59) → entrance on TOP (row 40, faces center), back row 59
+//
+// Sprite key: 1 = horizontal rail, 7 = vertical post
+
+export interface PlacedFence {
+  fenceId: number
+  col: number
+  row: number
+  dir: 'v' | 'h'
+  offsetX: number   // 0 = left edge, 0.5 = center, 1 = right edge
+  offsetZ: number   // 0 = top edge,  0.5 = center, 1 = bottom edge
+}
+
+// prettier-ignore
+export const WORLD_FENCES = [
+  // ── Dev zone ────────────────────────────────────────────────────────────────
+  // Top wall — row 0, all cols, top edge of tile
+  ...Array.from({ length: 25 }, (_, i) => ({ fenceId: 1, col: i,      row: 0,  dir: "h", offsetX: 0.5, offsetZ: 0   })),
+  // Left wall — col 0, left edge
+  ...Array.from({ length: 20 }, (_, i) => ({ fenceId: 7, col: 0,      row: i,  dir: "h", offsetX: 0,   offsetZ: 0.5 })),
+  // Right wall — col 24, right edge
+  ...Array.from({ length: 20 }, (_, i) => ({ fenceId: 7, col: 24,     row: i,  dir: "h", offsetX: 1,   offsetZ: 0.5 })),
+  // Bottom wall left — row 20, cols 0–8
+  ...Array.from({ length: 9  }, (_, i) => ({ fenceId: 1, col: i,      row: 20, dir: "h", offsetX: 0.5, offsetZ: 0   })),
+  // Bottom wall right — row 20, cols 15–24 (gap at 9–14 = entrance)
+  ...Array.from({ length: 10 }, (_, i) => ({ fenceId: 1, col: 15 + i, row: 20, dir: "h", offsetX: 0.5, offsetZ: 0   })),
+
+  // ── Design zone ─────────────────────────────────────────────────────────────
+  // Top wall — row 0, cols 34–59
+  ...Array.from({ length: 26 }, (_, i) => ({ fenceId: 1, col: 34 + i, row: 0,  dir: "h", offsetX: 0.5, offsetZ: 0   })),
+  // Left wall — col 34, left edge
+  ...Array.from({ length: 20 }, (_, i) => ({ fenceId: 7, col: 34,     row: i,  dir: "h", offsetX: 0,   offsetZ: 0.5 })),
+  // Right wall — col 59, right edge
+  ...Array.from({ length: 20 }, (_, i) => ({ fenceId: 7, col: 59,     row: i,  dir: "h", offsetX: 1,   offsetZ: 0.5 })),
+  // Bottom wall left — row 20, cols 34–42
+  ...Array.from({ length: 9  }, (_, i) => ({ fenceId: 1, col: 34 + i, row: 20, dir: "h", offsetX: 0.5, offsetZ: 0   })),
+  // Bottom wall right — row 20, cols 49–59 (gap at 43–48 = entrance)
+  ...Array.from({ length: 11 }, (_, i) => ({ fenceId: 1, col: 49 + i, row: 20, dir: "h", offsetX: 0.5, offsetZ: 0   })),
+
+  // ── Game zone ────────────────────────────────────────────────────────────────
+  // Entrance wall (TOP, faces map center) — row 40, left cols 14–22
+  ...Array.from({ length: 9  }, (_, i) => ({ fenceId: 1, col: 14 + i, row: 40, dir: "h", offsetX: 0.5, offsetZ: 0   })),
+  // Entrance wall right — row 40, cols 29–46 (gap at 23–28 = entrance)
+  ...Array.from({ length: 18 }, (_, i) => ({ fenceId: 1, col: 29 + i, row: 40, dir: "h", offsetX: 0.5, offsetZ: 0   })),
+  // Left wall — col 14, rows 40–59
+  ...Array.from({ length: 20 }, (_, i) => ({ fenceId: 7, col: 14,     row: 40 + i, dir: "h", offsetX: 0, offsetZ: 0.5 })),
+  // Right wall — col 46, rows 40–59
+  ...Array.from({ length: 20 }, (_, i) => ({ fenceId: 7, col: 46,     row: 40 + i, dir: "h", offsetX: 1, offsetZ: 0.5 })),
+  // Back wall (bottom of map) — row 59, bottom edge, full width, no entrance
+  ...Array.from({ length: 33 }, (_, i) => ({ fenceId: 1, col: 14 + i, row: 59, dir: "h", offsetX: 0.5, offsetZ: 1   })),
+] as PlacedFence[];

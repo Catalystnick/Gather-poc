@@ -1,10 +1,11 @@
-import { Suspense, useEffect, useMemo, useRef } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas } from "@react-three/fiber";
 import { Perf } from "r3f-perf";
 import { Environment, KeyboardControls } from "@react-three/drei";
 import * as THREE from "three";
 import FloorMap from "./FloorMap";
 import PlacementTool from "./PlacementTool";
+import PlacementHUD, { type PlacementHUDState } from "./PlacementHUD";
 import Vegetation from "./Vegetation";
 import Campfire from "./Campfire";
 import LocalPlayer from "../player/LocalPlayer";
@@ -39,6 +40,9 @@ export default function World({ player }: Props) {
   const { socket, remotePlayers, emitMove, spawnPosition } = useSocket(player, accessToken);
   const localPositionRef = useRef({ x: 0, y: 0.5, z: 0 });
   const uvAttrRef = useRef<THREE.InstancedBufferAttribute | null>(null);
+
+  const [hudState, setHudState] = useState<PlacementHUDState>({ col: 0, row: 0, width: 1, height: 1, fenceId: 1 });
+  const onHUDState = useCallback((s: PlacementHUDState) => setHudState(s), []);
 
   useEffect(() => {
     if (spawnPosition) {
@@ -77,7 +81,7 @@ export default function World({ player }: Props) {
             <Campfire />
             <Zones />
             <Fence />
-            {import.meta.env.DEV && <PlacementTool uvAttrRef={uvAttrRef} />}
+            {import.meta.env.DEV && <PlacementTool uvAttrRef={uvAttrRef} onHUDState={onHUDState} />}
             {spawnPosition && <LocalPlayer player={player} onMove={emitMove} positionRef={localPositionRef} spawnPosition={spawnPosition} isSpeaking={voice.isLocalSpeaking} />}
             {Array.from(remotePlayers.values()).map((p) => (
               <RemotePlayer key={p.id} {...p} bubble={bubbles.get(p.id)} inRange={voice.connectedPeers.has(p.id)} isSpeaking={voice.speakingPeers.has(p.id)} />
@@ -86,6 +90,7 @@ export default function World({ player }: Props) {
         </Canvas>
       </KeyboardControls>
 
+      {import.meta.env.DEV && <PlacementHUD {...hudState} />}
       <ChatPanel messages={messages} onSend={sendMessage} />
       <VoiceControls />
       <VoiceConnectionsPanel rows={connectionRows} />
