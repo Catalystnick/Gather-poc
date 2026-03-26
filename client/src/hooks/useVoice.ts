@@ -7,9 +7,8 @@
 // Proximity room: always connected when mic is ready. Distance-gated subscriptions.
 // Zone room: created/destroyed as the player enters/leaves zone boundaries.
 //
-// Both rooms publish from the same raw hardware mic track (no clones). Krisp is
-// applied before publish via createKrispLocalTrack, using GainKrispProcessor
-// when gain/source nodes are available so the chain is raw -> Krisp -> gain -> publish.
+// Both rooms publish from the same raw hardware mic track. Krisp then mic gain
+// (per-room processor — see KrispWithMicGainProcessor).
 
 import { useEffect, useRef, useState } from 'react'
 import type { Socket } from 'socket.io-client'
@@ -143,6 +142,8 @@ export function useVoice(
   const debounceTicksRef  = useRef(0)
   const generationRef     = useRef(0)
   const krispAppliedRef   = useRef<{ proximity: boolean; zone: boolean }>({ proximity: false, zone: false })
+  const proximityPostGainRef = useRef<GainNode | null>(null)
+  const zonePostGainRef      = useRef<GainNode | null>(null)
 
   // ── Stable value refs ──────────────────────────────────────────────────────
   const remoteGainRef    = useRef(remoteGain)
@@ -155,6 +156,18 @@ export function useVoice(
   remotePlayersRef.current = remotePlayers
   const krispEnabledRef = useRef(krispEnabled)
   krispEnabledRef.current = krispEnabled
+
+  // Publish path: mic gain after Krisp (separate GainNode per room).
+  useEffect(() => {
+    const ctx = mic.audioCtxRef.current
+    if (!ctx) return
+    const t = ctx.currentTime
+    const g = Math.max(0, mic.micGain)
+    const a = proximityPostGainRef.current
+    const b = zonePostGainRef.current
+    if (a) a.gain.setTargetAtTime(g, t, 0.03)
+    if (b) b.gain.setTargetAtTime(g, t, 0.03)
+  }, [mic.micGain])
 
   // ── Sync helpers ───────────────────────────────────────────────────────────
 
@@ -402,8 +415,8 @@ export function useVoice(
         'zone',
         mic.audioCtxRef.current ?? undefined,
         krispEnabledRef.current,
-        mic.micGainNodeRef.current,
-        mic.micSourceNodeRef.current,
+        mic.micGainRef,
+        zonePostGainRef,
       )
       krispAppliedRef.current.zone = krispApplied
       console.log('[voice][krisp] zone applied:', krispApplied)
@@ -523,8 +536,8 @@ export function useVoice(
             'proximity',
             mic.audioCtxRef.current ?? undefined,
             krispEnabledRef.current,
-            mic.micGainNodeRef.current,
-            mic.micSourceNodeRef.current,
+            mic.micGainRef,
+            proximityPostGainRef,
           )
           krispAppliedRef.current.proximity = krispApplied
           console.log('[voice][krisp] proximity applied:', krispApplied)
@@ -811,13 +824,14 @@ export function useVoice(
       const source = publishSource
       mic.addPublishedClone(source)
       cloneRef.current = source
+      const postGainSlot = label === 'proximity' ? proximityPostGainRef : zonePostGainRef
       const { localTrack, krispApplied } = await createKrispLocalTrack(
         source,
         `${label}-republish`,
         mic.audioCtxRef.current ?? undefined,
         krispEnabled,
-        mic.micGainNodeRef.current,
-        mic.micSourceNodeRef.current,
+        mic.micGainRef,
+        postGainSlot,
       )
       if (label === 'proximity') krispAppliedRef.current.proximity = krispApplied
       else krispAppliedRef.current.zone = krispApplied

@@ -78,6 +78,8 @@ export interface MicTrack {
   // Each room hook registers its clone when publishing and unregisters on disconnect.
   addPublishedClone:    (track: MediaStreamTrack) => void
   removePublishedClone: (track: MediaStreamTrack) => void
+  /** Same value as micGain; stable ref for processors / async publish paths. */
+  micGainRef: React.MutableRefObject<number>
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -274,7 +276,7 @@ export function useMicTrack(): MicTrack {
   }
 
   return {
-    rawMicStreamRef, audioCtxRef, micGainNodeRef, micSourceNodeRef, mutedRef,
+    rawMicStreamRef, audioCtxRef, micGainNodeRef, micSourceNodeRef, mutedRef, micGainRef,
     isMuted, toggleMute,
     micGain, setMicGain,
     isLocalSpeaking,

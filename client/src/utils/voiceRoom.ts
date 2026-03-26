@@ -2,8 +2,8 @@
 // Extracted to eliminate duplication between the two room slots in useVoice.
 
 import { Room, Track, AudioPresets, LocalAudioTrack, type RemoteAudioTrack } from 'livekit-client'
-import { isKrispNoiseFilterSupported, KrispNoiseFilter } from '@livekit/krisp-noise-filter'
-import { GainKrispProcessor } from './GainKrispProcessor'
+import { isKrispNoiseFilterSupported } from '@livekit/krisp-noise-filter'
+import { KrispWithMicGainProcessor } from './KrispWithMicGainProcessor'
 
 // ─── Shared constants ─────────────────────────────────────────────────────────
 
@@ -114,37 +114,44 @@ export function attachRemoteAudio(track: RemoteAudioTrack, volume: number): HTML
 // audioCtx must be the same AudioContext owned by useMicTrack (already running).
 // Without it, LocalAudioTrack creates its own context internally which may start
 // suspended — Krisp's AudioWorkletNode then never processes audio.
+//
+// Mic gain is applied after Krisp (or after raw pass-through when Krisp is off).
+// postGainOut is set to the publish-path GainNode so useVoice can smooth updates.
 
 export async function createKrispLocalTrack(
   rawClone: MediaStreamTrack,
   label: string,
-  audioCtx?: AudioContext,
-  krispEnabled = true,
-  gainNode?: GainNode | null,
-  micSourceNode?: MediaStreamAudioSourceNode | null,
+  audioCtx: AudioContext | undefined,
+  krispEnabled: boolean,
+  micGainRef: { current: number },
+  postGainOut: { current: GainNode | null },
 ): Promise<{ localTrack: LocalAudioTrack; krispApplied: boolean }> {
   const localTrack = new LocalAudioTrack(rawClone, undefined, true, audioCtx)
+  const wantKrisp = krispEnabled && isKrispNoiseFilterSupported()
   if (!krispEnabled) {
-    console.log(`[Krisp][${label}] disabled by user`)
-    return { localTrack, krispApplied: false }
+    console.log(`[Krisp][${label}] disabled by user — publish gain only`)
+  } else if (!isKrispNoiseFilterSupported()) {
+    console.warn(`[Krisp][${label}] not supported — publish gain only`)
+  } else {
+    console.log(`[Krisp][${label}] NC + post-gain | track:`, rawClone.label)
   }
-  if (!isKrispNoiseFilterSupported()) {
-    console.warn(`[Krisp][${label}] not supported — NC skipped`)
-    return { localTrack, krispApplied: false }
-  }
-  console.log(`[Krisp][${label}] applying NC | track:`, rawClone.label)
   try {
-    if (gainNode && micSourceNode) {
-      await localTrack.setProcessor(
-        new GainKrispProcessor(gainNode, micSourceNode) as unknown as Parameters<typeof localTrack.setProcessor>[0],
-      )
-    } else {
-      await localTrack.setProcessor(KrispNoiseFilter())
-    }
-    console.log(`[Krisp][${label}] processor set OK`)
-    return { localTrack, krispApplied: true }
+    const processor = new KrispWithMicGainProcessor(micGainRef, postGainOut, wantKrisp)
+    await localTrack.setProcessor(processor)
+    console.log(`[Krisp][${label}] processor set OK | nc:`, wantKrisp)
+    return { localTrack, krispApplied: wantKrisp }
   } catch (err) {
     console.error(`[Krisp][${label}] setProcessor failed:`, err)
+    if (wantKrisp) {
+      try {
+        const fallback = new KrispWithMicGainProcessor(micGainRef, postGainOut, false)
+        await localTrack.setProcessor(fallback)
+        console.warn(`[Krisp][${label}] fell back to raw + post-gain`)
+        return { localTrack, krispApplied: false }
+      } catch (err2) {
+        console.error(`[Krisp][${label}] fallback setProcessor failed:`, err2)
+      }
+    }
     return { localTrack, krispApplied: false }
   }
 }
