@@ -157,9 +157,21 @@ export async function applyKrispNoiseFilterFromDocs(
   }
   try {
     const krispProcessor = KrispNoiseFilter()
-    console.log(`[Krisp][${label}] Enabling LiveKit Krisp noise filter`)
     await track.setProcessor(krispProcessor)
-    await krispProcessor.setEnabled(true)
+    // Krisp's setEnabled(true) calls applyConstraints({ noiseSuppression: false }) on the
+    // underlying MediaStreamTrack to disable browser-native NS. Web Audio
+    // MediaStreamDestinationNode output tracks don't support any constraints →
+    // OverconstrainedError. Shadow the method with a no-op for this call only; browser NS
+    // is already disabled at capture time via getMicCaptureOptions in useMicTrack.
+    const mst = track.mediaStreamTrack
+    Object.defineProperty(mst, 'applyConstraints', { configurable: true, value: async () => {} })
+    console.log(`[Krisp][${label}] Enabling LiveKit Krisp noise filter`)
+    try {
+      await krispProcessor.setEnabled(true)
+    } finally {
+      // Remove own-property override so the prototype method is restored.
+      delete (mst as { applyConstraints?: unknown }).applyConstraints
+    }
     return true
   } catch (err) {
     console.error(`[Krisp][${label}] setProcessor / setEnabled failed:`, err)

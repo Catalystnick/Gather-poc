@@ -1,10 +1,10 @@
 // Owns the local microphone pipeline — mic is acquired with LiveKit
 // `createLocalAudioTrack` (constraints + device handling align with the SDK).
 // Proximity vs zone switches which LiveKit room carries voice, but the same
-// hardware stream backs whichever path publishes. Krisp runs on the real
-// capture LocalAudioTrack from createLocalAudioTrack (setProcessor uses
-// applyConstraints — Web Audio destination tracks throw OverconstrainedError).
-// The denoised track feeds the VAD gate → user gain → publish stream.
+// hardware stream backs whichever path publishes. Krisp runs post-publish in
+// useVoice (RoomEvent.LocalTrackPublished) — capture track has no RTCRtpSender
+// so setEnabled(true) would fail here.
+// Pipeline: rawCapture → vadGate → userGain → MediaStreamDest → sendMicStreamRef.
 //
 // Responsibilities:
 //   - createLocalAudioTrack / shared AudioContext

@@ -10,7 +10,8 @@
 // Voice is proximity XOR zone for UX: while activeZoneKey is set, proximity peer
 // subscriptions are suppressed (gating) and zone owns who you hear.
 // One underlying capture from useMicTrack; LiveKit publish uses the VAD-gated
-// Web Audio send stream (Krisp → gate → gain → destination; see useMicTrack).
+// Web Audio send stream (gate → gain → destination). Krisp is applied post-publish
+// via attachMicKrispOnLocalTrackPublished (needs RTCRtpSender, fires after publishTrack).
 
 import { useEffect, useRef, useState } from 'react'
 import type { Socket } from 'socket.io-client'
@@ -301,8 +302,6 @@ export function useVoice(
     }
     syncMode('switching')
 
-    // Capture old room state before clearing refs, then fire-and-forget cleanup
-    // so the new room can start connecting immediately in parallel.
     const oldRoom = zoneRoomRef.current
     const oldLocalTrack = zoneLocalTrackRef.current
     const oldClone = zonePublishedCloneRef.current
@@ -311,19 +310,16 @@ export function useVoice(
     zonePublishedCloneRef.current = null
 
     if (oldRoom) {
-      console.log('[voice] disconnecting old zone room (async) | gen:', myGen)
-      void (async () => {
-        try {
-          if (oldLocalTrack) {
-            await safeUnpublishUserMicTrack(oldRoom, oldLocalTrack)
-          }
-          if (oldClone) { mic.removePublishedClone(oldClone); oldClone.stop() }
-        } catch { /* ignore */ }
-        await oldRoom.disconnect(false).catch(() => {})
-      })()
+      console.log('[voice] disconnecting old zone room | gen:', myGen)
+      try {
+        if (oldLocalTrack) await safeUnpublishUserMicTrack(oldRoom, oldLocalTrack)
+        if (oldClone) { mic.removePublishedClone(oldClone); oldClone.stop() }
+      } catch { /* ignore */ }
+      await oldRoom.disconnect(false).catch(() => {})
+      if (cancelled()) { console.log('[voice] cancelled after old room disconnect | gen:', myGen); return }
     }
 
-    // Immediately silence old zone audio — doesn't block new connection.
+    // Silence old zone audio before connecting new room.
     cleanupAllZone()
     setConnectedPeers(new Set(subscribedIds.current))
 
