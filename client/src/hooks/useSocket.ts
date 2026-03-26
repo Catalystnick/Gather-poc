@@ -11,6 +11,9 @@ export function useSocket(player: Player, accessToken: string) {
   const [socket, setSocket] = useState<Socket | null>(null)
   const [remotePlayers, setRemotePlayers] = useState<Map<string, RemotePlayer>>(new Map())
   const [spawnPosition, setSpawnPosition] = useState<{ x: number; y: number; z: number } | null>(null)
+  const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>('connecting')
+  const [lastDisconnectReason, setLastDisconnectReason] = useState<string | null>(null)
+  const [lastError, setLastError] = useState<string | null>(null)
 
   // Keep a stable ref to the latest player data so the connect handler
   // always sends the current name/avatar without triggering a reconnect.
@@ -33,11 +36,15 @@ export function useSocket(player: Player, accessToken: string) {
   useEffect(() => {
     console.log('[socket] connecting to', SERVER_URL ?? 'current origin', '| token present:', !!tokenRef.current, '| token length:', tokenRef.current?.length)
     const s = io(SERVER_URL, { auth: { token: tokenRef.current } })
+    setStatus('connecting')
     socketRef.current = s
     setSocket(s)
 
     s.on('connect', () => {
       console.log('[socket] connected | id:', s.id)
+      setStatus('connected')
+      setLastDisconnectReason(null)
+      setLastError(null)
       console.log('[socket] emitting player:join | name:', playerRef.current.name)
       s.emit('player:join', { name: playerRef.current.name, avatar: playerRef.current.avatar }, ({ position }: { position: { x: number; y: number; z: number } }) => {
         console.log('[socket] player:join ack received | spawnPosition:', position)
@@ -47,10 +54,14 @@ export function useSocket(player: Player, accessToken: string) {
 
     s.on('connect_error', (err) => {
       console.error('[socket] connect_error:', err.message)
+      setStatus('error')
+      setLastError(err?.message ?? String(err))
     })
 
     s.on('disconnect', (reason) => {
       console.warn('[socket] disconnected | reason:', reason)
+      setStatus('disconnected')
+      setLastDisconnectReason(String(reason))
     })
 
     s.on('room:state', (players: RemotePlayer[]) => {
@@ -92,5 +103,5 @@ export function useSocket(player: Player, accessToken: string) {
     socketRef.current?.emit('player:move', state)
   }, [])
 
-  return { socket, remotePlayers, emitMove, spawnPosition }
+  return { socket, remotePlayers, emitMove, spawnPosition, status, lastDisconnectReason, lastError }
 }

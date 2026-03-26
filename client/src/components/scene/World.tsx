@@ -12,14 +12,14 @@ import RemotePlayer from "../player/RemotePlayer";
 import ChatPanel from "../hud/ChatPanel";
 import VoiceControls from "../hud/VoiceControls";
 import VoiceConnectionsPanel from "../hud/VoiceConnectionsPanel";
+import ServerStatusPanel from "../hud/ServerStatusPanel";
 import CameraRig from "./CameraRig";
 import Zones from "./Zones";
 import Fence from "./Fence";
 import { useSocket } from "../../hooks/useSocket";
 import { useChat } from "../../hooks/useChat";
 import { useMicTrack } from "../../hooks/useMicTrack";
-import { useZoneVoice } from "../../hooks/useZoneVoice";
-import { useLiveKitVoice } from "../../hooks/useLiveKitVoice";
+import { useVoice } from "../../hooks/useVoice";
 import { VoiceProvider } from "../../contexts/VoiceContext";
 import { useAuth } from "../../contexts/AuthContext";
 import type { Player } from "../../types";
@@ -38,7 +38,7 @@ interface Props {
 export default function World({ player }: Props) {
   const { session } = useAuth();
   const accessToken = session!.access_token;
-  const { socket, remotePlayers, emitMove, spawnPosition } = useSocket(player, accessToken);
+  const { socket, remotePlayers, emitMove, spawnPosition, status, lastDisconnectReason, lastError } = useSocket(player, accessToken);
   const localPositionRef = useRef({ x: 0, y: 0.5, z: 0 });
   const uvAttrRef = useRef<THREE.InstancedBufferAttribute | null>(null);
 
@@ -58,29 +58,7 @@ export default function World({ player }: Props) {
   // ── Voice coordinator ───────────────────────────────────────────────────
   const mic = useMicTrack();
   const userId = session!.user.id;
-  const zoneVoice = useZoneVoice(socket, localPositionRef, mic, accessToken, userId);
-  const proximityVoice = useLiveKitVoice(socket, localPositionRef, remotePlayers, mic, zoneVoice.activeZoneKey, accessToken, userId);
-
-  // Unified voice state: zone room takes precedence when active
-  const inZone = zoneVoice.activeZoneKey !== null;
-  const voice = {
-    muted: mic.isMuted,
-    toggleMute: mic.toggleMute,
-    isLocalSpeaking: mic.isLocalSpeaking,
-    micGain: mic.micGain,
-    setMicGain: mic.setMicGain,
-    headphonePrompt: mic.headphonePrompt,
-    confirmHeadphones: mic.confirmHeadphones,
-    connectedPeers: inZone ? zoneVoice.connectedPeers : proximityVoice.connectedPeers,
-    speakingPeers: inZone ? zoneVoice.speakingPeers : proximityVoice.speakingPeers,
-    peerConnectionStates: inZone ? {} : proximityVoice.peerConnectionStates,
-    remoteGain: proximityVoice.remoteGain,
-    setRemoteGain: proximityVoice.setRemoteGain,
-    audioBlocked: proximityVoice.audioBlocked,
-    audioInterrupted: proximityVoice.audioInterrupted,
-    mode: zoneVoice.mode,
-    activeZoneKey: zoneVoice.activeZoneKey,
-  };
+  const voice = useVoice(socket, localPositionRef, remotePlayers, mic, accessToken, userId);
 
   // Derive connection rows once per render rather than inline in JSX.
   const connectionRows = useMemo(
@@ -109,7 +87,7 @@ export default function World({ player }: Props) {
             <Fence />
             {import.meta.env.DEV && <PlacementTool uvAttrRef={uvAttrRef} onHUDState={onHUDState} />}
             {spawnPosition && (
-              <LocalPlayer player={player} onMove={emitMove} positionRef={localPositionRef} spawnPosition={spawnPosition} isSpeaking={voice.isLocalSpeaking} activeZoneKey={zoneVoice.activeZoneKey} />
+              <LocalPlayer player={player} onMove={emitMove} positionRef={localPositionRef} spawnPosition={spawnPosition} isSpeaking={voice.isLocalSpeaking} activeZoneKey={voice.activeZoneKey} />
             )}
             {Array.from(remotePlayers.values()).map((p) => (
               <RemotePlayer key={p.id} {...p} bubble={bubbles.get(p.id)} inRange={voice.connectedPeers.has(p.id)} isSpeaking={voice.speakingPeers.has(p.id)} />
@@ -119,6 +97,15 @@ export default function World({ player }: Props) {
       </KeyboardControls>
 
       {import.meta.env.DEV && <PlacementHUD {...hudState} />}
+      <ServerStatusPanel
+        socketStatus={status}
+        socketId={socket?.id}
+        lastDisconnectReason={lastDisconnectReason}
+        lastError={lastError}
+        voiceMode={voice.mode}
+        activeZoneKey={voice.activeZoneKey}
+        proximityRoomReady={voice.proximityRoomReady}
+      />
       <ChatPanel messages={messages} onSend={sendMessage} />
       <VoiceControls />
       <VoiceConnectionsPanel rows={connectionRows} />

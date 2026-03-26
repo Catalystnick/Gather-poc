@@ -1,0 +1,660 @@
+// Unified voice hook — manages both the permanent proximity room (gather-world)
+// and transient zone rooms (gather-world-zone-{key}).
+//
+// Replaces useLiveKitVoice + useZoneVoice. Returns a complete VoiceState so
+// World.tsx no longer needs to manually merge state from two separate hooks.
+//
+// Proximity room: always connected when mic is ready. Distance-gated subscriptions.
+// Zone room: created/destroyed as the player enters/leaves zone boundaries.
+//   Zone room publishes a clone of the mic track so disconnect() can stop it
+//   without affecting the shared track used by the proximity room.
+
+import { useEffect, useRef, useState } from 'react'
+import type { Socket } from 'socket.io-client'
+import type { RemotePlayer } from '../types'
+import type { MicTrack } from './useMicTrack'
+import type { VoiceState } from '../contexts/VoiceContext'
+import {
+  Room, RoomEvent, Track,
+  type RemoteParticipant, type RemoteTrackPublication, type RemoteAudioTrack,
+} from 'livekit-client'
+import { getZoneKey, getPrefetchZoneKey } from '../utils/zoneDetection'
+import {
+  ROOM_NAME, ZONE_ROOM_PREFIX,
+  type CachedToken,
+  createRoom, fetchToken, tokenIsValid, attachRemoteAudio, applyKrisp, AUDIO_PUBLISH_OPTS,
+} from '../utils/voiceRoom'
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const CONNECT_RANGE       = 7
+const DISCONNECT_RANGE    = 9
+const MIN_GAIN_FLOOR      = 0.15
+const MAX_ACTIVE_PEERS    = 8
+const DEFAULT_ROLLOFF     = 1.4
+const ZONE_DEBOUNCE_TICKS = 2
+
+const GAIN_STORAGE_KEY    = 'gather_poc_remote_gain'
+const ROLLOFF_STORAGE_KEY = 'gather_poc_rolloff'
+
+export type VoiceMode = 'proximity' | 'zone' | 'switching'
+
+// ─── Internal entry types ─────────────────────────────────────────────────────
+
+interface ProximityEntry {
+  participant: RemoteParticipant
+  track: RemoteAudioTrack
+  audio: HTMLAudioElement
+  gainNode: GainNode | null
+}
+
+interface ZoneEntry {
+  track: RemoteAudioTrack
+  audio: HTMLAudioElement
+}
+
+// ─── Storage loaders ──────────────────────────────────────────────────────────
+
+function loadRemoteGain(): number {
+  try {
+    const raw = localStorage.getItem(GAIN_STORAGE_KEY)
+    if (raw === null) return 1
+    const v = Number(raw)
+    return Number.isNaN(v) ? 1 : Math.max(0, v)
+  } catch { return 1 }
+}
+
+function loadRolloff(): number {
+  try {
+    const v = Number(localStorage.getItem(ROLLOFF_STORAGE_KEY))
+    return Number.isNaN(v) ? DEFAULT_ROLLOFF : Math.max(0.1, v)
+  } catch { return DEFAULT_ROLLOFF }
+}
+
+function dist3(
+  a: { x: number; y: number; z: number },
+  b: { x: number; y: number; z: number },
+): number {
+  return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2)
+}
+
+// ─── Hook ─────────────────────────────────────────────────────────────────────
+
+export function useVoice(
+  socket: Socket | null,
+  localPositionRef: React.MutableRefObject<{ x: number; y: number; z: number }>,
+  remotePlayers: Map<string, RemotePlayer>,
+  mic: MicTrack,
+  accessToken: string,
+  userId: string,
+): VoiceState {
+
+  // ── React state ────────────────────────────────────────────────────────────
+  const [speakingPeers,       setSpeakingPeers]       = useState<Set<string>>(new Set())
+  const [connectedPeers,      setConnectedPeers]      = useState<Set<string>>(new Set())
+  const [peerConnectionStates, setPeerConnectionStates] = useState<Record<string, string>>({})
+  const [remoteGain,          setRemoteGainState]     = useState(loadRemoteGain)
+  const [rolloff]                                      = useState(loadRolloff)
+  const [audioBlocked,        setAudioBlocked]        = useState(false)
+  const [audioInterrupted,    setAudioInterrupted]    = useState(false)
+  const [proximityRoomReady,  setProximityRoomReady]  = useState(false)
+  const [mode,                setMode]                = useState<VoiceMode>('proximity')
+  const [activeZoneKey,       setActiveZoneKey]       = useState<string | null>(null)
+
+  // ── Room refs ──────────────────────────────────────────────────────────────
+  const proximityRoomRef = useRef<Room | null>(null)
+  const zoneRoomRef      = useRef<Room | null>(null)
+
+  // ── Remote entry maps ──────────────────────────────────────────────────────
+  const proximityEntries = useRef<Map<string, ProximityEntry>>(new Map())
+  const zoneEntries      = useRef<Map<string, ZoneEntry>>(new Map())
+  const subscribedIds    = useRef<Set<string>>(new Set())  // proximity subscriptions
+
+  // ── Token cache ────────────────────────────────────────────────────────────
+  const tokenCacheRef = useRef<Record<string, CachedToken>>({})
+
+  // ── Zone transition guards ─────────────────────────────────────────────────
+  const activeZoneKeyRef  = useRef<string | null>(null)
+  const modeRef           = useRef<VoiceMode>('proximity')
+  const targetZoneRef     = useRef<string | null | undefined>(undefined)
+  const pendingZoneRef    = useRef<string | null | undefined>(undefined)
+  const debounceTicksRef  = useRef(0)
+  const generationRef     = useRef(0)
+
+  // ── Stable value refs ──────────────────────────────────────────────────────
+  const remoteGainRef    = useRef(remoteGain)
+  remoteGainRef.current  = remoteGain
+  const rolloffRef       = useRef(rolloff)
+  rolloffRef.current     = rolloff
+  const accessTokenRef   = useRef(accessToken)
+  accessTokenRef.current = accessToken
+  const remotePlayersRef = useRef(remotePlayers)
+  remotePlayersRef.current = remotePlayers
+
+  // ── Sync helpers ───────────────────────────────────────────────────────────
+
+  function syncMode(m: VoiceMode) {
+    console.log('[voice] mode:', modeRef.current, '→', m)
+    modeRef.current = m; setMode(m)
+  }
+
+  function syncZoneKey(k: string | null) {
+    console.log('[voice] activeZoneKey:', activeZoneKeyRef.current, '→', k)
+    activeZoneKeyRef.current = k; setActiveZoneKey(k)
+  }
+
+  function setPeerState(identity: string, state: string | null) {
+    setPeerConnectionStates(prev => {
+      const next = { ...prev }
+      if (state === null) delete next[identity]
+      else next[identity] = state
+      return next
+    })
+  }
+
+  // ── Proximity entry cleanup ────────────────────────────────────────────────
+
+  function cleanupProximityEntry(identity: string) {
+    const e = proximityEntries.current.get(identity)
+    if (!e) return
+    e.gainNode?.disconnect()
+    e.track.detach().forEach(el => el.remove())
+    e.audio.remove()
+    proximityEntries.current.delete(identity)
+    subscribedIds.current.delete(identity)
+  }
+
+  function cleanupAllProximity() {
+    ;[...proximityEntries.current.keys()].forEach(cleanupProximityEntry)
+  }
+
+  // ── Zone entry cleanup ─────────────────────────────────────────────────────
+
+  function cleanupZoneEntry(identity: string) {
+    const e = zoneEntries.current.get(identity)
+    if (!e) return
+    e.track.detach().forEach(el => el.remove())
+    e.audio.remove()
+    zoneEntries.current.delete(identity)
+  }
+
+  function cleanupAllZone() {
+    ;[...zoneEntries.current.keys()].forEach(cleanupZoneEntry)
+  }
+
+  // ── Token cache helpers ────────────────────────────────────────────────────
+
+  function getCachedToken(zoneKey: string): CachedToken | null {
+    const c = tokenCacheRef.current[zoneKey]
+    if (!c || !tokenIsValid(c)) {
+      if (c) delete tokenCacheRef.current[zoneKey]
+      return null
+    }
+    return c
+  }
+
+  async function fetchZoneToken(identity: string, zoneKey: string): Promise<CachedToken | null> {
+    const roomName = `${ZONE_ROOM_PREFIX}${zoneKey}`
+    console.log('[voice] fetching token | zone:', zoneKey)
+    const cached = await fetchToken(identity, roomName, accessTokenRef.current)
+    if (cached) {
+      tokenCacheRef.current[zoneKey] = cached
+      console.log('[voice] token cached | zone:', zoneKey, '| age:', Math.round((Date.now() - cached.fetchedAt) / 1000), 's')
+    } else {
+      console.warn('[voice] token fetch failed | zone:', zoneKey)
+    }
+    return cached
+  }
+
+  // ── Zone room transition ───────────────────────────────────────────────────
+
+  async function transitionToZone(identity: string, targetKey: string | null) {
+    const myGen = ++generationRef.current
+    const cancelled = () => generationRef.current !== myGen
+    console.log('[voice] zone transition | from:', activeZoneKeyRef.current, '→', targetKey, '| gen:', myGen)
+    syncMode('switching')
+
+    // Disconnect current zone room. The zone room holds a mic clone, so
+    // disconnect() stopping it is safe — proximity room's original track is unaffected.
+    const oldRoom = zoneRoomRef.current
+    if (oldRoom) {
+      console.log('[voice] disconnecting old zone room | gen:', myGen)
+      zoneRoomRef.current = null
+      cleanupAllZone()
+      setConnectedPeers(new Set(subscribedIds.current))
+      await oldRoom.disconnect().catch(() => {})
+    }
+    if (cancelled()) { console.log('[voice] cancelled after old room | gen:', myGen); return }
+
+    if (targetKey === null) {
+      console.log('[voice] returned to proximity | gen:', myGen)
+      targetZoneRef.current = null
+      syncZoneKey(null)
+      syncMode('proximity')
+      return
+    }
+
+    // Resolve token (cached first)
+    let token = getCachedToken(targetKey)
+    if (token) {
+      console.log('[voice] using cached token | zone:', targetKey)
+    } else {
+      token = await fetchZoneToken(identity, targetKey)
+    }
+    if (cancelled()) { console.log('[voice] cancelled after token | gen:', myGen); return }
+    if (!token) {
+      console.warn('[voice] zone token failed — staying proximity | zone:', targetKey)
+      targetZoneRef.current = undefined
+      syncZoneKey(null)
+      syncMode('proximity')
+      return
+    }
+
+    // Build zone room
+    const room = createRoom()
+
+    room.on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
+      if (track.kind !== Track.Kind.Audio) return
+      console.log('[voice] zone track subscribed | peer:', participant.identity)
+      cleanupZoneEntry(participant.identity)
+      const audioTrack = track as RemoteAudioTrack
+      const audio = attachRemoteAudio(audioTrack, remoteGainRef.current)
+      zoneEntries.current.set(participant.identity, { track: audioTrack, audio })
+      setConnectedPeers(new Set(zoneEntries.current.keys()))
+      void audio.play().catch(err => console.warn('[voice] zone audio.play blocked:', err))
+    })
+
+    room.on(RoomEvent.TrackUnsubscribed, (_t, _p, participant) => {
+      console.log('[voice] zone track unsubscribed | peer:', participant.identity)
+      cleanupZoneEntry(participant.identity)
+      setConnectedPeers(new Set(zoneEntries.current.keys()))
+    })
+
+    room.on(RoomEvent.ParticipantDisconnected, participant => {
+      console.log('[voice] zone participant left | peer:', participant.identity)
+      cleanupZoneEntry(participant.identity)
+      setConnectedPeers(new Set(zoneEntries.current.keys()))
+    })
+
+    room.on(RoomEvent.LocalTrackPublished, async publication => {
+      await applyKrisp(publication as Parameters<typeof applyKrisp>[0], mic, 'zone')
+    })
+
+    room.on(RoomEvent.Disconnected, () => {
+      if (zoneRoomRef.current !== room) return
+      console.log('[voice] zone room unexpected disconnect | zone:', targetKey)
+      zoneRoomRef.current = null
+      cleanupAllZone()
+      setConnectedPeers(new Set(subscribedIds.current))
+      console.log('[voice] resetting guards | targetZone:', targetZoneRef.current, '→ undefined')
+      targetZoneRef.current = undefined
+      syncZoneKey(null)
+      syncMode('proximity')
+    })
+
+    // Connect
+    console.log('[voice] connecting zone room | zone:', targetKey, '| url:', token.url)
+    try {
+      await room.connect(token.url, token.token, { autoSubscribe: true })
+    } catch (err) {
+      console.warn('[voice] zone connect failed | zone:', targetKey, '| err:', err)
+      if (!cancelled()) {
+        targetZoneRef.current = undefined
+        syncZoneKey(null)
+        syncMode('proximity')
+      }
+      return
+    }
+    if (cancelled()) {
+      console.log('[voice] cancelled after connect | gen:', myGen)
+      await room.disconnect().catch(() => {})
+      return
+    }
+    console.log('[voice] zone connected | zone:', targetKey, '| participants:', room.remoteParticipants.size)
+
+    zoneRoomRef.current = room
+
+    // Publish a clone — LiveKit can stop it on disconnect without touching the
+    // original track shared with the proximity room.
+    const micTrack = mic.rawMicStreamRef.current?.getAudioTracks()[0]
+    if (micTrack) {
+      console.log('[voice] publishing mic clone | zone:', targetKey)
+      await room.localParticipant.publishTrack(micTrack.clone(), AUDIO_PUBLISH_OPTS)
+        .catch(err => console.warn('[voice] zone publish failed:', err))
+    } else {
+      console.warn('[voice] no mic track to publish | zone:', targetKey)
+    }
+    if (cancelled()) {
+      console.log('[voice] cancelled after publish | gen:', myGen)
+      await room.disconnect().catch(() => {})
+      zoneRoomRef.current = null
+      return
+    }
+
+    const ctx = mic.audioCtxRef.current
+    if (ctx?.state === 'running') void room.startAudio().catch(() => {})
+
+    console.log('[voice] zone transition complete | zone:', targetKey, '| gen:', myGen)
+    syncZoneKey(targetKey)
+    syncMode('zone')
+  }
+
+  // ── Effect: proximity room connection ──────────────────────────────────────
+
+  useEffect(() => {
+    if (!socket?.id || !mic.isReady) return
+    const identity = userId
+    let room: Room | null = null
+
+    async function connect() {
+      try {
+        const token = await fetchToken(identity, ROOM_NAME, accessTokenRef.current)
+        if (!token) throw new Error('proximity token fetch failed')
+
+        room = createRoom()
+
+        room.on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
+          if (track.kind !== Track.Kind.Audio) return
+          if (!mic.audioCtxRef.current) return
+          cleanupProximityEntry(participant.identity)
+          subscribedIds.current.add(participant.identity)
+          const audioTrack = track as RemoteAudioTrack
+          const audio = attachRemoteAudio(audioTrack, MIN_GAIN_FLOOR)
+          proximityEntries.current.set(participant.identity, { participant, track: audioTrack, audio, gainNode: null })
+          setPeerState(participant.identity, 'connected')
+          void audio.play().catch(() => setAudioBlocked(true))
+        })
+
+        room.on(RoomEvent.TrackUnsubscribed, (_t, _p, participant) => {
+          cleanupProximityEntry(participant.identity)
+          setPeerState(participant.identity, null)
+        })
+
+        room.on(RoomEvent.ParticipantDisconnected, participant => {
+          cleanupProximityEntry(participant.identity)
+          setPeerState(participant.identity, null)
+        })
+
+        room.on(RoomEvent.AudioPlaybackStatusChanged, () => {
+          if (!room?.canPlaybackAudio) setAudioBlocked(true)
+        })
+
+        room.on(RoomEvent.Disconnected, () => {
+          setProximityRoomReady(false)
+          proximityRoomRef.current = null
+          cleanupAllProximity()
+          subscribedIds.current.clear()
+          if (activeZoneKeyRef.current === null) setConnectedPeers(new Set())
+          setPeerConnectionStates({})
+        })
+
+        room.on(RoomEvent.Reconnecting, () => setProximityRoomReady(false))
+        room.on(RoomEvent.Reconnected,  () => setProximityRoomReady(true))
+
+        room.on(RoomEvent.LocalTrackPublished, async publication => {
+          await applyKrisp(publication as Parameters<typeof applyKrisp>[0], mic, 'proximity')
+        })
+
+        room.on(RoomEvent.TrackPublished, (publication: RemoteTrackPublication, participant: RemoteParticipant) => {
+          if (publication.kind !== Track.Kind.Audio) return
+          if (activeZoneKeyRef.current !== null) return
+          const player = remotePlayersRef.current.get(participant.identity)
+          if (!player || player.zoneKey !== null) return
+          if (dist3(localPositionRef.current, player.position) < CONNECT_RANGE) {
+            publication.setSubscribed(true)
+            subscribedIds.current.add(participant.identity)
+          }
+        })
+
+        await room.connect(token.url, token.token, { autoSubscribe: false })
+        proximityRoomRef.current = room
+
+        const ctx = mic.audioCtxRef.current
+        if (ctx?.state === 'running') void room.startAudio().catch(() => {})
+        else if (ctx?.state === 'suspended') setAudioBlocked(true)
+        setProximityRoomReady(true)
+
+        // Publish raw hardware track
+        const micTrack = mic.rawMicStreamRef.current?.getAudioTracks()[0]
+        if (micTrack) {
+          await room.localParticipant.publishTrack(micTrack, AUDIO_PUBLISH_OPTS)
+        }
+
+        // Subscribe to existing in-range participants
+        for (const participant of room.remoteParticipants.values()) {
+          const player = remotePlayersRef.current.get(participant.identity)
+          if (!player || player.zoneKey !== null || activeZoneKeyRef.current !== null) continue
+          if (dist3(localPositionRef.current, player.position) < DISCONNECT_RANGE) {
+            for (const pub of participant.trackPublications.values()) {
+              if (pub.kind === Track.Kind.Audio && !pub.isSubscribed) {
+                (pub as RemoteTrackPublication).setSubscribed(true)
+                subscribedIds.current.add(participant.identity)
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[voice] proximity connect failed:', err)
+      }
+    }
+
+    void connect()
+
+    return () => {
+      setProximityRoomReady(false)
+      if (room) { room.disconnect(); proximityRoomRef.current = null }
+      cleanupAllProximity()
+      subscribedIds.current.clear()
+    }
+  }, [socket?.id, mic.isReady])
+
+  // ── Effect: zone detection interval ───────────────────────────────────────
+
+  useEffect(() => {
+    if (!socket?.id || !mic.isReady) return
+    const identity = userId
+    console.log('[voice] zone detector started | identity:', identity)
+
+    const id = setInterval(() => {
+      const { x, z } = localPositionRef.current
+
+      // Prefetch token for nearby zones to minimise audio gap on entry
+      const prefetchKey = getPrefetchZoneKey(x, z)
+      if (prefetchKey && !getCachedToken(prefetchKey)) {
+        console.log('[voice] prefetch triggered | zone:', prefetchKey)
+        void fetchZoneToken(identity, prefetchKey)
+      }
+
+      // Zone speaking detection (runs regardless of debounce/transition state)
+      if (modeRef.current === 'zone' && zoneRoomRef.current) {
+        const nextSpeaking = new Set<string>()
+        for (const peer of zoneEntries.current.keys()) {
+          if (zoneRoomRef.current.remoteParticipants.get(peer)?.isSpeaking) nextSpeaking.add(peer)
+        }
+        setSpeakingPeers(nextSpeaking)
+        mic.applyEffectiveMicGain(mic.micGainRef.current, nextSpeaking.size > 0)
+      }
+
+      // Debounce zone boundary detection
+      const detected = getZoneKey(x, z)
+      if (detected !== pendingZoneRef.current) {
+        if (detected !== activeZoneKeyRef.current) {
+          console.log('[voice] zone boundary crossed | detected:', detected, '| pos:', x.toFixed(1), z.toFixed(1))
+        }
+        pendingZoneRef.current = detected
+        debounceTicksRef.current = 0
+        return
+      }
+      debounceTicksRef.current++
+      if (debounceTicksRef.current < ZONE_DEBOUNCE_TICKS) return
+      if (detected === activeZoneKeyRef.current) return
+      if (detected === targetZoneRef.current) return
+
+      console.log('[voice] zone debounce settled | triggering transition → zone:', detected,
+        '| targetZone:', targetZoneRef.current, '→', detected)
+      targetZoneRef.current = detected
+      void transitionToZone(identity, detected)
+    }, 100)
+
+    return () => {
+      console.log('[voice] zone detector cleanup | activeZone:', activeZoneKeyRef.current, '| targetZone:', targetZoneRef.current)
+      clearInterval(id)
+      generationRef.current++
+      const room = zoneRoomRef.current
+      zoneRoomRef.current = null
+      cleanupAllZone()
+      room?.disconnect()
+      setConnectedPeers(new Set(subscribedIds.current))
+      syncZoneKey(null)
+      syncMode('proximity')
+      targetZoneRef.current  = undefined
+      pendingZoneRef.current = undefined
+      debounceTicksRef.current = 0
+    }
+  }, [socket?.id, mic.isReady])
+
+  // ── Effect: proximity gating interval ─────────────────────────────────────
+
+  useEffect(() => {
+    if (!proximityRoomReady) return
+    const room = proximityRoomRef.current
+    if (!room) return
+
+    const id = setInterval(() => {
+      const local  = localPositionRef.current
+      const remote = remotePlayersRef.current
+      const ctx    = mic.audioCtxRef.current
+
+      // Unsubscribe out-of-range or zoned peers
+      for (const identity of subscribedIds.current) {
+        const player = remote.get(identity)
+        const d = player ? dist3(local, player.position) : Infinity
+        if (!player || d > DISCONNECT_RANGE || player.zoneKey !== null || activeZoneKeyRef.current !== null) {
+          const participant = room.remoteParticipants.get(identity)
+          if (participant) {
+            for (const pub of participant.trackPublications.values()) {
+              if (pub.kind === Track.Kind.Audio && pub.isSubscribed)
+                (pub as RemoteTrackPublication).setSubscribed(false)
+            }
+          }
+          subscribedIds.current.delete(identity)
+        }
+      }
+
+      // In zone — proximity connections suppressed; zone interval handles speaking
+      if (activeZoneKeyRef.current !== null) {
+        setSpeakingPeers(new Set())
+        mic.applyEffectiveMicGain(mic.micGainRef.current, false)
+        return
+      }
+
+      const candidates = [...remote.entries()]
+        .filter(([, p]) => p.zoneKey === null)
+        .map(([id, p]) => ({ id, player: p, dist: dist3(local, p.position) }))
+        .filter(e => e.dist < DISCONNECT_RANGE)
+        .sort((a, b) => a.dist - b.dist)
+      const preferred = new Set(candidates.slice(0, MAX_ACTIVE_PEERS).map(e => e.id))
+
+      const nextSpeaking = new Set<string>()
+
+      remote.forEach((player, id) => {
+        if (player.zoneKey !== null) return
+        const d = dist3(local, player.position)
+        const subscribed = subscribedIds.current.has(id)
+
+        if (d < CONNECT_RANGE && preferred.has(id) && !subscribed) {
+          const participant = room.remoteParticipants.get(id)
+          if (participant) {
+            for (const pub of participant.trackPublications.values()) {
+              if (pub.kind !== Track.Kind.Audio) continue
+              if (!pub.isSubscribed) {
+                (pub as RemoteTrackPublication).setSubscribed(true)
+                subscribedIds.current.add(id)
+              } else if (!proximityEntries.current.has(id)) {
+                // Stale subscription from zone transition — force a clean reset
+                console.log('[voice] stale subscription for', id, '— forcing reset')
+                ;(pub as RemoteTrackPublication).setSubscribed(false)
+              } else {
+                subscribedIds.current.add(id)
+              }
+            }
+          }
+        } else if (subscribed) {
+          const entry = proximityEntries.current.get(id)
+          if (!entry || !ctx) return
+          const normalised   = Math.min(1, Math.max(0, d / DISCONNECT_RANGE))
+          const distFactor   = 1 - normalised ** rolloffRef.current
+          const target       = distFactor * remoteGainRef.current
+          if (entry.gainNode) entry.gainNode.gain.setTargetAtTime(target, ctx.currentTime, 0.05)
+          else entry.audio.volume = Math.min(1, target)
+          if (entry.participant.isSpeaking) nextSpeaking.add(id)
+        }
+      })
+
+      setSpeakingPeers(nextSpeaking)
+      mic.applyEffectiveMicGain(mic.micGainRef.current, nextSpeaking.size > 0)
+      setConnectedPeers(new Set(subscribedIds.current))
+
+      const hasPeers      = proximityEntries.current.size > 0
+      const livekitBlock  = hasPeers && !room.canPlaybackAudio
+      setAudioInterrupted((mic.audioCtxRef.current?.state === 'interrupted') && hasPeers)
+      setAudioBlocked((mic.audioCtxRef.current?.state === 'suspended' || livekitBlock) && hasPeers)
+    }, 100)
+
+    return () => clearInterval(id)
+  }, [proximityRoomReady])
+
+  // ── Effect: AudioContext state monitoring ──────────────────────────────────
+
+  useEffect(() => {
+    const ctx = mic.audioCtxRef.current
+    if (!ctx) return
+    const handler = () => {
+      const hasPeers = proximityEntries.current.size > 0
+      setAudioInterrupted(ctx.state === 'interrupted' && hasPeers)
+      setAudioBlocked(ctx.state === 'suspended' && hasPeers)
+    }
+    ctx.addEventListener('statechange', handler)
+    return () => ctx.removeEventListener('statechange', handler)
+  }, [mic.isReady])
+
+  // ── Effect: sync zone entry volumes when gain changes ─────────────────────
+
+  useEffect(() => {
+    const gain = Math.min(1, Math.max(0, remoteGain))
+    for (const entry of zoneEntries.current.values()) {
+      entry.audio.volume = gain
+      entry.track.setVolume(gain)
+    }
+  }, [remoteGain])
+
+  // ── Remote gain setter ─────────────────────────────────────────────────────
+
+  function setRemoteGain(value: number) {
+    const next = Math.max(0, value)
+    setRemoteGainState(next)
+    try { localStorage.setItem(GAIN_STORAGE_KEY, String(next)) } catch { /* ignore */ }
+  }
+
+  // ── Return unified VoiceState ──────────────────────────────────────────────
+
+  return {
+    muted:              mic.isMuted,
+    toggleMute:         mic.toggleMute,
+    isLocalSpeaking:    mic.isLocalSpeaking,
+    micGain:            mic.micGain,
+    setMicGain:         mic.setMicGain,
+    headphonePrompt:    mic.headphonePrompt,
+    confirmHeadphones:  mic.confirmHeadphones,
+    speakingPeers,
+    connectedPeers,
+    peerConnectionStates,
+    remoteGain,
+    setRemoteGain,
+    audioBlocked,
+    audioInterrupted,
+    mode,
+    activeZoneKey,
+    proximityRoomReady,
+  }
+}
