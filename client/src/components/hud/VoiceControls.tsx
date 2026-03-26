@@ -101,6 +101,8 @@ export default function VoiceControls() {
     setMicGain,
     remoteGain,
     setRemoteGain,
+    playbackBoost,
+    setPlaybackBoost,
     headphonePrompt,
     confirmHeadphones,
     audioBlocked,
@@ -162,7 +164,18 @@ export default function VoiceControls() {
           step={0.01}
           precision={2}
           unit=""
-          title="Playback volume (0–1)"
+          title="Remote voice level (0–1), multiplied by output boost below"
+        />
+        <GainControl
+          label="🔉 Output boost"
+          value={playbackBoost}
+          onChange={setPlaybackBoost}
+          min={1}
+          sliderMax={4}
+          step={0.05}
+          precision={2}
+          unit="×"
+          title="Extra gain for remote audio (Web Audio; 1 = normal, up to 4×)"
         />
         <GainControl
           label="🎙 Mic Gain"

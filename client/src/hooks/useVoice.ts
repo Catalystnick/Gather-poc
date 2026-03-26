@@ -26,6 +26,7 @@ import {
   type CachedToken, type TokenIntent,
   createRoom, fetchToken, fetchTokenDetailed, tokenIsValid, attachRemoteAudio,
   attachMicKrispOnLocalTrackPublished, createLocalMicTrack, syncKrispEnabledOnLocalTrack,
+  getLocalPublishedMicTrack,
   AUDIO_PUBLISH_OPTS,
 } from '../utils/voiceRoom'
 
@@ -37,8 +38,14 @@ const MIN_GAIN_FLOOR      = 0.15
 const MAX_ACTIVE_PEERS    = 8
 const DEFAULT_ROLLOFF     = 1.4
 const ZONE_DEBOUNCE_TICKS = 2
+/** Cap linear gain sent to Web Audio (distance × remote slider × boost). */
+const MAX_LINEAR_PLAYBACK = 6
 
 const GAIN_STORAGE_KEY    = 'gather_poc_remote_gain'
+const PLAYBACK_BOOST_STORAGE_KEY = 'gather_poc_playback_boost'
+const DEFAULT_PLAYBACK_BOOST     = 1.75
+const MIN_PLAYBACK_BOOST         = 1
+const MAX_PLAYBACK_BOOST         = 4
 const ROLLOFF_STORAGE_KEY = 'gather_poc_rolloff'
 const KRISP_ENABLED_STORAGE_KEY = 'gather_poc_krisp_enabled'
 
@@ -85,6 +92,14 @@ function loadKrispEnabled(): boolean {
   } catch { return true }
 }
 
+function loadPlaybackBoost(): number {
+  try {
+    const v = Number(localStorage.getItem(PLAYBACK_BOOST_STORAGE_KEY))
+    if (Number.isNaN(v)) return DEFAULT_PLAYBACK_BOOST
+    return Math.min(MAX_PLAYBACK_BOOST, Math.max(MIN_PLAYBACK_BOOST, v))
+  } catch { return DEFAULT_PLAYBACK_BOOST }
+}
+
 function dist3(
   a: { x: number; y: number; z: number },
   b: { x: number; y: number; z: number },
@@ -116,6 +131,7 @@ export function useVoice(
   const [activeZoneKey,       setActiveZoneKey]       = useState<string | null>(null)
   const [krispEnabled,        setKrispEnabled]        = useState(loadKrispEnabled)
   const [krispNoiseFilterPending, setKrispNoiseFilterPending] = useState(false)
+  const [playbackBoost,      setPlaybackBoostState]   = useState(loadPlaybackBoost)
 
   // ── Room refs ──────────────────────────────────────────────────────────────
   const proximityRoomRef         = useRef<Room | null>(null)
@@ -149,6 +165,8 @@ export function useVoice(
   // ── Stable value refs ──────────────────────────────────────────────────────
   const remoteGainRef    = useRef(remoteGain)
   remoteGainRef.current  = remoteGain
+  const playbackBoostRef = useRef(playbackBoost)
+  playbackBoostRef.current = playbackBoost
   const rolloffRef       = useRef(rolloff)
   rolloffRef.current     = rolloff
   const accessTokenRef   = useRef(accessToken)
@@ -344,7 +362,7 @@ export function useVoice(
     }
 
     // Build zone room
-    const room = createRoom()
+    const room = createRoom(mic.audioCtxRef.current)
     attachMicKrispOnLocalTrackPublished(room, krispEnabledRef, 'zone', applied => {
       krispAppliedRef.current.zone = applied
     })
@@ -354,7 +372,11 @@ export function useVoice(
       console.log('[voice] zone track subscribed | peer:', participant.identity)
       cleanupZoneEntry(participant.identity)
       const audioTrack = track as RemoteAudioTrack
-      const audio = attachRemoteAudio(audioTrack, remoteGainRef.current)
+      const zLinear = Math.min(
+        MAX_LINEAR_PLAYBACK,
+        Math.max(0, remoteGainRef.current * playbackBoostRef.current),
+      )
+      const audio = attachRemoteAudio(audioTrack, zLinear)
       zoneEntries.current.set(participant.identity, { track: audioTrack, audio })
       setConnectedPeers(new Set(zoneEntries.current.keys()))
       void audio.play().catch(err => console.warn('[voice] zone audio.play blocked:', err))
@@ -460,18 +482,21 @@ export function useVoice(
         if (cancelled) return
         if (!token) throw new Error('proximity token fetch failed')
 
-        room = createRoom()
+        room = createRoom(mic.audioCtxRef.current)
         attachMicKrispOnLocalTrackPublished(room, krispEnabledRef, 'proximity', applied => {
           krispAppliedRef.current.proximity = applied
         })
 
         room.on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
           if (track.kind !== Track.Kind.Audio) return
-          if (!mic.audioCtxRef.current) return
           cleanupProximityEntry(participant.identity)
           subscribedIds.current.add(participant.identity)
           const audioTrack = track as RemoteAudioTrack
-          const audio = attachRemoteAudio(audioTrack, MIN_GAIN_FLOOR)
+          const initialLinear = Math.min(
+            MAX_LINEAR_PLAYBACK,
+            Math.max(0, MIN_GAIN_FLOOR * remoteGainRef.current * playbackBoostRef.current),
+          )
+          const audio = attachRemoteAudio(audioTrack, initialLinear)
           proximityEntries.current.set(participant.identity, { participant, track: audioTrack, audio, gainNode: null })
           setPeerState(participant.identity, 'connected')
           void audio.play().catch(() => setAudioBlocked(true))
@@ -760,9 +785,11 @@ export function useVoice(
           if (!entry || !ctx) return
           const normalised   = Math.min(1, Math.max(0, d / DISCONNECT_RANGE))
           const distFactor   = 1 - normalised ** rolloffRef.current
-          const target       = distFactor * remoteGainRef.current
-          if (entry.gainNode) entry.gainNode.gain.setTargetAtTime(target, ctx.currentTime, 0.05)
-          else entry.audio.volume = Math.min(1, target)
+          const target = Math.min(
+            MAX_LINEAR_PLAYBACK,
+            Math.max(0, distFactor * remoteGainRef.current * playbackBoostRef.current),
+          )
+          entry.track.setVolume(target)
           if (entry.participant.isSpeaking) nextSpeaking.add(id)
         }
       })
@@ -777,7 +804,7 @@ export function useVoice(
     }, 100)
 
     return () => clearInterval(id)
-  }, [proximityRoomReady])
+  }, [proximityRoomReady, playbackBoost])
 
   // ── Effect: AudioContext state monitoring ──────────────────────────────────
 
@@ -796,12 +823,14 @@ export function useVoice(
   // ── Effect: sync zone entry volumes when gain changes ─────────────────────
 
   useEffect(() => {
-    const gain = Math.min(1, Math.max(0, remoteGain))
+    const linear = Math.min(
+      MAX_LINEAR_PLAYBACK,
+      Math.max(0, remoteGain * playbackBoost),
+    )
     for (const entry of zoneEntries.current.values()) {
-      entry.audio.volume = gain
-      entry.track.setVolume(gain)
+      entry.track.setVolume(linear)
     }
-  }, [remoteGain])
+  }, [remoteGain, playbackBoost])
 
   // ── Remote gain setter ─────────────────────────────────────────────────────
 
@@ -809,6 +838,12 @@ export function useVoice(
     const next = Math.min(1, Math.max(0, value))
     setRemoteGainState(next)
     try { localStorage.setItem(GAIN_STORAGE_KEY, String(next)) } catch { /* ignore */ }
+  }
+
+  function setPlaybackBoost(value: number) {
+    const next = Math.min(MAX_PLAYBACK_BOOST, Math.max(MIN_PLAYBACK_BOOST, value))
+    setPlaybackBoostState(next)
+    try { localStorage.setItem(PLAYBACK_BOOST_STORAGE_KEY, String(next)) } catch { /* ignore */ }
   }
 
   /** Same semantics as `@livekit/components-react/krisp` `setNoiseFilterEnabled` (processor setEnabled, no republish). */
@@ -819,8 +854,9 @@ export function useVoice(
     void (async () => {
       setKrispNoiseFilterPending(true)
       try {
-        const p = proximityLocalTrackRef.current
-        const z = zoneLocalTrackRef.current
+        const p =
+          proximityLocalTrackRef.current ?? getLocalPublishedMicTrack(proximityRoomRef.current)
+        const z = zoneLocalTrackRef.current ?? getLocalPublishedMicTrack(zoneRoomRef.current)
         if (p) krispAppliedRef.current.proximity = await syncKrispEnabledOnLocalTrack(p, next, 'proximity-toggle')
         if (z) krispAppliedRef.current.zone = await syncKrispEnabledOnLocalTrack(z, next, 'zone-toggle')
       } finally {
@@ -844,6 +880,8 @@ export function useVoice(
     peerConnectionStates,
     remoteGain,
     setRemoteGain,
+    playbackBoost,
+    setPlaybackBoost,
     krispEnabled,
     krispNoiseFilterPending,
     setKrispNoiseFilterEnabled,

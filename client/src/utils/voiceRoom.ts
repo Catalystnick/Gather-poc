@@ -83,12 +83,16 @@ export async function fetchToken(
 
 // ─── Room factory ─────────────────────────────────────────────────────────────
 
-export function createRoom(): Room {
+/**
+ * @param audioContext When set, enables LiveKit `webAudioMix` so remote audio uses a
+ * `GainNode` — values > 1.0 are valid (HTMLAudioElement.volume cannot exceed 1).
+ */
+export function createRoom(audioContext?: AudioContext | null): Room {
   const room = new Room({
     adaptiveStream: false,
     dynacast: false,
     singlePeerConnection: true,
-    webAudioMix: false,
+    webAudioMix: audioContext ? { audioContext } : false,
     // Shared browser mic is owned by useMicTrack — never stop it on unpublish/disconnect.
     stopLocalTrackOnUnpublish: false,
   })
@@ -98,14 +102,17 @@ export function createRoom(): Room {
 
 // ─── Remote audio attachment ──────────────────────────────────────────────────
 
-export function attachRemoteAudio(track: RemoteAudioTrack, volume: number): HTMLAudioElement {
+/**
+ * `linearGain` can exceed 1 when the room uses `webAudioMix` (see `createRoom(ctx)`).
+ * Otherwise the browser clamps element volume internally on playback.
+ */
+export function attachRemoteAudio(track: RemoteAudioTrack, linearGain: number): HTMLAudioElement {
   const audio = track.attach()
   audio.autoplay = true
   audio.setAttribute('playsinline', 'true')
   audio.style.display = 'none'
-  const clamped = Math.min(1, Math.max(0, volume))
-  audio.volume = clamped
-  track.setVolume(clamped)
+  const g = Math.max(0, linearGain)
+  track.setVolume(g)
   document.body.appendChild(audio)
   return audio
 }
@@ -128,6 +135,27 @@ export function createLocalMicTrack(
 export const LIVEKIT_KRISP_PROCESSOR_NAME = 'livekit-noise-filter'
 
 type KrispProcessorLike = { name?: string; setEnabled?: (enabled: boolean) => Promise<unknown> }
+
+function isLiveKitKrispProcessor(
+  proc: KrispProcessorLike | undefined,
+): proc is KrispProcessorLike & { setEnabled: (enabled: boolean) => Promise<unknown> } {
+  return Boolean(
+    proc &&
+      typeof proc.setEnabled === 'function' &&
+      proc.name === LIVEKIT_KRISP_PROCESSOR_NAME,
+  )
+}
+
+/** Published local mic for this room (fallback when a ref is null or out of sync). */
+export function getLocalPublishedMicTrack(room: Room | null): LocalAudioTrack | null {
+  if (!room?.localParticipant) return null
+  for (const pub of room.localParticipant.trackPublications.values()) {
+    if (pub.source !== Track.Source.Microphone) continue
+    const t = pub.track
+    if (t instanceof LocalAudioTrack) return t
+  }
+  return null
+}
 
 /** Matches LiveKit Krisp docs: dynamic import, setProcessor, setEnabled(true). */
 export async function applyKrispNoiseFilterFromDocs(
@@ -161,7 +189,7 @@ export async function syncKrispEnabledOnLocalTrack(
   label: string,
 ): Promise<boolean> {
   const proc = track.getProcessor() as KrispProcessorLike | undefined
-  if (proc?.name === LIVEKIT_KRISP_PROCESSOR_NAME && typeof proc.setEnabled === 'function') {
+  if (isLiveKitKrispProcessor(proc)) {
     try {
       await proc.setEnabled(enabled)
       return enabled
@@ -194,6 +222,12 @@ export function attachMicKrispOnLocalTrackPublished(
       return
     }
     const applied = await applyKrispNoiseFilterFromDocs(track, `${label}-published`)
-    onApplied(applied)
+    // User may have turned Krisp off while `applyKrispNoiseFilterFromDocs` was in flight; otherwise toggle does nothing.
+    if (!krispEnabledRef.current && applied) {
+      await syncKrispEnabledOnLocalTrack(track, false, `${label}-published-cancel`)
+      onApplied(false)
+      return
+    }
+    onApplied(Boolean(applied && krispEnabledRef.current))
   })
 }

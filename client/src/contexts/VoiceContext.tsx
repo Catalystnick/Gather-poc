@@ -12,6 +12,9 @@ export interface VoiceState {
   peerConnectionStates: Record<string, string>
   remoteGain: number
   setRemoteGain: (v: number) => void
+  /** Linear multiplier (1–4) on remote voice; uses Web Audio gain when room has `webAudioMix`. */
+  playbackBoost: number
+  setPlaybackBoost: (v: number) => void
   krispEnabled: boolean
   /** Mirrors `useKrispNoiseFilter` from `@livekit/components-react/krisp` — implemented in Gather voice. */
   krispNoiseFilterPending: boolean
