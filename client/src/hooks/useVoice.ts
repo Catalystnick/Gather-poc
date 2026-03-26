@@ -10,8 +10,8 @@
 // Voice is proximity XOR zone for UX: while activeZoneKey is set, proximity peer
 // subscriptions are suppressed (gating) and zone owns who you hear.
 // One underlying capture from useMicTrack; LiveKit publish uses the VAD-gated
-// Web Audio send stream (gate → gain → destination). Krisp is applied post-publish
-// via attachMicKrispOnLocalTrackPublished (needs RTCRtpSender, fires after publishTrack).
+// Web Audio send stream (gate → gain → destination). Krisp is attached on the
+// capture track in useMicTrack before this send stream is derived.
 
 import { useEffect, useRef, useState } from 'react'
 import type { Socket } from 'socket.io-client'
@@ -28,7 +28,6 @@ import {
   ROOM_NAME, ZONE_ROOM_PREFIX,
   type CachedToken, type TokenIntent,
   createRoom, fetchToken, fetchTokenDetailed, tokenIsValid, attachRemoteAudio,
-  attachMicKrispOnLocalTrackPublished,
   createLocalMicTrack,
   AUDIO_PUBLISH_OPTS,
 } from '../utils/voiceRoom'
@@ -152,9 +151,6 @@ export function useVoice(
   const pendingZoneRef    = useRef<string | null | undefined>(undefined)
   const debounceTicksRef  = useRef(0)
   const generationRef     = useRef(0)
-  /** Krisp is always requested when supported (no UI toggle). */
-  const krispEnabledRef   = useRef(true)
-
   // ── Stable value refs ──────────────────────────────────────────────────────
   const remoteGainRef    = useRef(remoteGain)
   remoteGainRef.current  = remoteGain
@@ -349,8 +345,6 @@ export function useVoice(
 
     // Build zone room
     const room = createRoom(mic.audioCtxRef.current)
-    attachMicKrispOnLocalTrackPublished(room, krispEnabledRef, 'zone', () => {})
-
     room.on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
       if (track.kind !== Track.Kind.Audio) return
       console.log('[voice] zone track subscribed | peer:', participant.identity)
@@ -470,8 +464,6 @@ export function useVoice(
         if (!token) throw new Error('proximity token fetch failed')
 
         room = createRoom(mic.audioCtxRef.current)
-        attachMicKrispOnLocalTrackPublished(room, krispEnabledRef, 'proximity', () => {})
-
         room.on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
           if (track.kind !== Track.Kind.Audio) return
           cleanupProximityEntry(participant.identity)

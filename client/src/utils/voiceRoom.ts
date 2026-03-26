@@ -1,7 +1,7 @@
 // Shared primitives for proximity and zone LiveKit rooms.
 // Extracted to eliminate duplication between the two room slots in useVoice.
 
-import { Room, RoomEvent, Track, AudioPresets, LocalAudioTrack, type RemoteAudioTrack } from 'livekit-client'
+import { Room, Track, AudioPresets, LocalAudioTrack, type RemoteAudioTrack } from 'livekit-client'
 
 // ─── Shared constants ─────────────────────────────────────────────────────────
 
@@ -130,21 +130,6 @@ export function createLocalMicTrack(
   return new LocalAudioTrack(rawClone, undefined, true, audioCtx)
 }
 
-/** Processor name from @livekit/krisp-noise-filter (matches components-react `useKrispNoiseFilter`). */
-export const LIVEKIT_KRISP_PROCESSOR_NAME = 'livekit-noise-filter'
-
-type KrispProcessorLike = { name?: string; setEnabled?: (enabled: boolean) => Promise<unknown> }
-
-function isLiveKitKrispProcessor(
-  proc: KrispProcessorLike | undefined,
-): proc is KrispProcessorLike & { setEnabled: (enabled: boolean) => Promise<unknown> } {
-  return Boolean(
-    proc &&
-      typeof proc.setEnabled === 'function' &&
-      proc.name === LIVEKIT_KRISP_PROCESSOR_NAME,
-  )
-}
-
 /** Matches LiveKit Krisp docs: dynamic import, setProcessor, setEnabled(true). */
 export async function applyKrispNoiseFilterFromDocs(
   track: LocalAudioTrack,
@@ -158,76 +143,11 @@ export async function applyKrispNoiseFilterFromDocs(
   try {
     const krispProcessor = KrispNoiseFilter()
     await track.setProcessor(krispProcessor)
-    // Krisp's setEnabled(true) calls applyConstraints({ noiseSuppression: false }) on the
-    // underlying MediaStreamTrack to disable browser-native NS. Web Audio
-    // MediaStreamDestinationNode output tracks don't support any constraints →
-    // OverconstrainedError. Shadow the method with a no-op for this call only; browser NS
-    // is already disabled at capture time via getMicCaptureOptions in useMicTrack.
-    const mst = track.mediaStreamTrack
-    Object.defineProperty(mst, 'applyConstraints', { configurable: true, value: async () => {} })
     console.log(`[Krisp][${label}] Enabling LiveKit Krisp noise filter`)
-    try {
-      await krispProcessor.setEnabled(true)
-    } finally {
-      // Remove own-property override so the prototype method is restored.
-      delete (mst as { applyConstraints?: unknown }).applyConstraints
-    }
+    await krispProcessor.setEnabled(true)
     return true
   } catch (err) {
     console.error(`[Krisp][${label}] setProcessor / setEnabled failed:`, err)
     return false
   }
-}
-
-/**
- * Enable/disable Krisp on an existing processor, or attach if `enabled` and none yet.
- * Used when toggling was supported and for post-publish cancel if ref flips (unused when Krisp is always on).
- */
-async function syncKrispEnabledOnLocalTrack(
-  track: LocalAudioTrack,
-  enabled: boolean,
-  label: string,
-): Promise<boolean> {
-  const proc = track.getProcessor() as KrispProcessorLike | undefined
-  if (isLiveKitKrispProcessor(proc)) {
-    try {
-      await proc.setEnabled(enabled)
-      return enabled
-    } catch (err) {
-      console.error(`[Krisp][${label}] setEnabled(${enabled}) failed:`, err)
-      return !enabled
-    }
-  }
-  if (enabled) {
-    return applyKrispNoiseFilterFromDocs(track, `${label}-sync-on`)
-  }
-  return false
-}
-
-/**
- * Register docs-style Krisp setup once per room (before connect / publish).
- */
-export function attachMicKrispOnLocalTrackPublished(
-  room: Room,
-  krispEnabledRef: { current: boolean },
-  label: string,
-  onApplied: (applied: boolean) => void,
-): void {
-  room.on(RoomEvent.LocalTrackPublished, async publication => {
-    if (publication.source !== Track.Source.Microphone) return
-    const track = publication.track
-    if (!(track instanceof LocalAudioTrack)) return
-    if (!krispEnabledRef.current) {
-      onApplied(false)
-      return
-    }
-    const applied = await applyKrispNoiseFilterFromDocs(track, `${label}-published`)
-    // User may have turned Krisp off while `applyKrispNoiseFilterFromDocs` was in flight; otherwise toggle does nothing.
-    if (!krispEnabledRef.current && applied) {
-      await syncKrispEnabledOnLocalTrack(track, false, `${label}-published-cancel`)
-      onApplied(false)
-      return
-    }
-    onApplied(Boolean(applied && krispEnabledRef.current))
-  })
 }

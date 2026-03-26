@@ -1,9 +1,8 @@
 // Owns the local microphone pipeline — mic is acquired with LiveKit
 // `createLocalAudioTrack` (constraints + device handling align with the SDK).
 // Proximity vs zone switches which LiveKit room carries voice, but the same
-// hardware stream backs whichever path publishes. Krisp runs post-publish in
-// useVoice (RoomEvent.LocalTrackPublished) — capture track has no RTCRtpSender
-// so setEnabled(true) would fail here.
+// hardware stream backs whichever path publishes. Krisp is attached on this
+// capture track before deriving the Web Audio send stream.
 // Pipeline: rawCapture → vadGate → userGain → MediaStreamDest → sendMicStreamRef.
 //
 // Responsibilities:
@@ -18,6 +17,7 @@ import { useEffect, useRef, useState } from 'react'
 import { MicVAD } from '@ricky0123/vad-web'
 import { createLocalAudioTrack, type LocalAudioTrack } from 'livekit-client'
 import { isKrispNoiseFilterSupported } from '@livekit/krisp-noise-filter'
+import { applyKrispNoiseFilterFromDocs } from '../utils/voiceRoom'
 
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -165,6 +165,13 @@ export function useMicTrack(): MicTrack {
           return
         }
         sourceLocalAudioRef.current = localTrack
+
+        // Krisp must attach to the physical capture track (not a Web Audio destination track).
+        const krispApplied = await applyKrispNoiseFilterFromDocs(localTrack, 'capture')
+        if (!krispApplied) {
+          console.warn('[Krisp][capture] noise filter not applied')
+        }
+
         const rawTrack = localTrack.mediaStreamTrack
         const rawStream = localTrack.mediaStream ?? new MediaStream([rawTrack])
         rawMicStreamRef.current = rawStream
