@@ -11,6 +11,9 @@ export function useSocket(player: Player, accessToken: string) {
   const [socket, setSocket] = useState<Socket | null>(null)
   const [remotePlayers, setRemotePlayers] = useState<Map<string, RemotePlayer>>(new Map())
   const [spawnPosition, setSpawnPosition] = useState<{ x: number; y: number; z: number } | null>(null)
+  const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>('connecting')
+  const [lastDisconnectReason, setLastDisconnectReason] = useState<string | null>(null)
+  const [lastError, setLastError] = useState<string | null>(null)
 
   // Keep a stable ref to the latest player data so the connect handler
   // always sends the current name/avatar without triggering a reconnect.
@@ -33,11 +36,15 @@ export function useSocket(player: Player, accessToken: string) {
   useEffect(() => {
     console.log('[socket] connecting to', SERVER_URL ?? 'current origin', '| token present:', !!tokenRef.current, '| token length:', tokenRef.current?.length)
     const s = io(SERVER_URL, { auth: { token: tokenRef.current } })
+    setStatus('connecting')
     socketRef.current = s
     setSocket(s)
 
     s.on('connect', () => {
       console.log('[socket] connected | id:', s.id)
+      setStatus('connected')
+      setLastDisconnectReason(null)
+      setLastError(null)
       console.log('[socket] emitting player:join | name:', playerRef.current.name)
       s.emit('player:join', { name: playerRef.current.name, avatar: playerRef.current.avatar }, ({ position }: { position: { x: number; y: number; z: number } }) => {
         console.log('[socket] player:join ack received | spawnPosition:', position)
@@ -47,26 +54,30 @@ export function useSocket(player: Player, accessToken: string) {
 
     s.on('connect_error', (err) => {
       console.error('[socket] connect_error:', err.message)
+      setStatus('error')
+      setLastError(err?.message ?? String(err))
     })
 
     s.on('disconnect', (reason) => {
       console.warn('[socket] disconnected | reason:', reason)
+      setStatus('disconnected')
+      setLastDisconnectReason(String(reason))
     })
 
     s.on('room:state', (players: RemotePlayer[]) => {
       console.log('[socket] room:state | remote players:', players.length)
-      setRemotePlayers(new Map(players.map(p => [p.id, p])))
+      setRemotePlayers(new Map(players.map(p => [p.id, { ...p, zoneKey: p.zoneKey ?? null }])))
     })
 
     s.on('player:joined', (p: RemotePlayer) => {
-      setRemotePlayers(prev => new Map(prev).set(p.id, p))
+      setRemotePlayers(prev => new Map(prev).set(p.id, { ...p, zoneKey: p.zoneKey ?? null }))
     })
 
-    s.on('player:updated', ({ id, position, direction, moving }: Pick<RemotePlayer, 'direction' | 'moving'> & { id: string; position: RemotePlayer['position'] }) => {
+    s.on('player:updated', ({ id, position, direction, moving, zoneKey }: Pick<RemotePlayer, 'direction' | 'moving' | 'zoneKey'> & { id: string; position: RemotePlayer['position'] }) => {
       setRemotePlayers(prev => {
         const next = new Map(prev)
         const p = next.get(id)
-        if (p) next.set(id, { ...p, position, direction, moving })
+        if (p) next.set(id, { ...p, position, direction, moving, zoneKey: zoneKey ?? null })
         return next
       })
     })
@@ -88,9 +99,9 @@ export function useSocket(player: Player, accessToken: string) {
 
   // Stable function reference — reads socket from ref, so LocalPlayer's
   // useFrame closure always calls the current socket without a prop re-capture.
-  const emitMove = useCallback((state: { x: number; y: number; z: number; direction: string; moving: boolean }) => {
+  const emitMove = useCallback((state: { x: number; y: number; z: number; direction: string; moving: boolean; zoneKey: string | null }) => {
     socketRef.current?.emit('player:move', state)
   }, [])
 
-  return { socket, remotePlayers, emitMove, spawnPosition }
+  return { socket, remotePlayers, emitMove, spawnPosition, status, lastDisconnectReason, lastError }
 }

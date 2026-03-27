@@ -1,10 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useVoice } from '../../contexts/VoiceContext'
 
-const IS_MOBILE = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-const IS_IOS    = /iPhone|iPad|iPod/i.test(navigator.userAgent);
-const PLATFORM_LABEL = IS_IOS ? 'iOS' : /Android/i.test(navigator.userAgent) ? 'Android' : 'Mobile';
-
 // Slider soft-max: dragging covers 0–SLIDER_MAX.
 // Values above this are still reachable via the text input.
 const SLIDER_MAX = 10;
@@ -17,25 +13,36 @@ interface GainControlProps {
   sliderMax?: number
   step?: number
   unit?: string
+  precision?: number
   title?: string
 }
 
-function GainControl({ label, value, onChange, min = 0, sliderMax = SLIDER_MAX, step = 0.1, unit = 'x', title }: GainControlProps) {
-  const [text, setText] = useState(value.toFixed(1))
+function GainControl({
+  label,
+  value,
+  onChange,
+  min = 0,
+  sliderMax = SLIDER_MAX,
+  step = 0.1,
+  unit = 'x',
+  precision = 1,
+  title,
+}: GainControlProps) {
+  const [text, setText] = useState(value.toFixed(precision))
   const [focused, setFocused] = useState(false)
 
   // When the slider (or any external source) changes the value, update the
   // text field — but only while the text field isn't actively being edited.
   useEffect(() => {
-    if (!focused) setText(value.toFixed(1))
-  }, [value, focused])
+    if (!focused) setText(value.toFixed(precision))
+  }, [value, focused, precision])
 
   function commitText(raw: string) {
     const v = parseFloat(raw)
     if (!Number.isNaN(v) && v >= min) {
       onChange(v)
     } else {
-      setText(value.toFixed(1))
+      setText(value.toFixed(precision))
     }
   }
 
@@ -70,18 +77,34 @@ function GainControl({ label, value, onChange, min = 0, sliderMax = SLIDER_MAX, 
   )
 }
 
+const ZONE_LABELS: Record<string, string> = {
+  dev: 'Dev Zone',
+  design: 'Design Zone',
+  game: 'Game Zone',
+}
+
+function ModeLabel({ mode, activeZoneKey }: { mode: string; activeZoneKey: string | null }) {
+  if (mode === 'switching') return <span style={styles.modeBadgeSwitching}>Switching...</span>
+  if (mode === 'zone' && activeZoneKey) {
+    return <span style={styles.modeBadgeZone}>{ZONE_LABELS[activeZoneKey] ?? activeZoneKey}</span>
+  }
+  return <span style={styles.modeBadgeProximity}>Proximity</span>
+}
+
 export default function VoiceControls() {
   const {
     muted,
     toggleMute,
     remoteGain,
     setRemoteGain,
-    micGain,
-    setMicGain,
+    playbackBoost,
+    setPlaybackBoost,
     headphonePrompt,
     confirmHeadphones,
     audioBlocked,
     audioInterrupted,
+    mode,
+    activeZoneKey,
   } = useVoice()
 
   return (
@@ -110,16 +133,33 @@ export default function VoiceControls() {
         </div>
       )}
       <div style={styles.wrapper}>
-        {IS_MOBILE && (
-          <div style={styles.mobileBadge} title={`Detected platform: ${PLATFORM_LABEL}`}>
-            📱 {PLATFORM_LABEL}
-          </div>
-        )}
-        <button style={styles.btn} onClick={toggleMute} title={muted ? 'Unmute' : 'Mute'}>
-          {muted ? '🔇 Muted' : '🎤 Live'}
-        </button>
-        <GainControl label="🔊 Speaker" value={remoteGain} onChange={setRemoteGain} />
-        <GainControl label="🎙 Mic"     value={micGain}    onChange={setMicGain} />
+        <div style={styles.muteRow}>
+          <button style={styles.btn} onClick={toggleMute} title={muted ? 'Unmute' : 'Mute'}>
+            {muted ? '🔇 Muted' : '🎤 Live'}
+          </button>
+          <ModeLabel mode={mode} activeZoneKey={activeZoneKey} />
+        </div>
+        <GainControl
+          label="🔊 Speaker"
+          value={remoteGain}
+          onChange={setRemoteGain}
+          sliderMax={1}
+          step={0.01}
+          precision={2}
+          unit=""
+          title="Remote voice level (0–1), multiplied by output boost below"
+        />
+        <GainControl
+          label="🔉 Output boost"
+          value={playbackBoost}
+          onChange={setPlaybackBoost}
+          min={1}
+          sliderMax={4}
+          step={0.05}
+          precision={2}
+          unit="×"
+          title="Extra gain for remote audio (Web Audio; 1 = normal, up to 4×)"
+        />
       </div>
     </>
   )
@@ -134,10 +174,40 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     gap: 6,
   },
+  muteRow: {
+    display: 'flex',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   btn: {
     background: 'rgba(0,0,0,0.7)', color: '#fff',
     border: '1px solid #444', borderRadius: 20,
     padding: '8px 20px', fontSize: 14, cursor: 'pointer',
+  },
+  modeBadgeProximity: {
+    fontSize: 11, fontWeight: 600,
+    color: '#94a3b8',
+    background: 'rgba(0,0,0,0.5)',
+    border: '1px solid rgba(148,163,184,0.3)',
+    padding: '3px 10px', borderRadius: 20,
+    pointerEvents: 'none' as const,
+  },
+  modeBadgeZone: {
+    fontSize: 11, fontWeight: 700,
+    color: '#6ee7b7',
+    background: 'rgba(16,185,129,0.15)',
+    border: '1px solid rgba(110,231,183,0.4)',
+    padding: '3px 10px', borderRadius: 20,
+    pointerEvents: 'none' as const,
+  },
+  modeBadgeSwitching: {
+    fontSize: 11, fontWeight: 600,
+    color: '#fbbf24',
+    background: 'rgba(245,158,11,0.15)',
+    border: '1px solid rgba(251,191,36,0.4)',
+    padding: '3px 10px', borderRadius: 20,
+    pointerEvents: 'none' as const,
   },
   gainRow: {
     display: 'flex',
@@ -170,17 +240,6 @@ const styles: Record<string, React.CSSProperties> = {
   gainUnit: {
     fontSize: 12,
     color: '#aaa',
-  },
-  mobileBadge: {
-    fontSize: 11,
-    fontWeight: 600,
-    color: '#a5f3fc',
-    background: 'rgba(0,0,0,0.55)',
-    border: '1px solid rgba(165,243,252,0.3)',
-    padding: '3px 10px',
-    borderRadius: 20,
-    letterSpacing: '0.03em',
-    pointerEvents: 'none' as const,
   },
   blockedBanner: {
     position: 'fixed',

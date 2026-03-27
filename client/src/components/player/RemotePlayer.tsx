@@ -45,6 +45,10 @@ function RemotePlayer({ name, avatar, position, direction, moving, bubble, inRan
     const pos = positionRef.current;
     targetRef.current.set(pos.x, pos.y, pos.z);
     ref.current.position.lerp(targetRef.current, 0.15);
+    const order = Math.round(ref.current.position.z * 100);
+    for (const child of ref.current.children) {
+      child.renderOrder = order;
+    }
   });
 
   // No `position` prop on <group> — if we pass it, R3F's reconciler calls

@@ -7,6 +7,7 @@ import { useEffect, useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import { useKeyboardControls } from '@react-three/drei'
 import { MathUtils, OrthographicCamera } from 'three'
+import { useControls } from 'leva'
 
 const ZOOM = 60   // world units visible: canvas_px / zoom
 const LERP = 0.1  // camera follow smoothness (0 = no follow, 1 = instant)
@@ -21,6 +22,11 @@ export default function CameraRig({ targetRef }: Props) {
   const drag = useRef({ active: false, lastX: 0, lastY: 0 })
   const hasPanned = useRef(false)
   const [, getKeys] = useKeyboardControls()
+  const prevZoom = useRef(ZOOM)
+
+  const { zoom } = useControls('Camera', {
+    zoom: { value: ZOOM, min: 20, max: 150, step: 5, label: 'Zoom' },
+  })
 
   // One-time orthographic top-down setup
   // camera.up = (0, 0, -1) → world -Z is screen-up (north)
@@ -92,6 +98,13 @@ export default function CameraRig({ targetRef }: Props) {
 
     // Keep looking straight down regardless of position
     camera.lookAt(camera.position.x, 0, camera.position.z)
+
+    // Apply zoom when changed
+    if (camera instanceof OrthographicCamera && zoom !== prevZoom.current) {
+      camera.zoom = zoom
+      camera.updateProjectionMatrix()
+      prevZoom.current = zoom
+    }
   })
 
   return null

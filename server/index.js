@@ -3,7 +3,7 @@ import { createServer } from 'http'
 import { Server } from 'socket.io'
 import cors from 'cors'
 import { AccessToken } from 'livekit-server-sdk'
-import rateLimit from 'express-rate-limit'
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit'
 import { requireAuth, requireAuthSocket } from './middleware/requireAuth.js'
 
 const app = express()
@@ -17,47 +17,62 @@ app.use(cors({
 }))
 app.use(express.json())
 
+// Per authenticated user (not just IP) so NAT / mobile gateways don’t share one bucket.
+// Proximity + zone join + brief 403/429 retries need headroom; zone prefetch was removed client-side.
 const tokenLimiter = rateLimit({
   windowMs: 60_000,
-  max: 10,
+  max: 40,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many requests, please try again later.' },
+  keyGenerator: (req) =>
+    (req.user?.sub ? `lk:${req.user.sub}` : ipKeyGenerator(req.ip)),
 })
 
 // LiveKit token endpoint — requires LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET
 const LIVEKIT_URL = process.env.LIVEKIT_URL
 const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || ''
 const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || ''
-const ALLOWED_ROOM = 'gather-world'
+// Zone keys — must be kept in sync with WORLD_ZONES keys in client/src/data/worldMap.ts.
+// Any change here requires a coordinated client + server deploy.
+const ZONE_KEYS = ['dev', 'design', 'game']
+const ALLOWED_ROOMS = new Set([
+  'gather-world',
+  ...ZONE_KEYS.map(k => `gather-world-zone-${k}`),
+])
 
 if (!LIVEKIT_URL) {
   console.error('[livekit] LIVEKIT_URL is not set. Voice will not function.')
 }
 
 app.post('/livekit/token', requireAuth, tokenLimiter, async (req, res) => {
-  const { roomName, identity, name } = req.body || {}
+  const { roomName, identity, name, intent } = req.body || {}
   if (!identity || typeof identity !== 'string') {
     return res.status(400).json({ error: 'identity required' })
   }
-  if (roomName !== ALLOWED_ROOM) {
+  if (!ALLOWED_ROOMS.has(roomName)) {
     return res.status(400).json({ error: 'invalid room' })
   }
+  const authedUserId = req.user?.sub
+  if (!authedUserId || authedUserId !== identity) {
+    return res.status(403).json({ error: 'identity mismatch' })
+  }
+  const tokenIntent = intent === 'prefetch' ? 'prefetch' : 'join'
   if (!LIVEKIT_URL || !LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
     return res.status(500).json({ error: 'LiveKit not configured' })
   }
   try {
     const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
       identity,
-      ttl: '2h',
+      ttl: tokenIntent === 'prefetch' ? '30s' : '2h',
       name: name || identity,
     })
     at.addGrant({
       roomJoin: true,
       room: roomName,
-      canPublish: true,
-      canSubscribe: true,
-      canUpdateOwnMetadata: true,
+      canPublish: tokenIntent === 'join',
+      canSubscribe: tokenIntent === 'join',
+      canUpdateOwnMetadata: tokenIntent === 'join',
     })
     const token = await at.toJwt()
     res.json({ token, url: LIVEKIT_URL })
@@ -113,24 +128,24 @@ io.on('connection', (socket) => {
     const pos = randomSpawn()
     // Use socket.userId (stable Supabase UUID) instead of socket.id —
     // survives reconnects so token refresh doesn't respawn the player.
-    players[socket.userId] = { id: socket.userId, name: trimmed, avatar, x: pos.x, y: pos.y, z: pos.z, direction: 'down', moving: false }
+    players[socket.userId] = { id: socket.userId, name: trimmed, avatar, x: pos.x, y: pos.y, z: pos.z, direction: 'down', moving: false, zoneKey: null }
 
     const others = Object.values(players)
       .filter(p => p.id !== socket.userId)
-      .map(({ id, name, avatar, x, y, z, direction, moving }) => ({ id, name, avatar, position: { x, y, z }, direction, moving }))
+      .map(({ id, name, avatar, x, y, z, direction, moving, zoneKey }) => ({ id, name, avatar, position: { x, y, z }, direction, moving, zoneKey: zoneKey ?? null }))
     socket.emit('room:state', others)
 
     if (typeof ack === 'function') ack({ position: pos })
 
-    const { id, x, y, z, direction, moving } = players[socket.userId]
+    const { id, x, y, z, direction, moving, zoneKey } = players[socket.userId]
     socket.broadcast.emit('player:joined', {
-      id, name, avatar, position: { x, y, z }, direction, moving
+      id, name, avatar, position: { x, y, z }, direction, moving, zoneKey: zoneKey ?? null
     })
 
     console.log(`[join] ${name} (${socket.userId})`)
   })
 
-  socket.on('player:move', ({ x, y, z, direction, moving }) => {
+  socket.on('player:move', ({ x, y, z, direction, moving, zoneKey }) => {
     const player = players[socket.userId]
     if (!player || !isValidPosition({ x, y, z })) return
     if (!isValidDirection(direction) || typeof moving !== 'boolean') return
@@ -147,13 +162,15 @@ io.on('connection', (socket) => {
       }
     }
 
+    const validZoneKey = ZONE_KEYS.includes(zoneKey) ? zoneKey : null
     player.x = x
     player.y = y
     player.z = z
     player.direction = direction
     player.moving = moving
+    player.zoneKey = validZoneKey
     player.lastMoveTime = now
-    socket.broadcast.emit('player:updated', { id: socket.userId, position: { x, y, z }, direction, moving })
+    socket.broadcast.emit('player:updated', { id: socket.userId, position: { x, y, z }, direction, moving, zoneKey: validZoneKey })
   })
 
   socket.on('chat:message', ({ text }) => {

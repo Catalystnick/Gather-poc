@@ -1,4 +1,5 @@
 import { createContext, useContext } from 'react'
+import type { VoiceMode } from '../hooks/useVoice'
 
 export interface VoiceState {
   muted: boolean
@@ -9,12 +10,16 @@ export interface VoiceState {
   peerConnectionStates: Record<string, string>
   remoteGain: number
   setRemoteGain: (v: number) => void
-  micGain: number
-  setMicGain: (v: number) => void
+  /** Linear multiplier (1–4) on remote voice; uses Web Audio gain when room has `webAudioMix`. */
+  playbackBoost: number
+  setPlaybackBoost: (v: number) => void
   headphonePrompt: string | null
   confirmHeadphones: (accept: boolean) => void
   audioBlocked?: boolean
   audioInterrupted?: boolean
+  mode: VoiceMode
+  activeZoneKey: string | null
+  proximityRoomReady?: boolean
 }
 
 const VoiceContext = createContext<VoiceState | null>(null)
