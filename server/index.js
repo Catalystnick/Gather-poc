@@ -17,7 +17,7 @@ app.use(cors({
 }))
 app.use(express.json())
 
-// Per authenticated user (not just IP) so NAT / mobile gateways don’t share one bucket.
+// Per authenticated user (not just IP) so NAT / mobile gateways don't share one bucket.
 // Proximity + zone join + brief 403/429 retries need headroom; zone prefetch was removed client-side.
 const tokenLimiter = rateLimit({
   windowMs: 60_000,
@@ -87,31 +87,46 @@ const io = new Server(httpServer, {
   cors: { origin: allowedOrigins ?? '*' }
 })
 
-const SPAWN_RADIUS = 2
-// Client SPEED = 5 u/s. 1.5× tolerance covers network jitter and frame-rate variation.
-const MAX_SPEED = 7.5
+// Grid dimensions — must match client COLS/ROWS in FloorMap.tsx.
+const GRID_COLS = 60
+const GRID_ROWS = 60
+
+// Spawn in the open central area, clear of all zone fences.
+// Cols 27–33, rows 27–33 map to the world centre with no fences.
+const SPAWN_COL_MIN = 27
+const SPAWN_COL_MAX = 33
+const SPAWN_ROW_MIN = 27
+const SPAWN_ROW_MAX = 33
+
+// Maximum Manhattan distance per move event — must be 1 for grid movement.
+const MAX_STEP = 1
+// Minimum ms between accepted move events. Slightly under TWEEN_DURATION (150ms)
+// to absorb frame-rate jitter without dropping legitimate inputs.
+const MOVE_MIN_INTERVAL = 100
 // Minimum ms between chat messages per player (2 messages/second).
 const CHAT_MIN_INTERVAL = 500
 
 function randomSpawn() {
-  const angle = Math.random() * Math.PI * 2
-  return { x: Math.cos(angle) * SPAWN_RADIUS, y: 0.5, z: Math.sin(angle) * SPAWN_RADIUS }
+  const col = SPAWN_COL_MIN + Math.floor(Math.random() * (SPAWN_COL_MAX - SPAWN_COL_MIN + 1))
+  const row = SPAWN_ROW_MIN + Math.floor(Math.random() * (SPAWN_ROW_MAX - SPAWN_ROW_MIN + 1))
+  return { col, row }
 }
 
 // Validation helpers
 const isValidAvatar = (a) =>
   a && typeof a === 'object' &&
   typeof a.shirt === 'string' && /^#[0-9A-Fa-f]{6}$/.test(a.shirt)
-const isValidPosition = (p) =>
-  p && typeof p === 'object' &&
-  Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z) &&
-  Math.abs(p.x) <= 10000 && Math.abs(p.y) <= 10000 && Math.abs(p.z) <= 10000
+
+const isValidTile = (col, row) =>
+  Number.isInteger(col) && Number.isInteger(row) &&
+  col >= 0 && col < GRID_COLS &&
+  row >= 0 && row < GRID_ROWS
 
 const VALID_DIRECTIONS = new Set(['down', 'up', 'left', 'right'])
 const isValidDirection = (d) => typeof d === 'string' && VALID_DIRECTIONS.has(d)
 
 // In-memory room state
-// { [socketId]: { id, name, avatar: { shirt }, x, y, z } }
+// { [userId]: { id, name, avatar, col, row, direction, moving, zoneKey, lastMoveTime, lastChatTime } }
 const players = {}
 
 io.use(requireAuthSocket)
@@ -125,52 +140,59 @@ io.on('connection', (socket) => {
       console.warn(`[join] invalid payload from ${socket.userId}`)
       return
     }
-    const pos = randomSpawn()
+    const spawn = randomSpawn()
     // Use socket.userId (stable Supabase UUID) instead of socket.id —
     // survives reconnects so token refresh doesn't respawn the player.
-    players[socket.userId] = { id: socket.userId, name: trimmed, avatar, x: pos.x, y: pos.y, z: pos.z, direction: 'down', moving: false, zoneKey: null }
+    players[socket.userId] = { id: socket.userId, name: trimmed, avatar, col: spawn.col, row: spawn.row, direction: 'down', moving: false, zoneKey: null }
 
     const others = Object.values(players)
       .filter(p => p.id !== socket.userId)
-      .map(({ id, name, avatar, x, y, z, direction, moving, zoneKey }) => ({ id, name, avatar, position: { x, y, z }, direction, moving, zoneKey: zoneKey ?? null }))
+      .map(({ id, name, avatar, col, row, direction, moving, zoneKey }) => ({ id, name, avatar, col, row, direction, moving, zoneKey: zoneKey ?? null }))
     socket.emit('room:state', others)
 
-    if (typeof ack === 'function') ack({ position: pos })
+    if (typeof ack === 'function') ack({ col: spawn.col, row: spawn.row })
 
-    const { id, x, y, z, direction, moving, zoneKey } = players[socket.userId]
+    const { id, col, row, direction, moving, zoneKey } = players[socket.userId]
     socket.broadcast.emit('player:joined', {
-      id, name, avatar, position: { x, y, z }, direction, moving, zoneKey: zoneKey ?? null
+      id, name: trimmed, avatar, col, row, direction, moving, zoneKey: zoneKey ?? null
     })
 
-    console.log(`[join] ${name} (${socket.userId})`)
+    console.log(`[join] ${trimmed} (${socket.userId}) at tile (${spawn.col}, ${spawn.row})`)
   })
 
-  socket.on('player:move', ({ x, y, z, direction, moving, zoneKey }) => {
+  socket.on('player:move', ({ col, row, direction, moving, zoneKey }) => {
     const player = players[socket.userId]
-    if (!player || !isValidPosition({ x, y, z })) return
+    if (!player) return
+    if (!isValidTile(col, row)) return
     if (!isValidDirection(direction) || typeof moving !== 'boolean') return
 
+    // Reject moves larger than one tile (prevents teleportation).
+    const dist = Math.abs(col - player.col) + Math.abs(row - player.row)
+    if (dist > MAX_STEP) {
+      console.warn(`[move] step violation from ${socket.userId}: dist=${dist}`)
+      return
+    }
+
+    // Rate-limit only actual position changes (dist > 0).
+    // Idle events (same tile, moving:false) are animation-only updates — they
+    // must not update lastMoveTime or the buffered step that fires in the same
+    // frame will be incorrectly rejected.
     const now = Date.now()
-    if (player.lastMoveTime !== undefined) {
-      const elapsed = (now - player.lastMoveTime) / 1000
-      const dx = x - player.x
-      const dz = z - player.z
-      const speed = Math.sqrt(dx * dx + dz * dz) / elapsed
-      if (speed > MAX_SPEED) {
-        console.warn(`[move] speed violation from ${socket.userId}: ${speed.toFixed(1)} u/s`)
+    if (dist > 0) {
+      if (player.lastMoveTime !== undefined && (now - player.lastMoveTime) < MOVE_MIN_INTERVAL) {
+        console.warn(`[move] rate violation from ${socket.userId}: ${now - player.lastMoveTime}ms since last move`)
         return
       }
+      player.lastMoveTime = now
     }
 
     const validZoneKey = ZONE_KEYS.includes(zoneKey) ? zoneKey : null
-    player.x = x
-    player.y = y
-    player.z = z
+    player.col = col
+    player.row = row
     player.direction = direction
     player.moving = moving
     player.zoneKey = validZoneKey
-    player.lastMoveTime = now
-    socket.broadcast.emit('player:updated', { id: socket.userId, position: { x, y, z }, direction, moving, zoneKey: validZoneKey })
+    socket.broadcast.emit('player:updated', { id: socket.userId, col, row, direction, moving, zoneKey: validZoneKey })
   })
 
   socket.on('chat:message', ({ text }) => {

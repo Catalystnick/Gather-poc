@@ -1,17 +1,23 @@
 import { memo, useLayoutEffect, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
-import { Vector3, type Group } from "three";
-import AvatarMesh from "./AvatarMesh";
+import type { Group } from "three";
+import AvatarMesh, { SPRITE_ANCHOR_Z } from "./AvatarMesh";
 import ChatBubble from "./ChatBubble";
 import PlayerLabel from "./PlayerLabel";
 import StatusRing from "./StatusRing";
 import type { Avatar, Direction } from "../../types";
+import { tileToWorld } from "../../utils/gridHelpers";
+
+// Must match LocalPlayer's TWEEN_DURATION so remote tweens finish before the
+// next move event arrives under normal network conditions.
+const TWEEN_DURATION = 0.15
 
 interface Props {
   id: string;
   name: string;
   avatar: Avatar;
-  position: { x: number; y: number; z: number };
+  col: number;
+  row: number;
   direction: Direction;
   moving: boolean;
   bubble?: string;
@@ -19,7 +25,7 @@ interface Props {
   isSpeaking?: boolean;
 }
 
-function RemotePlayer({ name, avatar, position, direction, moving, bubble, inRange, isSpeaking }: Props) {
+function RemotePlayer({ name, avatar, col, row, direction, moving, bubble, inRange, isSpeaking }: Props) {
   const ref = useRef<Group>(null);
 
   // Animation state driven directly by the sender — no delta inference.
@@ -28,39 +34,78 @@ function RemotePlayer({ name, avatar, position, direction, moving, bubble, inRan
   directionRef.current = direction;
   isMovingRef.current  = moving;
 
-  // Latest server position via ref so useFrame never has a stale closure.
-  const positionRef = useRef(position);
-  positionRef.current = position;
+  // Tween state — start from current visual position to avoid snapping on
+  // in-flight tween interruption (network jitter, late packets, etc.).
+  const isTweeningRef    = useRef(false);
+  const tweenProgressRef = useRef(0);
+  const tweenFromXRef    = useRef(0);
+  const tweenFromZRef    = useRef(0);
+  const tweenToXRef      = useRef(0);
+  const tweenToZRef      = useRef(0);
 
-  const targetRef = useRef(new Vector3());
+  // Track the last tile we received so we only start a new tween when the
+  // server reports an actual position change.
+  const lastColRef = useRef(col);
+  const lastRowRef = useRef(row);
 
-  // Initialise group position before the first frame.
+  // Initialise mesh at spawn tile before the first frame.
   useLayoutEffect(() => {
-    ref.current?.position.set(position.x, position.y, position.z);
+    const { x, z } = tileToWorld(col, row);
+    ref.current?.position.set(x, 0.5, z);
+    tweenFromXRef.current = x;
+    tweenFromZRef.current = z;
+    tweenToXRef.current   = x;
+    tweenToZRef.current   = z;
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Only lerp position — animation state comes straight from the server.
-  useFrame(() => {
+  // React to incoming tile updates from the server.
+  // Runs on every render caused by a socket update — starts a tween from the
+  // current visual position so partial tweens never cause backward snapping.
+  if (col !== lastColRef.current || row !== lastRowRef.current) {
+    lastColRef.current = col;
+    lastRowRef.current = row;
+    const to = tileToWorld(col, row);
+    // Start from wherever the sprite currently is (may be mid-tween).
+    tweenFromXRef.current  = ref.current ? ref.current.position.x : tweenToXRef.current;
+    tweenFromZRef.current  = ref.current ? ref.current.position.z : tweenToZRef.current;
+    tweenToXRef.current    = to.x;
+    tweenToZRef.current    = to.z;
+    tweenProgressRef.current = 0;
+    isTweeningRef.current  = true;
+  }
+
+  useFrame((_, delta) => {
     if (!ref.current) return;
-    const pos = positionRef.current;
-    targetRef.current.set(pos.x, pos.y, pos.z);
-    ref.current.position.lerp(targetRef.current, 0.15);
-    const order = Math.round(ref.current.position.z * 100);
-    for (const child of ref.current.children) {
-      child.renderOrder = order;
+
+    if (isTweeningRef.current) {
+      tweenProgressRef.current += delta / TWEEN_DURATION;
+
+      if (tweenProgressRef.current >= 1) {
+        isTweeningRef.current = false;
+        tweenProgressRef.current = 1;
+        ref.current.position.x = tweenToXRef.current;
+        ref.current.position.z = tweenToZRef.current;
+      } else {
+        // Linear — remote tweens chain continuously as move events arrive,
+        // so constant speed is correct here (same reasoning as LocalPlayer).
+        const t = tweenProgressRef.current;
+        ref.current.position.x = tweenFromXRef.current + (tweenToXRef.current - tweenFromXRef.current) * t;
+        ref.current.position.z = tweenFromZRef.current + (tweenToZRef.current - tweenFromZRef.current) * t;
+      }
     }
+
+    const order = Math.round(ref.current.position.z * 100);
+    ref.current.traverse((obj) => { obj.renderOrder = order; });
   });
 
-  // No `position` prop on <group> — if we pass it, R3F's reconciler calls
-  // group.position.set() on every re-render triggered by a socket update,
-  // snapping the group to the server position and making dx = 0 every frame,
-  // which keeps isMovingRef false and freezes the walk animation.
   return (
     <group ref={ref}>
-      <AvatarMesh avatar={avatar} directionRef={directionRef} isMovingRef={isMovingRef} />
-      <StatusRing speaking={isSpeaking} inRange={inRange} />
-      <PlayerLabel name={name} />
-      {bubble && <ChatBubble text={bubble} />}
+      <group position={[0, 0, SPRITE_ANCHOR_Z]}>
+        <AvatarMesh avatar={avatar} directionRef={directionRef} isMovingRef={isMovingRef} />
+        <StatusRing speaking={isSpeaking} inRange={inRange} />
+        <PlayerLabel name={name} />
+        {bubble && <ChatBubble text={bubble} />}
+      </group>
     </group>
   );
 }

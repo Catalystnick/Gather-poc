@@ -23,6 +23,7 @@ import { useVoice } from "../../hooks/useVoice";
 import { VoiceProvider } from "../../contexts/VoiceContext";
 import { useAuth } from "../../contexts/AuthContext";
 import type { Player } from "../../types";
+import { tileToWorld } from "../../utils/gridHelpers";
 
 const keyMap = [
   { name: "forward", keys: ["ArrowUp", "KeyW"] },
@@ -47,8 +48,9 @@ export default function World({ player }: Props) {
 
   useEffect(() => {
     if (spawnPosition) {
-      console.log("[World] spawnPosition received → rendering LocalPlayer at", spawnPosition);
-      localPositionRef.current = spawnPosition;
+      console.log("[World] spawnPosition received → rendering LocalPlayer at tile", spawnPosition);
+      const { x, z } = tileToWorld(spawnPosition.col, spawnPosition.row);
+      localPositionRef.current = { x, y: 0.5, z };
     } else {
       console.log("[World] spawnPosition is null — LocalPlayer will not render");
     }
@@ -84,6 +86,7 @@ export default function World({ player }: Props) {
             <FloorMap uvAttrRef={uvAttrRef} />
             <Campfire />
             {import.meta.env.DEV && <Zones />}
+            {import.meta.env.DEV && <gridHelper args={[60, 60, '#444444', '#2a2a2a']} position={[0, 0.02, 0]} />}
             <Fence />
             {import.meta.env.DEV && <PlacementTool uvAttrRef={uvAttrRef} onHUDState={onHUDState} />}
             {spawnPosition && (

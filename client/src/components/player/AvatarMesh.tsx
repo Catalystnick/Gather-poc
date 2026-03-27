@@ -13,6 +13,12 @@ interface Props {
 const SHEET_COLS = 8;
 const SHEET_ROWS = 12;
 const PLANE_SIZE = 4.28;
+
+// Southward Z offset that aligns the character's visual body centre with the
+// tile centre. Exported so LocalPlayer / RemotePlayer can apply it to the
+// shared anchor group, keeping all child components (ring, label, bubble)
+// correctly positioned relative to the character rather than the raw tile origin.
+export const SPRITE_ANCHOR_Z = -PLANE_SIZE * 0.1;
 const IDLE_FPS = 2;
 const WALK_FPS = 12;
 

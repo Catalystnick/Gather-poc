@@ -10,7 +10,7 @@ const SERVER_URL = import.meta.env.VITE_SERVER_URL || undefined
 export function useSocket(player: Player, accessToken: string) {
   const [socket, setSocket] = useState<Socket | null>(null)
   const [remotePlayers, setRemotePlayers] = useState<Map<string, RemotePlayer>>(new Map())
-  const [spawnPosition, setSpawnPosition] = useState<{ x: number; y: number; z: number } | null>(null)
+  const [spawnPosition, setSpawnPosition] = useState<{ col: number; row: number } | null>(null)
   const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>('connecting')
   const [lastDisconnectReason, setLastDisconnectReason] = useState<string | null>(null)
   const [lastError, setLastError] = useState<string | null>(null)
@@ -46,9 +46,9 @@ export function useSocket(player: Player, accessToken: string) {
       setLastDisconnectReason(null)
       setLastError(null)
       console.log('[socket] emitting player:join | name:', playerRef.current.name)
-      s.emit('player:join', { name: playerRef.current.name, avatar: playerRef.current.avatar }, ({ position }: { position: { x: number; y: number; z: number } }) => {
-        console.log('[socket] player:join ack received | spawnPosition:', position)
-        setSpawnPosition(position)
+      s.emit('player:join', { name: playerRef.current.name, avatar: playerRef.current.avatar }, ({ col, row }: { col: number; row: number }) => {
+        console.log('[socket] player:join ack received | spawnTile:', { col, row })
+        setSpawnPosition({ col, row })
       })
     })
 
@@ -73,11 +73,11 @@ export function useSocket(player: Player, accessToken: string) {
       setRemotePlayers(prev => new Map(prev).set(p.id, { ...p, zoneKey: p.zoneKey ?? null }))
     })
 
-    s.on('player:updated', ({ id, position, direction, moving, zoneKey }: Pick<RemotePlayer, 'direction' | 'moving' | 'zoneKey'> & { id: string; position: RemotePlayer['position'] }) => {
+    s.on('player:updated', ({ id, col, row, direction, moving, zoneKey }: Pick<RemotePlayer, 'col' | 'row' | 'direction' | 'moving' | 'zoneKey'> & { id: string }) => {
       setRemotePlayers(prev => {
         const next = new Map(prev)
         const p = next.get(id)
-        if (p) next.set(id, { ...p, position, direction, moving, zoneKey: zoneKey ?? null })
+        if (p) next.set(id, { ...p, col, row, direction, moving, zoneKey: zoneKey ?? null })
         return next
       })
     })
@@ -99,7 +99,7 @@ export function useSocket(player: Player, accessToken: string) {
 
   // Stable function reference — reads socket from ref, so LocalPlayer's
   // useFrame closure always calls the current socket without a prop re-capture.
-  const emitMove = useCallback((state: { x: number; y: number; z: number; direction: string; moving: boolean; zoneKey: string | null }) => {
+  const emitMove = useCallback((state: { col: number; row: number; direction: string; moving: boolean; zoneKey: string | null }) => {
     socketRef.current?.emit('player:move', state)
   }, [])
 

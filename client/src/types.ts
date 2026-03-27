@@ -15,7 +15,8 @@ export interface RemotePlayer {
   id: string
   name: string
   avatar: Avatar
-  position: { x: number; y: number; z: number }
+  col: number
+  row: number
   direction: Direction
   moving: boolean
   zoneKey: string | null
