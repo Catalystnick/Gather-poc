@@ -3,7 +3,7 @@ import { createServer } from 'http'
 import { Server } from 'socket.io'
 import cors from 'cors'
 import { AccessToken } from 'livekit-server-sdk'
-import rateLimit from 'express-rate-limit'
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit'
 import { requireAuth, requireAuthSocket } from './middleware/requireAuth.js'
 
 const app = express()
@@ -25,7 +25,8 @@ const tokenLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many requests, please try again later.' },
-  keyGenerator: (req) => (req.user?.sub ? `lk:${req.user.sub}` : req.ip),
+  keyGenerator: (req) =>
+    (req.user?.sub ? `lk:${req.user.sub}` : ipKeyGenerator(req.ip)),
 })
 
 // LiveKit token endpoint — requires LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET

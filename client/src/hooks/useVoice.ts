@@ -36,7 +36,7 @@ import {
 const CONNECT_RANGE       = 7
 const DISCONNECT_RANGE    = 9
 const MIN_GAIN_FLOOR      = 0.15
-const MAX_ACTIVE_PEERS    = 8
+const MAX_ACTIVE_PEERS    = 16
 const DEFAULT_ROLLOFF     = 1.4
 const ZONE_DEBOUNCE_TICKS = 2
 /** Cap linear gain sent to Web Audio (distance × remote slider × boost). */
