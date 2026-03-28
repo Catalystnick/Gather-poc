@@ -6,7 +6,7 @@ import * as THREE from "three";
 import FloorMap from "./FloorMap";
 import PlacementTool from "./PlacementTool";
 import PlacementHUD, { type PlacementHUDState } from "./PlacementHUD";
-import Campfire from "./Campfire";
+import MapObjects from "./MapObjects";
 import LocalPlayer from "../player/LocalPlayer";
 import RemotePlayer from "../player/RemotePlayer";
 import ChatPanel from "../hud/ChatPanel";
@@ -14,8 +14,7 @@ import VoiceControls from "../hud/VoiceControls";
 import VoiceConnectionsPanel from "../hud/VoiceConnectionsPanel";
 import ServerStatusPanel from "../hud/ServerStatusPanel";
 import CameraRig from "./CameraRig";
-import Zones from "./Zones";
-import Fence from "./Fence";
+import OverlayMap from "./OverlayMap";
 import { useSocket } from "../../hooks/useSocket";
 import { useChat } from "../../hooks/useChat";
 import { useMicTrack } from "../../hooks/useMicTrack";
@@ -84,10 +83,10 @@ export default function World({ player }: Props) {
             <CameraRig targetRef={localPositionRef} />
             <Environment preset="city" />
             <FloorMap uvAttrRef={uvAttrRef} />
-            <Campfire />
-            {import.meta.env.DEV && <Zones />}
+            <MapObjects />
+            <OverlayMap />
             {import.meta.env.DEV && <gridHelper args={[60, 60, '#444444', '#2a2a2a']} position={[0, 0.02, 0]} />}
-            <Fence />
+
             {import.meta.env.DEV && <PlacementTool uvAttrRef={uvAttrRef} onHUDState={onHUDState} />}
             {spawnPosition && (
               <LocalPlayer player={player} onMove={emitMove} positionRef={localPositionRef} spawnPosition={spawnPosition} isSpeaking={voice.isLocalSpeaking} activeZoneKey={voice.activeZoneKey} />

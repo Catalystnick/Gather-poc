@@ -1,16 +1,17 @@
 import { memo, useLayoutEffect, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import type { Group } from "three";
-import AvatarMesh, { SPRITE_ANCHOR_Z } from "./AvatarMesh";
+import AvatarMesh, { SPRITE_ANCHOR_Z, SPRITE_FEET_Z } from "./AvatarMesh";
 import ChatBubble from "./ChatBubble";
 import PlayerLabel from "./PlayerLabel";
 import StatusRing from "./StatusRing";
 import type { Avatar, Direction } from "../../types";
 import { tileToWorld } from "../../utils/gridHelpers";
+import { spriteOrder } from "../../utils/renderOrder";
 
 // Must match LocalPlayer's TWEEN_DURATION so remote tweens finish before the
 // next move event arrives under normal network conditions.
-const TWEEN_DURATION = 0.15
+const TWEEN_DURATION = 0.15;
 
 interface Props {
   id: string;
@@ -30,18 +31,18 @@ function RemotePlayer({ name, avatar, col, row, direction, moving, bubble, inRan
 
   // Animation state driven directly by the sender — no delta inference.
   const directionRef = useRef<Direction>(direction);
-  const isMovingRef  = useRef(moving);
+  const isMovingRef = useRef(moving);
   directionRef.current = direction;
-  isMovingRef.current  = moving;
+  isMovingRef.current = moving;
 
   // Tween state — start from current visual position to avoid snapping on
   // in-flight tween interruption (network jitter, late packets, etc.).
-  const isTweeningRef    = useRef(false);
+  const isTweeningRef = useRef(false);
   const tweenProgressRef = useRef(0);
-  const tweenFromXRef    = useRef(0);
-  const tweenFromZRef    = useRef(0);
-  const tweenToXRef      = useRef(0);
-  const tweenToZRef      = useRef(0);
+  const tweenFromXRef = useRef(0);
+  const tweenFromZRef = useRef(0);
+  const tweenToXRef = useRef(0);
+  const tweenToZRef = useRef(0);
 
   // Track the last tile we received so we only start a new tween when the
   // server reports an actual position change.
@@ -54,8 +55,8 @@ function RemotePlayer({ name, avatar, col, row, direction, moving, bubble, inRan
     ref.current?.position.set(x, 0.5, z);
     tweenFromXRef.current = x;
     tweenFromZRef.current = z;
-    tweenToXRef.current   = x;
-    tweenToZRef.current   = z;
+    tweenToXRef.current = x;
+    tweenToZRef.current = z;
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // React to incoming tile updates from the server.
@@ -66,12 +67,12 @@ function RemotePlayer({ name, avatar, col, row, direction, moving, bubble, inRan
     lastRowRef.current = row;
     const to = tileToWorld(col, row);
     // Start from wherever the sprite currently is (may be mid-tween).
-    tweenFromXRef.current  = ref.current ? ref.current.position.x : tweenToXRef.current;
-    tweenFromZRef.current  = ref.current ? ref.current.position.z : tweenToZRef.current;
-    tweenToXRef.current    = to.x;
-    tweenToZRef.current    = to.z;
+    tweenFromXRef.current = ref.current ? ref.current.position.x : tweenToXRef.current;
+    tweenFromZRef.current = ref.current ? ref.current.position.z : tweenToZRef.current;
+    tweenToXRef.current = to.x;
+    tweenToZRef.current = to.z;
     tweenProgressRef.current = 0;
-    isTweeningRef.current  = true;
+    isTweeningRef.current = true;
   }
 
   useFrame((_, delta) => {
@@ -94,8 +95,10 @@ function RemotePlayer({ name, avatar, col, row, direction, moving, bubble, inRan
       }
     }
 
-    const order = Math.round(ref.current.position.z * 100);
-    ref.current.traverse((obj) => { obj.renderOrder = order; });
+    const pz = ref.current.position.z;
+    ref.current.traverse((obj) => {
+      obj.renderOrder = spriteOrder(pz + SPRITE_FEET_Z);
+    });
   });
 
   return (
@@ -110,4 +113,4 @@ function RemotePlayer({ name, avatar, col, row, direction, moving, bubble, inRan
   );
 }
 
-export default memo(RemotePlayer)
+export default memo(RemotePlayer);

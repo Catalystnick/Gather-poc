@@ -2,19 +2,20 @@ import { useRef, useLayoutEffect } from "react";
 import { useFrame } from "@react-three/fiber";
 import { useKeyboardControls } from "@react-three/drei";
 import type { Group } from "three";
-import AvatarMesh, { SPRITE_ANCHOR_Z } from "./AvatarMesh";
+import AvatarMesh, { SPRITE_ANCHOR_Z, SPRITE_FEET_Z } from "./AvatarMesh";
 import PlayerLabel from "./PlayerLabel";
 import StatusRing from "./StatusRing";
 import type { Direction, Player } from "../../types";
 import { tileToWorld } from "../../utils/gridHelpers";
 import { canMove } from "../../utils/tileMap";
+import { spriteOrder } from "../../utils/renderOrder";
 
 // Seconds to tween between two tile centres.
-const TWEEN_DURATION = 0.15
+const TWEEN_DURATION = 0.15;
 // Seconds of hold before auto-walk begins (Pokémon-style initial delay).
-const HOLD_DELAY = 0.2
+const HOLD_DELAY = 0.2;
 // Seconds between auto-walk steps while a key is held.
-const STEP_INTERVAL = 0.15
+const STEP_INTERVAL = 0.15;
 
 interface Props {
   player: Player;
@@ -56,6 +57,10 @@ export default function LocalPlayer({ player, onMove, positionRef, spawnPosition
   const holdTimerRef = useRef(0);
   const stepAccRef = useRef(0);
   const bufferedDirRef = useRef<Direction | null>(null);
+  // Last-key-wins: track rising edges so pressing a second key while holding
+  // the first switches direction instead of stopping movement.
+  const prevKeysRef = useRef({ forward: false, backward: false, left: false, right: false });
+  const lastPressedRef = useRef<Direction | null>(null);
 
   // Zone and emit state.
   const activeZoneKeyRef = useRef(activeZoneKey);
@@ -70,21 +75,23 @@ export default function LocalPlayer({ player, onMove, positionRef, spawnPosition
     if (!ref.current) return;
     const { x, z } = tileToWorld(spawnPosition.col, spawnPosition.row);
     ref.current.position.set(x, 0.5, z);
-    gridColRef.current      = spawnPosition.col;
-    gridRowRef.current      = spawnPosition.row;
-    positionRef.current     = { x, y: 0.5, z };
-    isTweeningRef.current   = false;
+    gridColRef.current = spawnPosition.col;
+    gridRowRef.current = spawnPosition.row;
+    positionRef.current = { x, y: 0.5, z };
+    isTweeningRef.current = false;
     tweenProgressRef.current = 0;
-    tweenFromXRef.current   = x;
-    tweenFromZRef.current   = z;
-    tweenToXRef.current     = x;
-    tweenToZRef.current     = z;
-    tweenToColRef.current   = spawnPosition.col;
-    tweenToRowRef.current   = spawnPosition.row;
-    bufferedDirRef.current  = null;
-    justPressedRef.current  = false;
-    holdTimerRef.current    = 0;
-    stepAccRef.current      = 0;
+    tweenFromXRef.current = x;
+    tweenFromZRef.current = z;
+    tweenToXRef.current = x;
+    tweenToZRef.current = z;
+    tweenToColRef.current = spawnPosition.col;
+    tweenToRowRef.current = spawnPosition.row;
+    bufferedDirRef.current = null;
+    justPressedRef.current = false;
+    holdTimerRef.current = 0;
+    stepAccRef.current = 0;
+    lastPressedRef.current = null;
+    prevKeysRef.current = { forward: false, backward: false, left: false, right: false };
   }, [spawnPosition]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useFrame((_, delta) => {
@@ -95,16 +102,24 @@ export default function LocalPlayer({ player, onMove, positionRef, spawnPosition
     if (tag === "INPUT" || tag === "TEXTAREA") return;
 
     const { forward, backward, left, right } = getKeys();
+    const prev = prevKeysRef.current;
 
-    // Resolve the active direction — exactly one key must be pressed.
-    // Two or more keys held simultaneously blocks movement entirely.
+    // Rising-edge detection — update lastPressed when a new key is first pressed.
+    if (!prev.forward && forward) lastPressedRef.current = "up";
+    if (!prev.backward && backward) lastPressedRef.current = "down";
+    if (!prev.left && left) lastPressedRef.current = "left";
+    if (!prev.right && right) lastPressedRef.current = "right";
+    prevKeysRef.current = { forward, backward, left, right };
+
+    // Resolve active direction: last-pressed key wins while still held.
+    // Pressing a second key while holding the first switches direction
+    // instead of stopping movement.
     const heldCount = (forward ? 1 : 0) + (backward ? 1 : 0) + (left ? 1 : 0) + (right ? 1 : 0);
-    const activeDir: Direction | null =
-      heldCount !== 1 ? null
-      : forward  ? "up"
-      : backward ? "down"
-      : left     ? "left"
-      : "right";
+    const last = lastPressedRef.current;
+    const lastHeld = (last === "up" && forward) || (last === "down" && backward) || (last === "left" && left) || (last === "right" && right);
+    if (heldCount === 0) lastPressedRef.current = null;
+
+    const activeDir: Direction | null = heldCount === 0 ? null : lastHeld ? last : forward ? "up" : backward ? "down" : left ? "left" : "right";
 
     // Detect direction changes to reset hold timing.
     if (activeDir !== prevActiveDirRef.current) {
@@ -179,17 +194,17 @@ export default function LocalPlayer({ player, onMove, positionRef, spawnPosition
     const { x, y, z } = ref.current.position;
     positionRef.current = { x, y, z };
 
-    // Render order — larger Z = closer to camera = drawn on top.
-    // traverse reaches through the inner anchor group to the actual meshes.
-    const order = Math.round(z * 100);
-    ref.current.traverse((obj) => { obj.renderOrder = order; });
+    // Sort by the player's world position so map objects can occlude correctly.
+    ref.current.traverse((obj) => {
+      obj.renderOrder = spriteOrder(z + SPRITE_FEET_Z);
+    });
   });
 
   function attemptStep(direction: Direction, chained: boolean) {
     if (!canMove(gridColRef.current, gridRowRef.current, direction)) return;
 
-    const dc = direction === 'right' ? 1 : direction === 'left' ? -1 : 0;
-    const dr = direction === 'down'  ? 1 : direction === 'up'   ? -1 : 0;
+    const dc = direction === "right" ? 1 : direction === "left" ? -1 : 0;
+    const dr = direction === "down" ? 1 : direction === "up" ? -1 : 0;
     const toCol = gridColRef.current + dc;
     const toRow = gridRowRef.current + dr;
 
@@ -197,8 +212,8 @@ export default function LocalPlayer({ player, onMove, positionRef, spawnPosition
 
     tweenFromXRef.current = ref.current!.position.x;
     tweenFromZRef.current = ref.current!.position.z;
-    tweenToXRef.current   = to.x;
-    tweenToZRef.current   = to.z;
+    tweenToXRef.current = to.x;
+    tweenToZRef.current = to.z;
     tweenToColRef.current = toCol;
     tweenToRowRef.current = toRow;
     tweenProgressRef.current = 0;

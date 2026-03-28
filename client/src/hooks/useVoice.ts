@@ -23,6 +23,7 @@ import {
   type RemoteParticipant, type RemoteTrackPublication, type RemoteAudioTrack,
 } from 'livekit-client'
 import { getZoneKey } from '../utils/zoneDetection'
+import { tileToWorld } from '../utils/gridHelpers'
 import {
   ROOM_NAME, ZONE_ROOM_PREFIX,
   type CachedToken, type TokenIntent,
@@ -97,6 +98,11 @@ function dist3(
   b: { x: number; y: number; z: number },
 ): number {
   return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2)
+}
+
+function playerPos(p: RemotePlayer): { x: number; y: number; z: number } {
+  const { x, z } = tileToWorld(p.col, p.row)
+  return { x, y: 0.5, z }
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -509,7 +515,7 @@ export function useVoice(
           if (activeZoneKeyRef.current !== null) return
           const player = remotePlayersRef.current.get(participant.identity)
           if (!player || player.zoneKey !== null) return
-          if (dist3(localPositionRef.current, player.position) < CONNECT_RANGE) {
+          if (dist3(localPositionRef.current, playerPos(player)) < CONNECT_RANGE) {
             publication.setSubscribed(true)
             subscribedIds.current.add(participant.identity)
           }
@@ -565,7 +571,7 @@ export function useVoice(
         for (const participant of room.remoteParticipants.values()) {
           const player = remotePlayersRef.current.get(participant.identity)
           if (!player || player.zoneKey !== null || activeZoneKeyRef.current !== null) continue
-          if (dist3(localPositionRef.current, player.position) < DISCONNECT_RANGE) {
+          if (dist3(localPositionRef.current, playerPos(player)) < DISCONNECT_RANGE) {
             for (const pub of participant.trackPublications.values()) {
               if (pub.kind === Track.Kind.Audio && !pub.isSubscribed) {
                 (pub as RemoteTrackPublication).setSubscribed(true)
@@ -696,7 +702,7 @@ export function useVoice(
       // Unsubscribe out-of-range or zoned peers
       for (const identity of subscribedIds.current) {
         const player = remote.get(identity)
-        const d = player ? dist3(local, player.position) : Infinity
+        const d = player ? dist3(local, playerPos(player)) : Infinity
         if (!player || d > DISCONNECT_RANGE || player.zoneKey !== null || activeZoneKeyRef.current !== null) {
           const participant = room.remoteParticipants.get(identity)
           if (participant) {
@@ -717,7 +723,7 @@ export function useVoice(
 
       const candidates = [...remote.entries()]
         .filter(([, p]) => p.zoneKey === null)
-        .map(([id, p]) => ({ id, player: p, dist: dist3(local, p.position) }))
+        .map(([id, p]) => ({ id, player: p, dist: dist3(local, playerPos(p)) }))
         .filter(e => e.dist < DISCONNECT_RANGE)
         .sort((a, b) => a.dist - b.dist)
       const preferred = new Set(candidates.slice(0, MAX_ACTIVE_PEERS).map(e => e.id))
@@ -726,7 +732,7 @@ export function useVoice(
 
       remote.forEach((player, id) => {
         if (player.zoneKey !== null) return
-        const d = dist3(local, player.position)
+        const d = dist3(local, playerPos(player))
         const subscribed = subscribedIds.current.has(id)
 
         if (d < CONNECT_RANGE && preferred.has(id) && !subscribed) {

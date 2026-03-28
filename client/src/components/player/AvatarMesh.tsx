@@ -12,13 +12,20 @@ interface Props {
 
 const SHEET_COLS = 8;
 const SHEET_ROWS = 12;
-const PLANE_SIZE = 4.28;
+// 1 world unit == one 32x32 tile in this project.
+const PLANE_SIZE = 2;
 
 // Southward Z offset that aligns the character's visual body centre with the
 // tile centre. Exported so LocalPlayer / RemotePlayer can apply it to the
 // shared anchor group, keeping all child components (ring, label, bubble)
 // correctly positioned relative to the character rather than the raw tile origin.
 export const SPRITE_ANCHOR_Z = -PLANE_SIZE * 0.1;
+
+// World-Z offset from the player group origin to the sprite's feet (south edge).
+// Used as the Y-sort key so player sorting matches tile-object sorting, which
+// also uses each object's bottom/south edge.
+export const SPRITE_FEET_Z = SPRITE_ANCHOR_Z + PLANE_SIZE / 2;
+
 const IDLE_FPS = 2;
 const WALK_FPS = 12;
 
@@ -86,9 +93,10 @@ export default function AvatarMesh({ avatar, directionRef, isMovingRef }: Props)
     const id = ++_matId;
     const mat = new MeshBasicMaterial({
       map: templateTex,
-      transparent: true,
-      depthTest: false,
-      depthWrite: false,
+      transparent: false,
+      alphaTest: 0.1,
+      depthTest: true,
+      depthWrite: true,
       toneMapped: false,
     });
 

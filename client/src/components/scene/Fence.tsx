@@ -14,6 +14,7 @@ import * as THREE from 'three'
 import { COLS, ROWS } from './FloorMap'
 import { WORLD_FENCES } from '../../data/worldMap'
 import type { PlacedFence } from '../../data/worldMap'
+import { spriteOrder } from '../../utils/renderOrder'
 
 const TILE_SIZE = 1
 const OX = -(COLS * TILE_SIZE) / 2
@@ -22,9 +23,6 @@ const OZ = -(ROWS * TILE_SIZE) / 2
 // Only load textures for IDs actually present in WORLD_FENCES.
 const USED_IDS = [...new Set(WORLD_FENCES.map(f => f.fenceId))].sort((a, b) => a - b)
 const TEXTURE_PATHS = USED_IDS.map(id => `/floor-map/2-Objects/2-Fence/${id}.png`)
-
-// renderOrder scale: 1 world unit → 100 sort units, giving sub-tile precision.
-const RENDER_SCALE = 100
 
 // Scale sprite to fit within one tile while preserving aspect ratio.
 function spriteSize(tex: THREE.Texture): [number, number] {
@@ -102,9 +100,9 @@ export default function Fence() {
     const map = new Map<string, { fenceId: number; fences: PlacedFence[]; renderOrder: number }>()
     for (const f of WORLD_FENCES) {
       const worldZ = OZ + f.row + f.offsetZ
-      const zKey = Math.round(worldZ * RENDER_SCALE)
-      const key = `${f.fenceId}_${zKey}`
-      if (!map.has(key)) map.set(key, { fenceId: f.fenceId, fences: [], renderOrder: zKey })
+      const ro = spriteOrder(worldZ)
+      const key = `${f.fenceId}_${ro}`
+      if (!map.has(key)) map.set(key, { fenceId: f.fenceId, fences: [], renderOrder: ro })
       map.get(key)!.fences.push(f)
     }
     return map
