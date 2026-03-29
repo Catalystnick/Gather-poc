@@ -9,7 +9,7 @@ import { requireAuth, requireAuthSocket } from './middleware/requireAuth.js'
 const app = express()
 
 const allowedOrigins = process.env.ALLOWED_ORIGINS
-  ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
+  ? process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim())
   : null
 
 app.use(cors({
@@ -17,7 +17,7 @@ app.use(cors({
 }))
 app.use(express.json())
 
-// Per authenticated user (not just IP) so NAT / mobile gateways don’t share one bucket.
+// Per authenticated user (not just IP) so NAT / mobile gateways don't share one bucket.
 // Proximity + zone join + brief 403/429 retries need headroom; zone prefetch was removed client-side.
 const tokenLimiter = rateLimit({
   windowMs: 60_000,
@@ -38,7 +38,7 @@ const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || ''
 const ZONE_KEYS = ['dev', 'design', 'game']
 const ALLOWED_ROOMS = new Set([
   'gather-world',
-  ...ZONE_KEYS.map(k => `gather-world-zone-${k}`),
+  ...ZONE_KEYS.map(zoneKey => `gather-world-zone-${zoneKey}`),
 ])
 
 if (!LIVEKIT_URL) {
@@ -62,19 +62,19 @@ app.post('/livekit/token', requireAuth, tokenLimiter, async (req, res) => {
     return res.status(500).json({ error: 'LiveKit not configured' })
   }
   try {
-    const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
+    const accessToken = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
       identity,
       ttl: tokenIntent === 'prefetch' ? '30s' : '2h',
       name: name || identity,
     })
-    at.addGrant({
+    accessToken.addGrant({
       roomJoin: true,
       room: roomName,
       canPublish: tokenIntent === 'join',
       canSubscribe: tokenIntent === 'join',
       canUpdateOwnMetadata: tokenIntent === 'join',
     })
-    const token = await at.toJwt()
+    const token = await accessToken.toJwt()
     res.json({ token, url: LIVEKIT_URL })
   } catch (err) {
     console.error('[livekit] token error:', err)
@@ -87,31 +87,50 @@ const io = new Server(httpServer, {
   cors: { origin: allowedOrigins ?? '*' }
 })
 
-const SPAWN_RADIUS = 2
-// Client SPEED = 5 u/s. 1.5× tolerance covers network jitter and frame-rate variation.
-const MAX_SPEED = 7.5
+// Grid dimensions — must match client COLS/ROWS in FloorMap.tsx.
+const GRID_COLS = 60
+const GRID_ROWS = 60
+
+// Spawn in the open central area, clear of all zone fences.
+// Cols 27–33, rows 27–33 map to the world centre with no fences.
+const SPAWN_COL_MIN = 27
+const SPAWN_COL_MAX = 33
+const SPAWN_ROW_MIN = 27
+const SPAWN_ROW_MAX = 33
+
+// Maximum Manhattan distance per move event — must be 1 for grid movement.
+const MAX_STEP = 1
+// Minimum ms between accepted move events. Slightly under TWEEN_DURATION (150ms)
+// to absorb frame-rate jitter without dropping legitimate inputs.
+const MOVE_MIN_INTERVAL = 100
 // Minimum ms between chat messages per player (2 messages/second).
 const CHAT_MIN_INTERVAL = 500
 
+/** Pick a random spawn tile from the central open area. */
 function randomSpawn() {
-  const angle = Math.random() * Math.PI * 2
-  return { x: Math.cos(angle) * SPAWN_RADIUS, y: 0.5, z: Math.sin(angle) * SPAWN_RADIUS }
+  const col = SPAWN_COL_MIN + Math.floor(Math.random() * (SPAWN_COL_MAX - SPAWN_COL_MIN + 1))
+  const row = SPAWN_ROW_MIN + Math.floor(Math.random() * (SPAWN_ROW_MAX - SPAWN_ROW_MIN + 1))
+  return { col, row }
 }
 
 // Validation helpers
-const isValidAvatar = (a) =>
-  a && typeof a === 'object' &&
-  typeof a.shirt === 'string' && /^#[0-9A-Fa-f]{6}$/.test(a.shirt)
-const isValidPosition = (p) =>
-  p && typeof p === 'object' &&
-  Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z) &&
-  Math.abs(p.x) <= 10000 && Math.abs(p.y) <= 10000 && Math.abs(p.z) <= 10000
+/** Validate avatar payload format from client join requests. */
+const isValidAvatar = (avatar) =>
+  avatar && typeof avatar === 'object' &&
+  typeof avatar.shirt === 'string' && /^#[0-9A-Fa-f]{6}$/.test(avatar.shirt)
+
+/** Validate incoming tile coordinates are within server world bounds. */
+const isValidTile = (col, row) =>
+  Number.isInteger(col) && Number.isInteger(row) &&
+  col >= 0 && col < GRID_COLS &&
+  row >= 0 && row < GRID_ROWS
 
 const VALID_DIRECTIONS = new Set(['down', 'up', 'left', 'right'])
-const isValidDirection = (d) => typeof d === 'string' && VALID_DIRECTIONS.has(d)
+/** Validate replicated movement direction enum. */
+const isValidDirection = (direction) => typeof direction === 'string' && VALID_DIRECTIONS.has(direction)
 
 // In-memory room state
-// { [socketId]: { id, name, avatar: { shirt }, x, y, z } }
+// { [userId]: { id, name, avatar, col, row, direction, moving, zoneKey, muted, lastMoveTime, lastChatTime } }
 const players = {}
 
 io.use(requireAuthSocket)
@@ -119,58 +138,86 @@ io.use(requireAuthSocket)
 io.on('connection', (socket) => {
   console.log(`[connect] ${socket.userId}`)
 
-  socket.on('player:join', ({ name, avatar }, ack) => {
+  socket.on('player:join', (payload, ack) => {
+    const { name, avatar } = (payload && typeof payload === 'object') ? payload : {}
     const trimmed = typeof name === 'string' ? name.trim() : ''
     if (!trimmed || trimmed.length > 24 || !isValidAvatar(avatar)) {
       console.warn(`[join] invalid payload from ${socket.userId}`)
+      if (typeof ack === 'function') ack({ error: 'invalid_payload' })
       return
     }
-    const pos = randomSpawn()
+    const spawn = randomSpawn()
     // Use socket.userId (stable Supabase UUID) instead of socket.id —
     // survives reconnects so token refresh doesn't respawn the player.
-    players[socket.userId] = { id: socket.userId, name: trimmed, avatar, x: pos.x, y: pos.y, z: pos.z, direction: 'down', moving: false, zoneKey: null }
+    players[socket.userId] = {
+      id: socket.userId,
+      name: trimmed,
+      avatar,
+      col: spawn.col,
+      row: spawn.row,
+      direction: 'down',
+      moving: false,
+      zoneKey: null,
+      muted: false,
+    }
 
     const others = Object.values(players)
-      .filter(p => p.id !== socket.userId)
-      .map(({ id, name, avatar, x, y, z, direction, moving, zoneKey }) => ({ id, name, avatar, position: { x, y, z }, direction, moving, zoneKey: zoneKey ?? null }))
+      .filter(playerEntry => playerEntry.id !== socket.userId)
+      .map(({ id, name, avatar, col, row, direction, moving, zoneKey, muted }) => ({
+        id, name, avatar, col, row, direction, moving, zoneKey: zoneKey ?? null, muted: !!muted,
+      }))
     socket.emit('room:state', others)
 
-    if (typeof ack === 'function') ack({ position: pos })
+    if (typeof ack === 'function') ack({ col: spawn.col, row: spawn.row })
 
-    const { id, x, y, z, direction, moving, zoneKey } = players[socket.userId]
+    const { id, col, row, direction, moving, zoneKey, muted } = players[socket.userId]
     socket.broadcast.emit('player:joined', {
-      id, name, avatar, position: { x, y, z }, direction, moving, zoneKey: zoneKey ?? null
+      id, name: trimmed, avatar, col, row, direction, moving, zoneKey: zoneKey ?? null, muted: !!muted,
     })
 
-    console.log(`[join] ${name} (${socket.userId})`)
+    console.log(`[join] ${trimmed} (${socket.userId}) at tile (${spawn.col}, ${spawn.row})`)
   })
 
-  socket.on('player:move', ({ x, y, z, direction, moving, zoneKey }) => {
+  socket.on('player:move', ({ col, row, direction, moving, zoneKey }) => {
     const player = players[socket.userId]
-    if (!player || !isValidPosition({ x, y, z })) return
+    if (!player) return
+    if (!isValidTile(col, row)) return
     if (!isValidDirection(direction) || typeof moving !== 'boolean') return
 
+    // Reject moves larger than one tile (prevents teleportation).
+    const dist = Math.abs(col - player.col) + Math.abs(row - player.row)
+    if (dist > MAX_STEP) {
+      console.warn(`[move] step violation from ${socket.userId}: dist=${dist}`)
+      return
+    }
+
+    // Rate-limit only actual position changes (dist > 0).
+    // Idle events (same tile, moving:false) are animation-only updates — they
+    // must not update lastMoveTime or the buffered step that fires in the same
+    // frame will be incorrectly rejected.
     const now = Date.now()
-    if (player.lastMoveTime !== undefined) {
-      const elapsed = (now - player.lastMoveTime) / 1000
-      const dx = x - player.x
-      const dz = z - player.z
-      const speed = Math.sqrt(dx * dx + dz * dz) / elapsed
-      if (speed > MAX_SPEED) {
-        console.warn(`[move] speed violation from ${socket.userId}: ${speed.toFixed(1)} u/s`)
+    if (dist > 0) {
+      if (player.lastMoveTime !== undefined && (now - player.lastMoveTime) < MOVE_MIN_INTERVAL) {
+        console.warn(`[move] rate violation from ${socket.userId}: ${now - player.lastMoveTime}ms since last move`)
         return
       }
+      player.lastMoveTime = now
     }
 
     const validZoneKey = ZONE_KEYS.includes(zoneKey) ? zoneKey : null
-    player.x = x
-    player.y = y
-    player.z = z
+    player.col = col
+    player.row = row
     player.direction = direction
     player.moving = moving
     player.zoneKey = validZoneKey
-    player.lastMoveTime = now
-    socket.broadcast.emit('player:updated', { id: socket.userId, position: { x, y, z }, direction, moving, zoneKey: validZoneKey })
+    socket.broadcast.emit('player:updated', { id: socket.userId, col, row, direction, moving, zoneKey: validZoneKey })
+  })
+
+  socket.on('player:voice', ({ muted }) => {
+    const player = players[socket.userId]
+    if (!player || typeof muted !== 'boolean') return
+    player.muted = muted
+    socket.broadcast.emit('player:voice', { id: socket.userId, muted })
   })
 
   socket.on('chat:message', ({ text }) => {

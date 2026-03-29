@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 
+/** Email/password + Google sign-in entry page. */
 export default function LoginPage() {
   const { signInWithPassword, signInWithGoogle, isAuthenticated } = useAuth()
   const navigate = useNavigate()
@@ -17,18 +18,18 @@ export default function LoginPage() {
     if (isAuthenticated) navigate('/game', { replace: true })
   }, [isAuthenticated, navigate])
 
-  const handleEmailLogin = useCallback(async (e: React.FormEvent) => {
-    e.preventDefault()
+  const handleEmailLogin = useCallback(async (event: React.FormEvent) => {
+    event.preventDefault()
     setError(null)
     setUnverified(false)
     setSubmitting(true)
-    const err = await signInWithPassword(email, password)
+    const signInError = await signInWithPassword(email, password)
     setSubmitting(false)
-    if (err) {
-      if (err.message.toLowerCase().includes('email not confirmed')) {
+    if (signInError) {
+      if (signInError.message.toLowerCase().includes('email not confirmed')) {
         setUnverified(true)
       } else {
-        setError(err.message)
+        setError(signInError.message)
       }
     }
   }, [email, password, signInWithPassword])
@@ -57,7 +58,7 @@ export default function LoginPage() {
             type="email"
             placeholder="Email"
             value={email}
-            onChange={e => setEmail(e.target.value)}
+            onChange={event => setEmail(event.target.value)}
             required
             autoComplete="email"
           />
@@ -66,7 +67,7 @@ export default function LoginPage() {
             type="password"
             placeholder="Password"
             value={password}
-            onChange={e => setPassword(e.target.value)}
+            onChange={event => setPassword(event.target.value)}
             required
             autoComplete="current-password"
           />

@@ -6,6 +6,7 @@ import { useAuth } from '../contexts/AuthContext'
 // Supabase returns here with #access_token= in the hash (implicit flow).
 // The SDK reads the hash on init and fires SIGNED_IN via onAuthStateChange.
 // This page just waits for that event then forwards to /game.
+/** Temporary callback page that waits for auth session hydration after OAuth redirect. */
 export default function AuthCallbackPage() {
   const { isAuthenticated, isLoading } = useAuth()
   const navigate = useNavigate()
@@ -19,10 +20,10 @@ export default function AuthCallbackPage() {
 
   // Bail out if something went wrong and session never arrives
   useEffect(() => {
-    const id = setTimeout(() => {
+    const timeoutId = setTimeout(() => {
       if (!isAuthenticated) setTimedOut(true)
     }, 8000)
-    return () => clearTimeout(id)
+    return () => clearTimeout(timeoutId)
   }, [isAuthenticated])
 
   if (timedOut) {

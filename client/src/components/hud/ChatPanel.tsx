@@ -7,9 +7,12 @@ interface Props {
   onSend: (text: string) => void
 }
 
+/** Chat HUD panel with scrolling message log and quick send input. */
 export default function ChatPanel({ messages, onSend }: Props) {
   const [input, setInput] = useState('')
   const logRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     if (logRef.current) {
@@ -17,6 +20,23 @@ export default function ChatPanel({ messages, onSend }: Props) {
     }
   }, [messages])
 
+  useEffect(() => {
+    const handlePointerDown = (event: PointerEvent) => {
+      const panelElement = panelRef.current
+      const inputElement = inputRef.current
+      if (!panelElement || !inputElement) return
+      if (!panelElement.contains(event.target as Node)) {
+        inputElement.blur()
+      }
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown, true)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown, true)
+    }
+  }, [])
+
+  /** Send current input as a chat message and clear the entry box. */
   function handleSend() {
     const text = input.trim()
     if (!text) return
@@ -26,23 +46,26 @@ export default function ChatPanel({ messages, onSend }: Props) {
 
   return (
     <HUDPanel style={styles.position}>
+      <div ref={panelRef} style={styles.panelInner}>
       <div ref={logRef} style={styles.log}>
-        {messages.map((m) => (
-          <div key={`${m.id}-${m.timestamp}`} style={styles.message}>
-            <span style={styles.sender}>{m.name}: </span>
-            <span>{m.text}</span>
+        {messages.map((message) => (
+          <div key={`${message.id}-${message.timestamp}`} style={styles.message}>
+            <span style={styles.sender}>{message.name}: </span>
+            <span>{message.text}</span>
           </div>
         ))}
       </div>
       <div style={styles.inputRow}>
         <input
+          ref={inputRef}
           style={styles.input}
           value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && handleSend()}
+          onChange={event => setInput(event.target.value)}
+          onKeyDown={event => event.key === 'Enter' && handleSend()}
           placeholder="Say something..."
         />
         <button style={styles.btn} onClick={handleSend}>Send</button>
+      </div>
       </div>
     </HUDPanel>
   )
@@ -55,6 +78,12 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
     display: 'flex',
     flexDirection: 'column',
+  },
+  panelInner: {
+    display: 'flex',
+    flexDirection: 'column',
+    width: '100%',
+    height: '100%',
   },
   log: {
     padding: '8px 10px', maxHeight: 180, overflowY: 'auto',

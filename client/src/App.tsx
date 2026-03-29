@@ -12,6 +12,7 @@ const GameRoute         = lazy(() => import('./pages/GameRoute'))
 // Lightweight fallback — shown only during the initial chunk fetch.
 // Auth pages are tiny; the game chunk (Three.js + LiveKit + WASM) is large
 // but only fetched after the user is authenticated.
+/** Lightweight fallback shown while lazy page chunks are loading. */
 function PageLoader() {
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#0a0a0a', color: '#fff', fontFamily: 'sans-serif' }}>
@@ -20,6 +21,7 @@ function PageLoader() {
   )
 }
 
+/** Application router shell with auth provider and protected game route. */
 export default function App() {
   return (
     <BrowserRouter>

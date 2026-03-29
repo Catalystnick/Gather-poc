@@ -6,6 +6,7 @@ interface Props {
   style?: React.CSSProperties
 }
 
+/** Reusable styled HUD container for fixed-position overlay widgets. */
 export default function HUDPanel({ children, style }: Props) {
   return (
     <div style={{ ...panelBase, ...style }}>

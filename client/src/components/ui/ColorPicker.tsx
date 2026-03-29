@@ -12,19 +12,20 @@ interface Props {
   colors?: string[]
 }
 
+/** Select a color from a fixed swatch palette. */
 export default function ColorPicker({ value, onChange, colors = DEFAULT_PALETTE }: Props) {
   return (
     <div style={styles.grid}>
-      {colors.map((c) => (
+      {colors.map((color) => (
         <button
-          key={c}
+          key={color}
           type="button"
-          onClick={() => onChange(c)}
+          onClick={() => onChange(color)}
           style={{
             ...styles.swatch,
-            background: c,
-            boxShadow: value === c ? `0 0 0 2px #1a1a1a, 0 0 0 4px ${c}` : 'none',
-            transform: value === c ? 'scale(1.08)' : 'scale(1)',
+            background: color,
+            boxShadow: value === color ? `0 0 0 2px #1a1a1a, 0 0 0 4px ${color}` : 'none',
+            transform: value === color ? 'scale(1.08)' : 'scale(1)',
           }}
         />
       ))}

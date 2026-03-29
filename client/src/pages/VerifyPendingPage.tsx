@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext'
 
 const RESEND_COOLDOWN = 60 // seconds
 
+/** Post-signup holding page for email verification + resend flow. */
 export default function VerifyPendingPage() {
   const { isAuthenticated, resendVerification, user } = useAuth()
   const navigate  = useNavigate()
@@ -24,18 +25,18 @@ export default function VerifyPendingPage() {
   // Count down the resend cooldown
   useEffect(() => {
     if (cooldown <= 0) return
-    const id = setTimeout(() => setCooldown(c => c - 1), 1000)
-    return () => clearTimeout(id)
+    const timeoutId = setTimeout(() => setCooldown(prevCooldown => prevCooldown - 1), 1000)
+    return () => clearTimeout(timeoutId)
   }, [cooldown])
 
   const handleResend = useCallback(async () => {
     if (!email || cooldown > 0 || isSending) return
     setMessage(null)
     setIsSending(true)
-    const err = await resendVerification(email)
+    const resendError = await resendVerification(email)
     setIsSending(false)
-    if (err) {
-      setMessage(err.message)
+    if (resendError) {
+      setMessage(resendError.message)
     } else {
       setMessage('Verification email sent.')
       setCooldown(RESEND_COOLDOWN)

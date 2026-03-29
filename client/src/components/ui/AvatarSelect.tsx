@@ -4,30 +4,32 @@ import type { Player } from "../../types";
 
 /** Preview sprite display size (px). */
 const SPRITE_DISPLAY = 140;
-/** Sheet constants — must match AvatarMesh. */
+/** Sprite sheet layout — must match the player sprite sheet. */
 const SHEET_COLS = 8;
 const SHEET_ROWS = 12;
 
 /** Dominant hue of the shirt layer (used for CSS hue-rotate preview). */
 const SHIRT_BASE_HUE = 0; // ShirtRed.png is red ~0°
 
+/** Convert hex color to hue degrees for CSS hue-rotate preview tinting. */
 function hexToHue(hex: string): number {
-  const r = parseInt(hex.slice(1, 3), 16) / 255;
-  const g = parseInt(hex.slice(3, 5), 16) / 255;
-  const b = parseInt(hex.slice(5, 7), 16) / 255;
-  const max = Math.max(r, g, b),
-    min = Math.min(r, g, b);
-  if (max === min) return 0;
-  const d = max - min;
-  let h = 0;
-  if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
-  else if (max === g) h = ((b - r) / d + 2) / 6;
-  else h = ((r - g) / d + 4) / 6;
-  return Math.round(h * 360);
+  const red = parseInt(hex.slice(1, 3), 16) / 255;
+  const green = parseInt(hex.slice(3, 5), 16) / 255;
+  const blue = parseInt(hex.slice(5, 7), 16) / 255;
+  const maxChannel = Math.max(red, green, blue);
+  const minChannel = Math.min(red, green, blue);
+  if (maxChannel === minChannel) return 0;
+  const delta = maxChannel - minChannel;
+  let hue = 0;
+  if (maxChannel === red) hue = ((green - blue) / delta + (green < blue ? 6 : 0)) / 6;
+  else if (maxChannel === green) hue = ((blue - red) / delta + 2) / 6;
+  else hue = ((red - green) / delta + 4) / 6;
+  return Math.round(hue * 360);
 }
 
 const bgSize = `${SPRITE_DISPLAY * SHEET_COLS}px ${SPRITE_DISPLAY * SHEET_ROWS}px`;
 
+/** Build one layered sprite plane for the avatar preview stack. */
 function spriteLayer(url: string, filter?: string): React.CSSProperties {
   return {
     display: "block",
@@ -41,6 +43,7 @@ function spriteLayer(url: string, filter?: string): React.CSSProperties {
   };
 }
 
+/** Render avatar preview by stacking base/shoes/shirt textures. */
 function CharacterPreview({ shirt }: { shirt: string }) {
   const shirtFilter = `hue-rotate(${hexToHue(shirt) - SHIRT_BASE_HUE}deg) saturate(1.15)`;
 
@@ -74,12 +77,14 @@ interface Props {
   onJoin: (player: Player) => void;
 }
 
+/** Avatar selection form shown before entering the world. */
 export default function AvatarSelect({ initial, onJoin }: Props) {
   const [name, setName] = useState(initial?.name ?? "");
   const [shirt, setShirt] = useState(initial?.avatar.shirt ?? "#3498db");
 
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  /** Validate profile form and emit selected avatar payload. */
+  function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
     if (!name.trim()) return;
     onJoin({ name: name.trim(), avatar: { shirt } });
   }
@@ -98,7 +103,7 @@ export default function AvatarSelect({ initial, onJoin }: Props) {
               <CharacterPreview shirt={shirt} />
             </div>
             <p style={styles.label}>Your Name</p>
-            <input style={styles.input} value={name} onChange={(e) => setName(e.target.value)} placeholder="Enter your name" maxLength={24} autoFocus />
+            <input style={styles.input} value={name} onChange={(event) => setName(event.target.value)} placeholder="Enter your name" maxLength={24} autoFocus />
           </div>
 
           {/* ── Right — colours + join ── */}

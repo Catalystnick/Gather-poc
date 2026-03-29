@@ -11,6 +11,7 @@ interface Props {
   proximityRoomReady?: boolean
 }
 
+/** Show live game-server and voice connectivity diagnostics in the HUD. */
 export default function ServerStatusPanel({
   socketStatus,
   socketId,

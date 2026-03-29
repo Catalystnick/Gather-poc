@@ -23,6 +23,7 @@ import {
   type RemoteParticipant, type RemoteTrackPublication, type RemoteAudioTrack,
 } from 'livekit-client'
 import { getZoneKey } from '../utils/zoneDetection'
+import { tileToWorld } from '../utils/gridHelpers'
 import {
   ROOM_NAME, ZONE_ROOM_PREFIX,
   type CachedToken, type TokenIntent,
@@ -67,36 +68,45 @@ interface ZoneEntry {
 
 // ─── Storage loaders ──────────────────────────────────────────────────────────
 
+/** Load persisted remote voice gain from local storage. */
 function loadRemoteGain(): number {
   try {
     const raw = localStorage.getItem(GAIN_STORAGE_KEY)
     if (raw === null) return 1
-    const v = Number(raw)
-    if (Number.isNaN(v)) return 1
-    return Math.min(1, Math.max(0, v))
+    const parsedValue = Number(raw)
+    if (Number.isNaN(parsedValue)) return 1
+    return Math.min(1, Math.max(0, parsedValue))
   } catch { return 1 }
 }
 
+/** Load persisted distance rolloff exponent for proximity attenuation. */
 function loadRolloff(): number {
   try {
-    const v = Number(localStorage.getItem(ROLLOFF_STORAGE_KEY))
-    return Number.isNaN(v) ? DEFAULT_ROLLOFF : Math.max(0.1, v)
+    const parsedValue = Number(localStorage.getItem(ROLLOFF_STORAGE_KEY))
+    return Number.isNaN(parsedValue) ? DEFAULT_ROLLOFF : Math.max(0.1, parsedValue)
   } catch { return DEFAULT_ROLLOFF }
 }
 
+/** Load persisted playback boost multiplier for remote audio. */
 function loadPlaybackBoost(): number {
   try {
-    const v = Number(localStorage.getItem(PLAYBACK_BOOST_STORAGE_KEY))
-    if (Number.isNaN(v)) return DEFAULT_PLAYBACK_BOOST
-    return Math.min(MAX_PLAYBACK_BOOST, Math.max(MIN_PLAYBACK_BOOST, v))
+    const parsedValue = Number(localStorage.getItem(PLAYBACK_BOOST_STORAGE_KEY))
+    if (Number.isNaN(parsedValue)) return DEFAULT_PLAYBACK_BOOST
+    return Math.min(MAX_PLAYBACK_BOOST, Math.max(MIN_PLAYBACK_BOOST, parsedValue))
   } catch { return DEFAULT_PLAYBACK_BOOST }
 }
 
-function dist3(
-  a: { x: number; y: number; z: number },
-  b: { x: number; y: number; z: number },
+/** Euclidean distance between two world-space points. */
+function dist2(
+  a: { x: number; y: number },
+  b: { x: number; y: number },
 ): number {
-  return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2)
+  return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2)
+}
+
+/** Convert a remote player's tile position into world-space coordinates. */
+function playerPos(remotePlayer: RemotePlayer): { x: number; y: number } {
+  return tileToWorld(remotePlayer.col, remotePlayer.row)
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -108,7 +118,9 @@ export function useVoice(
   mic: MicTrack,
   accessToken: string,
   userId: string,
+  zones: import('../types/mapTypes').Zone[],
 ): VoiceState {
+  /** Central voice coordinator: manages proximity room, zone room, and audio state syncing. */
 
   // ── React state ────────────────────────────────────────────────────────────
   const [speakingPeers,       setSpeakingPeers]       = useState<Set<string>>(new Set())
@@ -164,16 +176,21 @@ export function useVoice(
 
   // ── Sync helpers ───────────────────────────────────────────────────────────
 
-  function syncMode(m: VoiceMode) {
-    console.log('[voice] mode:', modeRef.current, '→', m)
-    modeRef.current = m; setMode(m)
+  /** Keep mode in both ref and React state for sync across async transitions. */
+  function syncMode(nextMode: VoiceMode) {
+    console.log('[voice] mode:', modeRef.current, '->', nextMode)
+    modeRef.current = nextMode
+    setMode(nextMode)
   }
 
-  function syncZoneKey(k: string | null) {
-    console.log('[voice] activeZoneKey:', activeZoneKeyRef.current, '→', k)
-    activeZoneKeyRef.current = k; setActiveZoneKey(k)
+  /** Keep active zone key in both ref and React state for stable interval reads. */
+  function syncZoneKey(nextZoneKey: string | null) {
+    console.log('[voice] activeZoneKey:', activeZoneKeyRef.current, '->', nextZoneKey)
+    activeZoneKeyRef.current = nextZoneKey
+    setActiveZoneKey(nextZoneKey)
   }
 
+  /** Track connection-state badges for HUD diagnostics. */
   function setPeerState(identity: string, state: string | null) {
     setPeerConnectionStates(prev => {
       const next = { ...prev }
@@ -189,8 +206,8 @@ export function useVoice(
    */
   async function safeUnpublishUserMicTrack(room: Room, track: LocalAudioTrack) {
     const pubs = [...room.localParticipant.trackPublications.values()]
-    const pub = pubs.find(p => p.track === track || (track.sid && p.trackSid === track.sid))
-    if (!pub) {
+    const publication = pubs.find(trackPublication => trackPublication.track === track || (track.sid && trackPublication.trackSid === track.sid))
+    if (!publication) {
       try { await track.stopProcessor() } catch { /* ignore */ }
       return
     }
@@ -208,50 +225,57 @@ export function useVoice(
 
   // ── Proximity entry cleanup ────────────────────────────────────────────────
 
+  /** Tear down one proximity audio subscription and its attached DOM audio node. */
   function cleanupProximityEntry(identity: string) {
-    const e = proximityEntries.current.get(identity)
-    if (!e) return
-    e.gainNode?.disconnect()
-    e.track.detach().forEach(el => el.remove())
-    e.audio.remove()
+    const entry = proximityEntries.current.get(identity)
+    if (!entry) return
+    entry.gainNode?.disconnect()
+    entry.track.detach().forEach(audioElement => audioElement.remove())
+    entry.audio.remove()
     proximityEntries.current.delete(identity)
     subscribedIds.current.delete(identity)
   }
 
+  /** Tear down all proximity audio subscriptions. */
   function cleanupAllProximity() {
     ;[...proximityEntries.current.keys()].forEach(cleanupProximityEntry)
   }
 
   // ── Zone entry cleanup ─────────────────────────────────────────────────────
 
+  /** Tear down one zone-room audio subscription and its attached DOM audio node. */
   function cleanupZoneEntry(identity: string) {
-    const e = zoneEntries.current.get(identity)
-    if (!e) return
-    e.track.detach().forEach(el => el.remove())
-    e.audio.remove()
+    const entry = zoneEntries.current.get(identity)
+    if (!entry) return
+    entry.track.detach().forEach(audioElement => audioElement.remove())
+    entry.audio.remove()
     zoneEntries.current.delete(identity)
   }
 
+  /** Tear down all zone-room subscriptions. */
   function cleanupAllZone() {
     ;[...zoneEntries.current.keys()].forEach(cleanupZoneEntry)
   }
 
   // ── Token cache helpers ────────────────────────────────────────────────────
 
+  /** Read a still-valid cached token for the requested zone room intent. */
   function getCachedToken(zoneKey: string, intent: TokenIntent): CachedToken | null {
-    const c = tokenCacheRef.current[zoneKey]
-    if (!c || c.intent !== intent || !tokenIsValid(c)) {
-      if (c) delete tokenCacheRef.current[zoneKey]
+    const cachedToken = tokenCacheRef.current[zoneKey]
+    if (!cachedToken || cachedToken.intent !== intent || !tokenIsValid(cachedToken)) {
+      if (cachedToken) delete tokenCacheRef.current[zoneKey]
       return null
     }
-    return c
+    return cachedToken
   }
 
+  /** Return remaining cooldown before we can retry zone token fetches. */
   function getZoneTokenCooldownMs(zoneKey: string): number {
     const blockedUntil = zoneTokenBlockedUntilRef.current[zoneKey] ?? 0
     return Math.max(0, blockedUntil - Date.now())
   }
 
+  /** Fetch and cache a zone token with backoff handling for transient failures/rate limits. */
   async function fetchZoneToken(identity: string, zoneKey: string, intent: TokenIntent): Promise<CachedToken | null> {
     const cooldownMs = getZoneTokenCooldownMs(zoneKey)
     if (cooldownMs > 0) {
@@ -288,6 +312,7 @@ export function useVoice(
 
   // ── Zone room transition ───────────────────────────────────────────────────
 
+  /** Execute zone-room enter/exit transition while guarding against stale async completions. */
   async function transitionToZone(identity: string, targetKey: string | null) {
     const myGen = ++generationRef.current
     const cancelled = () => generationRef.current !== myGen
@@ -509,7 +534,7 @@ export function useVoice(
           if (activeZoneKeyRef.current !== null) return
           const player = remotePlayersRef.current.get(participant.identity)
           if (!player || player.zoneKey !== null) return
-          if (dist3(localPositionRef.current, player.position) < CONNECT_RANGE) {
+          if (dist2(localPositionRef.current, playerPos(player)) < CONNECT_RANGE) {
             publication.setSubscribed(true)
             subscribedIds.current.add(participant.identity)
           }
@@ -565,7 +590,7 @@ export function useVoice(
         for (const participant of room.remoteParticipants.values()) {
           const player = remotePlayersRef.current.get(participant.identity)
           if (!player || player.zoneKey !== null || activeZoneKeyRef.current !== null) continue
-          if (dist3(localPositionRef.current, player.position) < DISCONNECT_RANGE) {
+          if (dist2(localPositionRef.current, playerPos(player)) < DISCONNECT_RANGE) {
             for (const pub of participant.trackPublications.values()) {
               if (pub.kind === Track.Kind.Audio && !pub.isSubscribed) {
                 (pub as RemoteTrackPublication).setSubscribed(true)
@@ -589,18 +614,18 @@ export function useVoice(
       const clone = proximityPublishedCloneRef.current
       proximityPublishedCloneRef.current = null
       if (clone) mic.removePublishedClone(clone)
-      const r = room
+      const roomToCleanup = room
       proximityRoomRef.current = null
       cleanupAllProximity()
       subscribedIds.current.clear()
       void (async () => {
         try {
-          if (r && localTrackCleanup) {
-            await safeUnpublishUserMicTrack(r, localTrackCleanup)
+          if (roomToCleanup && localTrackCleanup) {
+            await safeUnpublishUserMicTrack(roomToCleanup, localTrackCleanup)
           } else if (localTrackCleanup) {
             try { await localTrackCleanup.stopProcessor() } catch { /* ignore */ }
           }
-          if (r) await r.disconnect(false).catch(() => {})
+          if (roomToCleanup) await roomToCleanup.disconnect(false).catch(() => {})
         } catch { /* ignore */ }
       })()
     }
@@ -614,8 +639,8 @@ export function useVoice(
     console.log('[voice] zone detector started | identity:', identity)
 
     const id = setInterval(() => {
-      const { x, z } = localPositionRef.current
-      const detected = getZoneKey(x, z)
+      const { x, y } = localPositionRef.current
+      const detected = getZoneKey(x, y, zones)
 
       // Zone speaking detection (runs regardless of debounce/transition state)
       if (modeRef.current === 'zone' && zoneRoomRef.current) {
@@ -629,7 +654,7 @@ export function useVoice(
       // Debounce zone boundary detection (entry/exit only from actual zone state).
       if (detected !== pendingZoneRef.current) {
         if (detected !== activeZoneKeyRef.current) {
-          console.log('[voice] zone boundary crossed | detected:', detected, '| pos:', x.toFixed(1), z.toFixed(1))
+          console.log('[voice] zone boundary crossed | detected:', detected, '| pos:', x.toFixed(1), y.toFixed(1))
         }
         pendingZoneRef.current = detected
         debounceTicksRef.current = 0
@@ -696,8 +721,8 @@ export function useVoice(
       // Unsubscribe out-of-range or zoned peers
       for (const identity of subscribedIds.current) {
         const player = remote.get(identity)
-        const d = player ? dist3(local, player.position) : Infinity
-        if (!player || d > DISCONNECT_RANGE || player.zoneKey !== null || activeZoneKeyRef.current !== null) {
+        const distanceToLocal = player ? dist2(local, playerPos(player)) : Infinity
+        if (!player || distanceToLocal > DISCONNECT_RANGE || player.zoneKey !== null || activeZoneKeyRef.current !== null) {
           const participant = room.remoteParticipants.get(identity)
           if (participant) {
             for (const pub of participant.trackPublications.values()) {
@@ -716,20 +741,20 @@ export function useVoice(
       }
 
       const candidates = [...remote.entries()]
-        .filter(([, p]) => p.zoneKey === null)
-        .map(([id, p]) => ({ id, player: p, dist: dist3(local, p.position) }))
-        .filter(e => e.dist < DISCONNECT_RANGE)
-        .sort((a, b) => a.dist - b.dist)
-      const preferred = new Set(candidates.slice(0, MAX_ACTIVE_PEERS).map(e => e.id))
+        .filter(([, remotePlayer]) => remotePlayer.zoneKey === null)
+        .map(([id, remotePlayer]) => ({ id, player: remotePlayer, dist: dist2(local, playerPos(remotePlayer)) }))
+        .filter(candidate => candidate.dist < DISCONNECT_RANGE)
+        .sort((leftCandidate, rightCandidate) => leftCandidate.dist - rightCandidate.dist)
+      const preferred = new Set(candidates.slice(0, MAX_ACTIVE_PEERS).map(candidate => candidate.id))
 
       const nextSpeaking = new Set<string>()
 
       remote.forEach((player, id) => {
         if (player.zoneKey !== null) return
-        const d = dist3(local, player.position)
+        const distanceToLocal = dist2(local, playerPos(player))
         const subscribed = subscribedIds.current.has(id)
 
-        if (d < CONNECT_RANGE && preferred.has(id) && !subscribed) {
+        if (distanceToLocal < CONNECT_RANGE && preferred.has(id) && !subscribed) {
           const participant = room.remoteParticipants.get(id)
           if (participant) {
             for (const pub of participant.trackPublications.values()) {
@@ -749,7 +774,7 @@ export function useVoice(
         } else if (subscribed) {
           const entry = proximityEntries.current.get(id)
           if (!entry || !ctx) return
-          const normalised   = Math.min(1, Math.max(0, d / DISCONNECT_RANGE))
+          const normalised   = Math.min(1, Math.max(0, distanceToLocal / DISCONNECT_RANGE))
           const distFactor   = 1 - normalised ** rolloffRef.current
           const target = Math.min(
             MAX_LINEAR_PLAYBACK,
@@ -800,12 +825,14 @@ export function useVoice(
 
   // ── Remote gain setter ─────────────────────────────────────────────────────
 
+  /** Persist and apply remote gain slider changes. */
   function setRemoteGain(value: number) {
     const next = Math.min(1, Math.max(0, value))
     setRemoteGainState(next)
     try { localStorage.setItem(GAIN_STORAGE_KEY, String(next)) } catch { /* ignore */ }
   }
 
+  /** Persist and apply playback boost slider changes. */
   function setPlaybackBoost(value: number) {
     const next = Math.min(MAX_PLAYBACK_BOOST, Math.max(MIN_PLAYBACK_BOOST, value))
     setPlaybackBoostState(next)
@@ -834,3 +861,4 @@ export function useVoice(
     proximityRoomReady,
   }
 }
+

@@ -4,9 +4,9 @@ import type { ChatMessage } from '../types'
 
 const MAX_MESSAGES = 200
 
+/** Subscribe to chat stream and expose send helper + bounded message history. */
 export function useChat(socket: Socket | null) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
-  const [bubbles, setBubbles] = useState<Map<string, string>>(new Map())
 
   useEffect(() => {
     if (!socket) return
@@ -16,15 +16,6 @@ export function useChat(socket: Socket | null) {
         const next = [...prev, msg]
         return next.length > MAX_MESSAGES ? next.slice(-MAX_MESSAGES) : next
       })
-
-      setBubbles(prev => new Map(prev).set(msg.id, msg.text))
-      setTimeout(() => {
-        setBubbles(prev => {
-          const next = new Map(prev)
-          next.delete(msg.id)
-          return next
-        })
-      }, 5000)
     })
 
     return () => { socket.off('chat:message') }
@@ -35,5 +26,5 @@ export function useChat(socket: Socket | null) {
     socket?.emit('chat:message', { text })
   }, [socket])
 
-  return { messages, bubbles, sendMessage }
+  return { messages, sendMessage }
 }

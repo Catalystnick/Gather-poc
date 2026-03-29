@@ -12,6 +12,7 @@ interface Props {
   rows: ConnectionRow[]
 }
 
+/** Display per-peer voice link status from this client's perspective. */
 export default function VoiceConnectionsPanel({ rows }: Props) {
   return (
     <HUDPanel style={styles.position}>
@@ -36,6 +37,7 @@ interface ConnectionStatusProps {
   speaking: boolean
 }
 
+/** Render a compact connection-state label with semantic color coding. */
 function ConnectionStatus({ state, connected, speaking }: ConnectionStatusProps) {
   const color =
     state === 'connected' || connected ? '#2ecc71'
