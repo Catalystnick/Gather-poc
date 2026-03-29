@@ -1,11 +1,19 @@
 import Phaser from "phaser";
-import type { LdtkEntityInstance } from "../../../types/mapTypes";
+import type { LdtkEntityInstance } from "../../../../types/mapTypes";
 import {
   GRAVE_DISCOVER_RANGE_PX,
   GRAVE_READ_RANGE_PX,
-  TILE_PX,
 } from "./constants";
-import { getEntityCenter } from "./entityPlacement";
+import { TILE_PX } from "../../../engine/constants";
+import { getEntityCenter } from "../../../engine/entityPlacement";
+import {
+  createBottomPrompt,
+  createCloseHit,
+  positionBottomPrompt,
+  positionCenteredPanel,
+  wirePanelCornerClose,
+} from "../../../engine/interactionUi";
+import { findNearestPoint, getEntityStringField } from "../../../engine/interactionUtils";
 import type { GraveNote } from "./types";
 
 interface ControllerOptions {
@@ -37,9 +45,10 @@ export class GraveInteractionController {
 
   /** Register gravestone text payloads from LDtk entities. */
   registerGravestone(entity: LdtkEntityInstance) {
-    if (entity.__identifier !== "Gravestone") return;
-    const headline = this.getEntityText(entity, "Grave_Text");
-    const subline = this.getEntityText(entity, "text");
+    const headline = getEntityStringField(entity, "Grave_Text");
+    const subline = getEntityStringField(entity, "text");
+    const isGraveLike = /grave/i.test(entity.__identifier) || !!headline;
+    if (!isGraveLike) return;
     if (!headline && !subline) return;
     const center = getEntityCenter(entity);
 
@@ -115,13 +124,6 @@ export class GraveInteractionController {
     }
   }
 
-  private getEntityText(entity: LdtkEntityInstance, key: string): string {
-    const textField = entity.fieldInstances.find(
-      (fieldInstance) => fieldInstance.__identifier === key,
-    );
-    return typeof textField?.__value === "string" ? textField.__value.trim() : "";
-  }
-
   private createGravePanel(cameraZoom: number) {
     const panelW = 360;
     const panelH = 150;
@@ -195,34 +197,17 @@ export class GraveInteractionController {
       .setScrollFactor(0)
       .setScale(1 / cameraZoom)
       .setVisible(false);
-    this.gravePanel.setSize(panelW, panelH);
-    this.gravePanel.setInteractive(
-      new Phaser.Geom.Rectangle(-panelW / 2, -panelH / 2, panelW, panelH),
-      Phaser.Geom.Rectangle.Contains,
-    );
-    this.gravePanel.on(
-      "pointerdown",
-      (_pointer: Phaser.Input.Pointer, localX: number, localY: number) => {
-        if (
-          localX >= panelW / 2 - 38 &&
-          localX <= panelW / 2 - 2 &&
-          localY >= -panelH / 2 + 2 &&
-          localY <= -panelH / 2 + 38
-        ) {
-          this.hideGravePanel();
-        }
-      },
-    );
+    wirePanelCornerClose({
+      panel: this.gravePanel,
+      panelWidth: panelW,
+      panelHeight: panelH,
+      onClose: () => this.hideGravePanel(),
+    });
 
-    this.graveCloseHit = this.scene.add
-      .circle(0, 0, 18, 0x000000, 0.001)
-      .setDepth(50_010)
-      .setScrollFactor(0)
-      .setScale(1 / cameraZoom)
-      .setInteractive({ useHandCursor: true })
-      .setVisible(false);
-    this.graveCloseHit.on("pointerdown", () => {
-      this.hideGravePanel();
+    this.graveCloseHit = createCloseHit(this.scene, {
+      cameraZoom,
+      depth: 50_010,
+      onClose: () => this.hideGravePanel(),
     });
 
     this.gravePanelTitle = title;
@@ -230,20 +215,17 @@ export class GraveInteractionController {
   }
 
   private createGravePrompt(cameraZoom: number) {
-    this.gravePrompt = this.scene.add
-      .text(0, 0, "Press E to read", {
+    this.gravePrompt = createBottomPrompt(this.scene, {
+      cameraZoom,
+      text: "Press E to read",
+      style: {
         fontFamily: "Verdana, Arial, sans-serif",
         fontSize: "15px",
         color: "#fef3c7",
         backgroundColor: "#0f172a",
         padding: { left: 12, right: 12, top: 7, bottom: 7 },
-      })
-      .setOrigin(0.5, 0.5)
-      .setDepth(49_999)
-      .setScrollFactor(0)
-      .setScale(1 / cameraZoom)
-      .setStroke("#111827", 4)
-      .setVisible(false);
+      },
+    }).setStroke("#111827", 4);
   }
 
   private createGraveWorldHint() {
@@ -285,21 +267,17 @@ export class GraveInteractionController {
   }
 
   private positionGravePrompt() {
-    const viewportWidth = this.scene.scale.width;
-    const viewportHeight = this.scene.scale.height;
-    this.gravePrompt.setPosition(viewportWidth / 2, viewportHeight - 210);
+    positionBottomPrompt(this.scene, this.gravePrompt, 210);
   }
 
   private positionGravePanel() {
-    const viewportWidth = this.scene.scale.width;
-    const viewportHeight = this.scene.scale.height;
-    const panelX = viewportWidth / 2;
-    const panelY = viewportHeight / 2;
-    this.gravePanel.setPosition(panelX, panelY);
-    if (this.graveCloseHit) {
-      const scale = this.gravePanel.scaleX;
-      this.graveCloseHit.setPosition(panelX + 162 * scale, panelY - 57 * scale);
-    }
+    positionCenteredPanel(
+      this.scene,
+      this.gravePanel,
+      this.graveCloseHit,
+      162,
+      -57,
+    );
   }
 
   private findNearbyGravestone(): GraveNote | null {
@@ -315,27 +293,14 @@ export class GraveInteractionController {
     wx: number;
     wy: number;
   } | null {
-    let nearest: GraveNote | null = null;
-    let nearestSq = Number.POSITIVE_INFINITY;
-    let nearestWx = 0;
-    let nearestWy = 0;
-    const playerPosition = this.getPlayerWorldPosition();
-
-    for (const note of this.graveNotes) {
-      const dx = note.x - playerPosition.x;
-      const dy = note.y - playerPosition.y;
-      const noteSq = dx * dx + dy * dy;
-      if (noteSq < nearestSq) {
-        nearestSq = noteSq;
-        nearest = note;
-        nearestWx = note.x;
-        nearestWy = note.y;
-      }
-    }
-
-    return nearest
-      ? { note: nearest, sq: nearestSq, wx: nearestWx, wy: nearestWy }
-      : null;
+    const nearest = findNearestPoint(this.graveNotes, this.getPlayerWorldPosition());
+    if (!nearest) return null;
+    return {
+      note: nearest.item,
+      sq: nearest.sq,
+      wx: nearest.item.x,
+      wy: nearest.item.y,
+    };
   }
 
   private showGravePanel(note: GraveNote) {

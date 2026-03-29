@@ -103,6 +103,7 @@ export interface Zone {
 export interface LdtkMapData {
   level: LdtkLevel
   tilesetDefs: Map<number, LdtkTilesetDef>
+  tilesetTextureKeys: Map<number, string>
   /** Flat IntGrid CSV, row-major order. 1 = blocked, 0 = walkable. */
   collisionCsv: number[]
   gridWidth: number

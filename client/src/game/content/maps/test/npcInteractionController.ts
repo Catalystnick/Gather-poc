@@ -1,7 +1,16 @@
 import Phaser from "phaser";
-import type { LdtkEntityInstance } from "../../../types/mapTypes";
-import { NPC_DISCOVER_RANGE_PX, NPC_TALK_RANGE_PX, TILE_PX } from "./constants";
-import { getEntityCenter, getEntityTopLeft } from "./entityPlacement";
+import type { LdtkEntityInstance } from "../../../../types/mapTypes";
+import { NPC_DISCOVER_RANGE_PX, NPC_TALK_RANGE_PX } from "./constants";
+import { TILE_PX } from "../../../engine/constants";
+import { getEntityCenter, getEntityTopLeft } from "../../../engine/entityPlacement";
+import {
+  createBottomPrompt,
+  createCloseHit,
+  positionBottomPrompt,
+  positionCenteredPanel,
+  wirePanelCornerClose,
+} from "../../../engine/interactionUi";
+import { findNearestPoint, getFirstEntityStringField } from "../../../engine/interactionUtils";
 import type { TraderNote } from "./types";
 
 // Tune these two values to move the NPC exclamation/E bubble.
@@ -11,7 +20,6 @@ const NPC_HINT_OFFSET_Y_PX = -TILE_PX * 0.65;
 interface ControllerOptions {
   scene: Phaser.Scene;
   getPlayerWorldPosition: () => { x: number; y: number };
-  getLevelWorldOffset: () => { worldX: number; worldY: number };
   onPanelOpen?: (traderIid: string) => void;
   onPanelClose?: () => void;
 }
@@ -45,11 +53,12 @@ export class NpcInteractionController {
   registerTrader(entity: LdtkEntityInstance) {
     const isNpcLike = /(trader|merchant|npc)/i.test(entity.__identifier);
     if (!isNpcLike) return;
-    const welcome =
-      this.getEntityText(entity, "Welcome") ||
-      this.getEntityText(entity, "welcome") ||
-      this.getEntityText(entity, "String") ||
-      this.getEntityText(entity, "text");
+    const welcome = getFirstEntityStringField(entity, [
+      "Welcome",
+      "welcome",
+      "String",
+      "text",
+    ]);
     if (!welcome) return;
     const center = getEntityCenter(entity);
     const drawnBounds = this.getNpcDrawBounds(entity);
@@ -168,28 +177,18 @@ export class NpcInteractionController {
     }
   }
 
-  private getEntityText(entity: LdtkEntityInstance, key: string): string {
-    const field = entity.fieldInstances.find(
-      (fieldInstance) => fieldInstance.__identifier === key,
-    );
-    return typeof field?.__value === "string" ? field.__value.trim() : "";
-  }
-
   private createTalkPrompt(cameraZoom: number) {
-    this.talkPrompt = this.scene.add
-      .text(0, 0, "Press E to talk", {
+    this.talkPrompt = createBottomPrompt(this.scene, {
+      cameraZoom,
+      text: "Press E to talk",
+      style: {
         fontFamily: "Verdana, Arial, sans-serif",
         fontSize: "15px",
         color: "#fff7d6",
         backgroundColor: "#1f2937",
         padding: { left: 12, right: 12, top: 7, bottom: 7 },
-      })
-      .setOrigin(0.5, 0.5)
-      .setDepth(49_999)
-      .setScrollFactor(0)
-      .setScale(1 / cameraZoom)
-      .setStroke("#111827", 4)
-      .setVisible(false);
+      },
+    }).setStroke("#111827", 4);
   }
 
   private createWorldHint() {
@@ -296,34 +295,17 @@ export class NpcInteractionController {
       .setScrollFactor(0)
       .setScale(1 / cameraZoom)
       .setVisible(false);
-    this.talkPanel.setSize(panelW, panelH);
-    this.talkPanel.setInteractive(
-      new Phaser.Geom.Rectangle(-panelW / 2, -panelH / 2, panelW, panelH),
-      Phaser.Geom.Rectangle.Contains,
-    );
-    this.talkPanel.on(
-      "pointerdown",
-      (_pointer: Phaser.Input.Pointer, localX: number, localY: number) => {
-        if (
-          localX >= panelW / 2 - 38 &&
-          localX <= panelW / 2 - 2 &&
-          localY >= -panelH / 2 + 2 &&
-          localY <= -panelH / 2 + 38
-        ) {
-          this.hideTalkPanel();
-        }
-      },
-    );
+    wirePanelCornerClose({
+      panel: this.talkPanel,
+      panelWidth: panelW,
+      panelHeight: panelH,
+      onClose: () => this.hideTalkPanel(),
+    });
 
-    this.talkCloseHit = this.scene.add
-      .circle(0, 0, 18, 0x000000, 0.001)
-      .setDepth(50_110)
-      .setScrollFactor(0)
-      .setScale(1 / cameraZoom)
-      .setInteractive({ useHandCursor: true })
-      .setVisible(false);
-    this.talkCloseHit.on("pointerdown", () => {
-      this.hideTalkPanel();
+    this.talkCloseHit = createCloseHit(this.scene, {
+      cameraZoom,
+      depth: 50_110,
+      onClose: () => this.hideTalkPanel(),
     });
 
     this.talkPanelTitle = title;
@@ -331,20 +313,17 @@ export class NpcInteractionController {
   }
 
   private positionTalkPrompt() {
-    this.talkPrompt.setPosition(
-      this.scene.scale.width / 2,
-      this.scene.scale.height - 210,
-    );
+    positionBottomPrompt(this.scene, this.talkPrompt, 210);
   }
 
   private positionTalkPanel() {
-    const panelX = this.scene.scale.width / 2;
-    const panelY = this.scene.scale.height / 2;
-    this.talkPanel.setPosition(panelX, panelY);
-    if (this.talkCloseHit) {
-      const scale = this.talkPanel.scaleX;
-      this.talkCloseHit.setPosition(panelX + 157 * scale, panelY - 60 * scale);
-    }
+    positionCenteredPanel(
+      this.scene,
+      this.talkPanel,
+      this.talkCloseHit,
+      157,
+      -60,
+    );
   }
 
   private findNearestTrader(): {
@@ -355,38 +334,16 @@ export class NpcInteractionController {
     hintWx: number;
     hintWy: number;
   } | null {
-    let nearest: TraderNote | null = null;
-    let nearestSq = Number.POSITIVE_INFINITY;
-    let nearestWx = 0;
-    let nearestWy = 0;
-    let nearestHintWx = 0;
-    let nearestHintWy = 0;
-    const playerPosition = this.getPlayerWorldPosition();
-
-    for (const trader of this.traders) {
-      const dx = trader.x - playerPosition.x;
-      const dy = trader.y - playerPosition.y;
-      const traderSq = dx * dx + dy * dy;
-      if (traderSq < nearestSq) {
-        nearestSq = traderSq;
-        nearest = trader;
-        nearestWx = trader.x;
-        nearestWy = trader.y;
-        nearestHintWx = trader.x + trader.hintOffsetX;
-        nearestHintWy = trader.y + trader.hintOffsetY;
-      }
-    }
-
-    return nearest
-      ? {
-          note: nearest,
-          sq: nearestSq,
-          wx: nearestWx,
-          wy: nearestWy,
-          hintWx: nearestHintWx,
-          hintWy: nearestHintWy,
-        }
-      : null;
+    const nearest = findNearestPoint(this.traders, this.getPlayerWorldPosition());
+    if (!nearest) return null;
+    return {
+      note: nearest.item,
+      sq: nearest.sq,
+      wx: nearest.item.x,
+      wy: nearest.item.y,
+      hintWx: nearest.item.x + nearest.item.hintOffsetX,
+      hintWy: nearest.item.y + nearest.item.hintOffsetY,
+    };
   }
 
   private showTalkPanel(note: TraderNote) {

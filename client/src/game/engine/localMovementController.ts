@@ -1,7 +1,7 @@
 import type Phaser from "phaser";
-import GameBridge, { type MoveState } from "../../GameBridge";
-import { getZoneKey } from "../../../utils/zoneDetection";
-import type { Direction } from "../../../types";
+import GameBridge, { type MoveState } from "../GameBridge";
+import { getZoneKey } from "../../utils/zoneDetection";
+import type { Direction } from "../../types";
 import {
   HOLD_DELAY,
   IDLE_FPS,

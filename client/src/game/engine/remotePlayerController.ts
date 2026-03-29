@@ -1,8 +1,8 @@
 import type Phaser from "phaser";
-import type { Direction, RemotePlayer } from "../../../types";
+import type { Direction, RemotePlayer } from "../../types";
 import { IDLE_FPS, IDLE_FRAMES, TILE_PX, TWEEN_DUR, WALK_FPS, WALK_FRAMES, tileCenter } from "./constants";
 import { makeAvatarLayers, makeMuteIcon, makeNameLabel, setAvatarFrame, shirtTint } from "./avatarVisualFactory";
-import type { RpObj } from "./types";
+import type { RemotePlayerObject } from "./types";
 
 interface RemotePlayerControllerOptions {
   scene: Phaser.Scene;
@@ -11,7 +11,7 @@ interface RemotePlayerControllerOptions {
 /** Manages remote player create/update/tween/animation/mute/depth lifecycle. */
 export class RemotePlayerController {
   private scene: Phaser.Scene;
-  private remoteObjects = new Map<string, RpObj>();
+  private remoteObjects = new Map<string, RemotePlayerObject>();
   private remoteSnapshots = new Map<string, { col: number; row: number; direction: Direction }>();
 
   constructor(options: RemotePlayerControllerOptions) {

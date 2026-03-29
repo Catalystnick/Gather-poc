@@ -138,10 +138,12 @@ io.use(requireAuthSocket)
 io.on('connection', (socket) => {
   console.log(`[connect] ${socket.userId}`)
 
-  socket.on('player:join', ({ name, avatar }, ack) => {
+  socket.on('player:join', (payload, ack) => {
+    const { name, avatar } = (payload && typeof payload === 'object') ? payload : {}
     const trimmed = typeof name === 'string' ? name.trim() : ''
     if (!trimmed || trimmed.length > 24 || !isValidAvatar(avatar)) {
       console.warn(`[join] invalid payload from ${socket.userId}`)
+      if (typeof ack === 'function') ack({ error: 'invalid_payload' })
       return
     }
     const spawn = randomSpawn()

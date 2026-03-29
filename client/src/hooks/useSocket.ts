@@ -51,11 +51,15 @@ export function useSocket(player: Player, accessToken: string) {
       socketClient.emit(
         'player:join',
         { name: playerRef.current.name, avatar: playerRef.current.avatar },
-        (ack?: { col?: unknown; row?: unknown }) => {
+        (ack?: { col?: unknown; row?: unknown; error?: unknown }) => {
+          if (ack?.error) {
+            console.error('[socket] player:join rejected by server:', ack.error)
+            return
+          }
           const col = typeof ack?.col === 'number' ? ack.col : null
           const row = typeof ack?.row === 'number' ? ack.row : null
           if (col === null || row === null) {
-            console.warn('[socket] player:join ack missing spawn payload')
+            console.warn('[socket] player:join ack missing spawn payload', ack)
             return
           }
           console.log('[socket] server spawn ack | col:', col, 'row:', row)

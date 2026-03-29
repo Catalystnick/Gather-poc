@@ -1,4 +1,4 @@
-import type { LdtkEntityInstance } from "../../../types/mapTypes";
+import type { LdtkEntityInstance } from "../../types/mapTypes";
 
 /** Reads LDtk pivot, defaulting to top-left when omitted. */
 function getPivot(entity: LdtkEntityInstance) {

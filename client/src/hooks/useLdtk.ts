@@ -3,6 +3,11 @@ import type { LdtkProject, LdtkMapData } from '../types/mapTypes';
 
 const GRID_SIZE = 16;
 
+/** Convert an LDtk tileset identifier into a stable Phaser texture key. */
+function tilesetTextureKey(identifier: string): string {
+  return `ts-${identifier.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+}
+
 /** Normalize LDtk zone entity names into stable zone keys (e.g. "Dev_zone_trigger" -> "dev"). */
 function zoneKey(identifier: string): string {
   // "Dev_zone_trigger" → "dev", "Game_Zone_Trigger" → "game"
@@ -23,6 +28,12 @@ function parse(raw: LdtkProject): LdtkMapData {
   const layers = level.layerInstances ?? [];
 
   const tilesetDefs = new Map(raw.defs.tilesets.map((tileset) => [tileset.uid, tileset]));
+  const tilesetTextureKeys = new Map(
+    raw.defs.tilesets.map((tileset) => [
+      tileset.uid,
+      tilesetTextureKey(tileset.identifier),
+    ]),
+  );
 
   const collisionLayer = layers.find((layer) => layer.__identifier === 'Collision_grid');
   const collisionCsv = collisionLayer?.intGridCsv ?? [];
@@ -54,6 +65,7 @@ function parse(raw: LdtkProject): LdtkMapData {
   return {
     level,
     tilesetDefs,
+    tilesetTextureKeys,
     collisionCsv,
     gridWidth,
     gridHeight,

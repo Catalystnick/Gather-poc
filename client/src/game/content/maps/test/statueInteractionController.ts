@@ -1,11 +1,19 @@
 import Phaser from "phaser";
-import type { LdtkEntityInstance } from "../../../types/mapTypes";
+import type { LdtkEntityInstance } from "../../../../types/mapTypes";
 import {
   STATUE_DISCOVER_RANGE_PX,
   STATUE_READ_RANGE_PX,
-  TILE_PX,
 } from "./constants";
-import { getEntityCenter } from "./entityPlacement";
+import { TILE_PX } from "../../../engine/constants";
+import { getEntityCenter } from "../../../engine/entityPlacement";
+import {
+  createBottomPrompt,
+  createCloseHit,
+  positionBottomPrompt,
+  positionCenteredPanel,
+  wirePanelCornerClose,
+} from "../../../engine/interactionUi";
+import { findNearestPoint, getFirstEntityStringField } from "../../../engine/interactionUtils";
 import type { StatueLore } from "./types";
 
 interface ControllerOptions {
@@ -39,11 +47,13 @@ export class StatueInteractionController {
 
   /** Register statue lore from LDtk field text. */
   registerStatue(entity: LdtkEntityInstance) {
-    if (entity.__identifier !== "Statue") return;
-    const text =
-      this.getEntityText(entity, "God_text") ||
-      this.getEntityText(entity, "god_text") ||
-      this.getEntityText(entity, "god text");
+    const text = getFirstEntityStringField(entity, [
+      "God_text",
+      "god_text",
+      "god text",
+    ]);
+    const isStatueLike = /statue/i.test(entity.__identifier) || !!text;
+    if (!isStatueLike) return;
     if (!text) return;
     const center = getEntityCenter(entity);
     this.statueLore.push({
@@ -122,30 +132,18 @@ export class StatueInteractionController {
     }
   }
 
-  private getEntityText(entity: LdtkEntityInstance, key: string): string {
-    const textField = entity.fieldInstances.find(
-      (fieldInstance) => fieldInstance.__identifier === key,
-    );
-    return typeof textField?.__value === "string"
-      ? textField.__value.trim()
-      : "";
-  }
-
   private createPrompt(cameraZoom: number) {
-    this.prompt = this.scene.add
-      .text(0, 0, "Press E to invoke", {
+    this.prompt = createBottomPrompt(this.scene, {
+      cameraZoom,
+      text: "Press E to invoke",
+      style: {
         fontFamily: "Verdana, Arial, sans-serif",
         fontSize: "15px",
         color: "#fef3c7",
         backgroundColor: "#120b1a",
         padding: { left: 12, right: 12, top: 7, bottom: 7 },
-      })
-      .setOrigin(0.5, 0.5)
-      .setDepth(49_999)
-      .setScrollFactor(0)
-      .setScale(1 / cameraZoom)
-      .setStroke("#09090b", 4)
-      .setVisible(false);
+      },
+    }).setStroke("#09090b", 4);
   }
 
   private createWorldHint() {
@@ -259,34 +257,17 @@ export class StatueInteractionController {
       .setScrollFactor(0)
       .setScale(1 / cameraZoom)
       .setVisible(false);
-    this.panel.setSize(panelW, panelH);
-    this.panel.setInteractive(
-      new Phaser.Geom.Rectangle(-panelW / 2, -panelH / 2, panelW, panelH),
-      Phaser.Geom.Rectangle.Contains,
-    );
-    this.panel.on(
-      "pointerdown",
-      (_pointer: Phaser.Input.Pointer, localX: number, localY: number) => {
-        if (
-          localX >= panelW / 2 - 39 &&
-          localX <= panelW / 2 - 3 &&
-          localY >= -panelH / 2 + 2 &&
-          localY <= -panelH / 2 + 39
-        ) {
-          this.hideLorePanel();
-        }
-      },
-    );
+    wirePanelCornerClose({
+      panel: this.panel,
+      panelWidth: panelW,
+      panelHeight: panelH,
+      onClose: () => this.hideLorePanel(),
+    });
 
-    this.closeHit = this.scene.add
-      .circle(0, 0, 18, 0x000000, 0.001)
-      .setDepth(50_310)
-      .setScrollFactor(0)
-      .setScale(1 / cameraZoom)
-      .setInteractive({ useHandCursor: true })
-      .setVisible(false);
-    this.closeHit.on("pointerdown", () => {
-      this.hideLorePanel();
+    this.closeHit = createCloseHit(this.scene, {
+      cameraZoom,
+      depth: 50_310,
+      onClose: () => this.hideLorePanel(),
     });
 
     this.panelTitle = title;
@@ -294,20 +275,11 @@ export class StatueInteractionController {
   }
 
   private positionPrompt() {
-    this.prompt.setPosition(
-      this.scene.scale.width / 2,
-      this.scene.scale.height - 210,
-    );
+    positionBottomPrompt(this.scene, this.prompt, 210);
   }
 
   private positionPanel() {
-    const panelX = this.scene.scale.width / 2;
-    const panelY = this.scene.scale.height / 2;
-    this.panel.setPosition(panelX, panelY);
-    if (this.closeHit) {
-      const scale = this.panel.scaleX;
-      this.closeHit.setPosition(panelX + 191 * scale, panelY - 76 * scale);
-    }
+    positionCenteredPanel(this.scene, this.panel, this.closeHit, 191, -76);
   }
 
   private findNearestStatue(): {
@@ -316,27 +288,14 @@ export class StatueInteractionController {
     wx: number;
     wy: number;
   } | null {
-    let nearest: StatueLore | null = null;
-    let nearestSq = Number.POSITIVE_INFINITY;
-    let nearestWx = 0;
-    let nearestWy = 0;
-    const playerPosition = this.getPlayerWorldPosition();
-
-    for (const note of this.statueLore) {
-      const dx = note.x - playerPosition.x;
-      const dy = note.y - playerPosition.y;
-      const sq = dx * dx + dy * dy;
-      if (sq < nearestSq) {
-        nearestSq = sq;
-        nearest = note;
-        nearestWx = note.x;
-        nearestWy = note.y;
-      }
-    }
-
-    return nearest
-      ? { note: nearest, sq: nearestSq, wx: nearestWx, wy: nearestWy }
-      : null;
+    const nearest = findNearestPoint(this.statueLore, this.getPlayerWorldPosition());
+    if (!nearest) return null;
+    return {
+      note: nearest.item,
+      sq: nearest.sq,
+      wx: nearest.item.x,
+      wy: nearest.item.y,
+    };
   }
 
   private showLorePanel(note: StatueLore) {
