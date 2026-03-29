@@ -29,6 +29,7 @@ interface LocalMovementControllerOptions {
 export class LocalMovementController {
   private static readonly MOVE_SPEED_PX_PER_SECOND = TILE_PX * 4.6;
   private static readonly MAX_SIMULATION_STEP_SECONDS = 0.05;
+  private static readonly MIN_MOVE_EMIT_INTERVAL_MS = 110;
 
   private getContainer: () => Phaser.GameObjects.Container;
   private setAvatarFrame: (frame: number) => void;
@@ -38,12 +39,13 @@ export class LocalMovementController {
   private worldY = 0;
   private gridCol = 0;
   private gridRow = 0;
-  private previousGridCol = 0;
-  private previousGridRow = 0;
   private dir: Direction = "down";
   private isMoving = false;
   private wasMovingLastFrame = false;
   private lastSentDirection: Direction = "down";
+  private lastSentCol = 0;
+  private lastSentRow = 0;
+  private lastMoveEmitAtMs = 0;
   private animFrame = 0;
   private animTimer = 0;
   private prevAnimMoving = false;
@@ -61,8 +63,6 @@ export class LocalMovementController {
     this.serverSpawnApplied = serverSpawnApplied;
     this.gridCol = col;
     this.gridRow = row;
-    this.previousGridCol = col;
-    this.previousGridRow = row;
 
     const world = tileCenter(col, row);
     this.worldX = world.x;
@@ -74,6 +74,9 @@ export class LocalMovementController {
 
     this.wasMovingLastFrame = false;
     this.lastSentDirection = this.dir;
+    this.lastSentCol = col;
+    this.lastSentRow = row;
+    this.lastMoveEmitAtMs = 0;
 
     GameBridge.positionRef.current = { x: col, y: row, z: 0 };
   }
@@ -91,8 +94,6 @@ export class LocalMovementController {
 
     this.gridCol = spawn.col;
     this.gridRow = spawn.row;
-    this.previousGridCol = spawn.col;
-    this.previousGridRow = spawn.row;
     this.isMoving = false;
 
     const world = tileCenter(spawn.col, spawn.row);
@@ -104,6 +105,9 @@ export class LocalMovementController {
 
     this.wasMovingLastFrame = false;
     this.lastSentDirection = this.dir;
+    this.lastSentCol = spawn.col;
+    this.lastSentRow = spawn.row;
+    this.lastMoveEmitAtMs = 0;
 
     GameBridge.positionRef.current = { x: spawn.col, y: spawn.row, z: 0 };
     this.serverSpawnApplied = true;
@@ -156,7 +160,7 @@ export class LocalMovementController {
 
   /** Convert input vector into one of our 4-direction sprite facings. */
   private resolveFacingDirection(moveX: number, moveY: number): Direction {
-    if (Math.abs(moveX) > Math.abs(moveY)) {
+    if (Math.abs(moveX) >= Math.abs(moveY)) {
       return moveX > 0 ? "right" : "left";
     }
     return moveY > 0 ? "down" : "up";
@@ -197,8 +201,6 @@ export class LocalMovementController {
 
   /** Refresh current tile coordinates from pixel world position. */
   private refreshGridPositionFromWorld() {
-    this.previousGridCol = this.gridCol;
-    this.previousGridRow = this.gridRow;
     this.gridCol = Math.floor(this.worldX / TILE_PX);
     this.gridRow = Math.floor(this.worldY / TILE_PX);
   }
@@ -217,17 +219,42 @@ export class LocalMovementController {
 
   /** Emit server movement only on tile changes, movement stop, or direction changes. */
   private emitNetworkMoveIfNeeded() {
-    const tileChanged =
-      this.gridCol !== this.previousGridCol || this.gridRow !== this.previousGridRow;
-    const stoppedMoving = this.wasMovingLastFrame && !this.isMoving;
+    const pendingColDelta = this.gridCol - this.lastSentCol;
+    const pendingRowDelta = this.gridRow - this.lastSentRow;
+    const hasPendingStep = pendingColDelta !== 0 || pendingRowDelta !== 0;
+    const stoppedMoving = this.wasMovingLastFrame && !this.isMoving && !hasPendingStep;
     const directionChanged = this.lastSentDirection !== this.dir;
-    if (!tileChanged && !stoppedMoving && !directionChanged) {
+    if (!hasPendingStep && !stoppedMoving && !directionChanged) {
       this.wasMovingLastFrame = this.isMoving;
       return;
     }
-    this.emitMove(this.isMoving);
+
+    const now = Date.now();
+    if (hasPendingStep) {
+      if (now - this.lastMoveEmitAtMs < LocalMovementController.MIN_MOVE_EMIT_INTERVAL_MS) {
+        this.wasMovingLastFrame = this.isMoving;
+        return;
+      }
+
+      // Server enforces MAX_STEP = 1 (Manhattan), so emit one axis step at a time.
+      const canStepCol = Math.abs(pendingColDelta) >= Math.abs(pendingRowDelta) && pendingColDelta !== 0;
+      const stepCol = canStepCol ? Math.sign(pendingColDelta) : 0;
+      const stepRow = !canStepCol && pendingRowDelta !== 0 ? Math.sign(pendingRowDelta) : 0;
+      const nextCol = this.lastSentCol + stepCol;
+      const nextRow = this.lastSentRow + stepRow;
+
+      this.emitMove(true, nextCol, nextRow);
+      this.lastSentCol = nextCol;
+      this.lastSentRow = nextRow;
+      this.lastSentDirection = this.dir;
+      this.lastMoveEmitAtMs = now;
+      this.wasMovingLastFrame = true;
+      return;
+    }
+
+    this.emitMove(false, this.lastSentCol, this.lastSentRow);
     this.lastSentDirection = this.dir;
-    this.wasMovingLastFrame = this.isMoving;
+    this.wasMovingLastFrame = false;
   }
 
   private updateLocalAnimation(dt: number) {
@@ -260,15 +287,15 @@ export class LocalMovementController {
     this.setAvatarFrame(frames[this.animFrame]);
   }
 
-  private emitMove(moving: boolean) {
+  private emitMove(moving: boolean, col: number, row: number) {
     const mapData = GameBridge.mapData;
     if (!mapData) return;
     const state: MoveState = {
-      col: this.gridCol,
-      row: this.gridRow,
+      col,
+      row,
       direction: this.dir,
       moving,
-      zoneKey: getZoneKey(this.gridCol, this.gridRow, mapData.zones),
+      zoneKey: getZoneKey(col, row, mapData.zones),
     };
     GameBridge.onPlayerMove?.(state);
   }
