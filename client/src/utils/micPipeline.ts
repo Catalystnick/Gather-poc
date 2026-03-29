@@ -31,6 +31,18 @@ export function getAudioContextCtor(): typeof AudioContext {
   )
 }
 
+/** Create voice AudioContext, preferring 48kHz for Silero VAD compatibility. */
+export function createVoiceAudioContext(): AudioContext {
+  const AudioContextCtor = getAudioContextCtor() as unknown as {
+    new (options?: AudioContextOptions): AudioContext
+  }
+  try {
+    return new AudioContextCtor({ sampleRate: 48_000 })
+  } catch {
+    return new AudioContextCtor()
+  }
+}
+
 /**
  * WebRTC capture: AEC + AGC; **noiseSuppression off** so RNNoise is the only broadband NS.
  * Stacking browser NS + RNNoise is a common cause of hollow / “underwater” timbre.
@@ -236,7 +248,12 @@ export async function startSileroVad(options: {
       },
     })
   } catch (error) {
-    console.warn('[mic] Silero VAD unavailable, using analyser gate:', error)
+    console.warn(
+      '[mic] Silero VAD unavailable (falling back to analyser gate) | sampleRate:',
+      ctx.sampleRate,
+      '| error:',
+      error,
+    )
     return null
   }
 }

@@ -7,7 +7,7 @@ import type { LocalAudioTrack } from 'livekit-client'
 import { MicVAD } from '@ricky0123/vad-web'
 import {
   runOnceAudioSettingsMigration,
-  getAudioContextCtor,
+  createVoiceAudioContext,
   buildSendPathGraph,
   teardownSendPathGraph,
   createCaptureTrack,
@@ -66,7 +66,7 @@ export function useMicTrack(): MicTrack {
     let disposed = false
     const isDisposed = () => disposed
 
-    const ctx = new (getAudioContextCtor())()
+    const ctx = createVoiceAudioContext()
     audioCtxRef.current = ctx
     void ctx.resume().catch(() => {})
 

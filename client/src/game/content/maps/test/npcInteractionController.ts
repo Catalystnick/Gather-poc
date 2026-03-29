@@ -15,7 +15,7 @@ import type { TraderNote } from "./types";
 
 // Tune these two values to move the NPC exclamation/E bubble.
 const NPC_HINT_OFFSET_X_PX = 0;
-const NPC_HINT_OFFSET_Y_PX = -TILE_PX * 0.65;
+const NPC_HINT_OFFSET_Y_PX = -TILE_PX * 1.1;
 
 interface ControllerOptions {
   scene: Phaser.Scene;

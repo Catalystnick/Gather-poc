@@ -3,11 +3,9 @@ import GameBridge, { type MoveState } from "../GameBridge";
 import { getZoneKey } from "../../utils/zoneDetection";
 import type { Direction } from "../../types";
 import {
-  HOLD_DELAY,
   IDLE_FPS,
   IDLE_FRAMES,
-  STEP_INT,
-  TWEEN_DUR,
+  TILE_PX,
   WALK_FPS,
   WALK_FRAMES,
   tileCenter,
@@ -27,32 +25,25 @@ interface LocalMovementControllerOptions {
   resetCameraFollowToPlayer: () => void;
 }
 
-/** Owns local grid movement, tweening, camera-reset trigger, and animation stepping. */
+/** Owns local movement, collision checks, camera-reset trigger, and animation stepping. */
 export class LocalMovementController {
+  private static readonly MOVE_SPEED_PX_PER_SECOND = TILE_PX * 4.6;
+  private static readonly MAX_SIMULATION_STEP_SECONDS = 0.05;
+
   private getContainer: () => Phaser.GameObjects.Container;
   private setAvatarFrame: (frame: number) => void;
   private resetCameraFollowToPlayer: () => void;
 
-  private gridCol = 30;
-  private gridRow = 30;
-  private isTween = false;
-  private tweenProg = 0;
-  private tweenFX = 0;
-  private tweenFY = 0;
-  private tweenTX = 0;
-  private tweenTY = 0;
-  private tweenTC = 30;
-  private tweenTR = 30;
-  private tweenLin = false;
+  private worldX = 0;
+  private worldY = 0;
+  private gridCol = 0;
+  private gridRow = 0;
+  private previousGridCol = 0;
+  private previousGridRow = 0;
   private dir: Direction = "down";
   private isMoving = false;
-  private prevActive: Direction | null = null;
-  private justPress = false;
-  private holdTimer = 0;
-  private stepAcc = 0;
-  private bufDir: Direction | null = null;
-  private prevKeys = { up: false, down: false, left: false, right: false };
-  private lastKey: Direction | null = null;
+  private wasMovingLastFrame = false;
+  private lastSentDirection: Direction = "down";
   private animFrame = 0;
   private animTimer = 0;
   private prevAnimMoving = false;
@@ -68,16 +59,21 @@ export class LocalMovementController {
   /** Set initial authoritative or fallback spawn for local movement state. */
   applySpawn(col: number, row: number, serverSpawnApplied: boolean) {
     this.serverSpawnApplied = serverSpawnApplied;
-    this.gridCol = this.tweenTC = col;
-    this.gridRow = this.tweenTR = row;
+    this.gridCol = col;
+    this.gridRow = row;
+    this.previousGridCol = col;
+    this.previousGridRow = row;
 
     const world = tileCenter(col, row);
-    this.tweenFX = this.tweenTX = world.x;
-    this.tweenFY = this.tweenTY = world.y;
+    this.worldX = world.x;
+    this.worldY = world.y;
 
     const container = this.getContainer();
-    container.x = world.x;
-    container.y = world.y;
+    container.x = this.worldX;
+    container.y = this.worldY;
+
+    this.wasMovingLastFrame = false;
+    this.lastSentDirection = this.dir;
 
     GameBridge.positionRef.current = { x: col, y: row, z: 0 };
   }
@@ -93,19 +89,21 @@ export class LocalMovementController {
     const spawn = GameBridge.serverSpawn;
     if (!spawn) return;
 
-    this.gridCol = this.tweenTC = spawn.col;
-    this.gridRow = this.tweenTR = spawn.row;
-    this.isTween = false;
+    this.gridCol = spawn.col;
+    this.gridRow = spawn.row;
+    this.previousGridCol = spawn.col;
+    this.previousGridRow = spawn.row;
     this.isMoving = false;
-    this.tweenProg = 0;
-    this.bufDir = null;
 
     const world = tileCenter(spawn.col, spawn.row);
-    this.tweenFX = this.tweenTX = world.x;
-    this.tweenFY = this.tweenTY = world.y;
+    this.worldX = world.x;
+    this.worldY = world.y;
     const container = this.getContainer();
-    container.x = world.x;
-    container.y = world.y;
+    container.x = this.worldX;
+    container.y = this.worldY;
+
+    this.wasMovingLastFrame = false;
+    this.lastSentDirection = this.dir;
 
     GameBridge.positionRef.current = { x: spawn.col, y: spawn.row, z: 0 };
     this.serverSpawnApplied = true;
@@ -119,97 +117,117 @@ export class LocalMovementController {
     }
 
     const tag = (document.activeElement as HTMLElement)?.tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA") return;
-
-    const up = input.cursors.up.isDown || input.wKey.isDown;
-    const down = input.cursors.down.isDown || input.sKey.isDown;
-    const left = input.cursors.left.isDown || input.aKey.isDown;
-    const right = input.cursors.right.isDown || input.dKey.isDown;
-
-    if (!this.prevKeys.up && up) this.lastKey = "up";
-    if (!this.prevKeys.down && down) this.lastKey = "down";
-    if (!this.prevKeys.left && left) this.lastKey = "left";
-    if (!this.prevKeys.right && right) this.lastKey = "right";
-    this.prevKeys = { up, down, left, right };
-
-    const held = (up ? 1 : 0) + (down ? 1 : 0) + (left ? 1 : 0) + (right ? 1 : 0);
-    const lastKey = this.lastKey;
-    const lastKeyHeld =
-      (lastKey === "up" && up) ||
-      (lastKey === "down" && down) ||
-      (lastKey === "left" && left) ||
-      (lastKey === "right" && right);
-    if (held === 0) this.lastKey = null;
-
-    const activeDir: Direction | null =
-      held === 0
-        ? null
-        : lastKeyHeld
-          ? lastKey
-          : up
-            ? "up"
-            : down
-              ? "down"
-              : left
-                ? "left"
-                : "right";
-
-    if (activeDir !== this.prevActive) {
-      this.prevActive = activeDir;
-      this.holdTimer = 0;
-      this.stepAcc = 0;
-      this.justPress = activeDir !== null;
-      if (activeDir !== null) this.dir = activeDir;
+    if (tag === "INPUT" || tag === "TEXTAREA") {
+      this.isMoving = false;
+      this.emitNetworkMoveIfNeeded();
+      this.updateLocalAnimation(dt);
+      return;
     }
 
-    if (activeDir !== null) this.resetCameraFollowToPlayer();
-    if (this.isTween && activeDir !== null) this.bufDir = activeDir;
+    const clampedDt = Math.min(
+      dt,
+      LocalMovementController.MAX_SIMULATION_STEP_SECONDS,
+    );
 
-    if (this.isTween) {
-      this.tweenProg += dt / TWEEN_DUR;
-      const container = this.getContainer();
-      if (this.tweenProg >= 1) {
-        this.tweenProg = 1;
-        this.isTween = false;
-        this.isMoving = false;
-        this.gridCol = this.tweenTC;
-        this.gridRow = this.tweenTR;
-        const world = tileCenter(this.gridCol, this.gridRow);
-        container.x = world.x;
-        container.y = world.y;
-        this.emitMove(false);
+    const upPressed = input.cursors.up.isDown || input.wKey.isDown;
+    const downPressed = input.cursors.down.isDown || input.sKey.isDown;
+    const leftPressed = input.cursors.left.isDown || input.aKey.isDown;
+    const rightPressed = input.cursors.right.isDown || input.dKey.isDown;
 
-        const bufferedDirection = this.bufDir;
-        this.bufDir = null;
-        if (bufferedDirection !== null && bufferedDirection === this.prevActive) {
-          this.step(bufferedDirection, true);
-        }
-      } else {
-        const tweenProgress = this.tweenProg;
-        const easingFactor = this.tweenLin
-          ? tweenProgress
-          : tweenProgress * tweenProgress * (3 - 2 * tweenProgress);
-        container.x = this.tweenFX + (this.tweenTX - this.tweenFX) * easingFactor;
-        container.y = this.tweenFY + (this.tweenTY - this.tweenFY) * easingFactor;
-      }
-    } else if (activeDir !== null) {
-      this.holdTimer += dt;
-      if (this.justPress) {
-        this.justPress = false;
-        this.step(activeDir, false);
-      } else if (this.holdTimer >= HOLD_DELAY) {
-        this.stepAcc += dt;
-        if (this.stepAcc >= STEP_INT) {
-          this.stepAcc -= STEP_INT;
-          this.step(activeDir, true);
-        }
-      }
-    } else {
-      this.stepAcc = 0;
+    let moveX =
+      (rightPressed ? 1 : 0) - (leftPressed ? 1 : 0);
+    let moveY =
+      (downPressed ? 1 : 0) - (upPressed ? 1 : 0);
+
+    if (moveX !== 0 || moveY !== 0) {
+      this.resetCameraFollowToPlayer();
+      const vectorLength = Math.hypot(moveX, moveY);
+      moveX /= vectorLength;
+      moveY /= vectorLength;
+      this.dir = this.resolveFacingDirection(moveX, moveY);
     }
 
+    this.simulateFreeMovement(moveX, moveY, clampedDt);
+    this.refreshGridPositionFromWorld();
+    this.emitNetworkMoveIfNeeded();
     GameBridge.positionRef.current = { x: this.gridCol, y: this.gridRow, z: 0 };
     this.updateLocalAnimation(dt);
+  }
+
+  /** Convert input vector into one of our 4-direction sprite facings. */
+  private resolveFacingDirection(moveX: number, moveY: number): Direction {
+    if (Math.abs(moveX) > Math.abs(moveY)) {
+      return moveX > 0 ? "right" : "left";
+    }
+    return moveY > 0 ? "down" : "up";
+  }
+
+  /** Apply smooth per-frame movement with axis-separated collision checks. */
+  private simulateFreeMovement(moveX: number, moveY: number, dt: number) {
+    const startWorldX = this.worldX;
+    const startWorldY = this.worldY;
+    const speed = LocalMovementController.MOVE_SPEED_PX_PER_SECOND;
+    const deltaX = moveX * speed * dt;
+    const deltaY = moveY * speed * dt;
+    let nextWorldX = this.worldX;
+    let nextWorldY = this.worldY;
+
+    if (deltaX !== 0) {
+      const candidateX = this.worldX + deltaX;
+      if (this.canOccupyWorld(candidateX, this.worldY)) {
+        nextWorldX = candidateX;
+      }
+    }
+    if (deltaY !== 0) {
+      const candidateY = this.worldY + deltaY;
+      if (this.canOccupyWorld(nextWorldX, candidateY)) {
+        nextWorldY = candidateY;
+      }
+    }
+
+    this.worldX = nextWorldX;
+    this.worldY = nextWorldY;
+    const container = this.getContainer();
+    container.x = this.worldX;
+    container.y = this.worldY;
+    this.isMoving =
+      Math.abs(this.worldX - startWorldX) > 0.0001 ||
+      Math.abs(this.worldY - startWorldY) > 0.0001;
+  }
+
+  /** Refresh current tile coordinates from pixel world position. */
+  private refreshGridPositionFromWorld() {
+    this.previousGridCol = this.gridCol;
+    this.previousGridRow = this.gridRow;
+    this.gridCol = Math.floor(this.worldX / TILE_PX);
+    this.gridRow = Math.floor(this.worldY / TILE_PX);
+  }
+
+  /** Check if the avatar feet point can occupy a world-space pixel position. */
+  private canOccupyWorld(worldX: number, worldY: number) {
+    const mapData = GameBridge.mapData;
+    if (!mapData) return false;
+    const col = Math.floor(worldX / TILE_PX);
+    const row = Math.floor(worldY / TILE_PX);
+    if (col < 0 || col >= mapData.gridWidth || row < 0 || row >= mapData.gridHeight) {
+      return false;
+    }
+    return mapData.collisionCsv[row * mapData.gridWidth + col] === 0;
+  }
+
+  /** Emit server movement only on tile changes, movement stop, or direction changes. */
+  private emitNetworkMoveIfNeeded() {
+    const tileChanged =
+      this.gridCol !== this.previousGridCol || this.gridRow !== this.previousGridRow;
+    const stoppedMoving = this.wasMovingLastFrame && !this.isMoving;
+    const directionChanged = this.lastSentDirection !== this.dir;
+    if (!tileChanged && !stoppedMoving && !directionChanged) {
+      this.wasMovingLastFrame = this.isMoving;
+      return;
+    }
+    this.emitMove(this.isMoving);
+    this.lastSentDirection = this.dir;
+    this.wasMovingLastFrame = this.isMoving;
   }
 
   private updateLocalAnimation(dt: number) {
@@ -242,51 +260,12 @@ export class LocalMovementController {
     this.setAvatarFrame(frames[this.animFrame]);
   }
 
-  private canMove(col: number, row: number, direction: Direction): boolean {
-    const mapData = GameBridge.mapData;
-    if (!mapData) return false;
-    const { collisionCsv, gridWidth, gridHeight } = mapData;
-    const deltaCol = direction === "right" ? 1 : direction === "left" ? -1 : 0;
-    const deltaRow = direction === "down" ? 1 : direction === "up" ? -1 : 0;
-    const targetCol = col + deltaCol;
-    const targetRow = row + deltaRow;
-    if (targetCol < 0 || targetCol >= gridWidth || targetRow < 0 || targetRow >= gridHeight) {
-      return false;
-    }
-    return collisionCsv[targetRow * gridWidth + targetCol] === 0;
-  }
-
-  private step(direction: Direction, chained: boolean) {
-    if (!this.canMove(this.gridCol, this.gridRow, direction)) return;
-
-    const deltaCol = direction === "right" ? 1 : direction === "left" ? -1 : 0;
-    const deltaRow = direction === "down" ? 1 : direction === "up" ? -1 : 0;
-    const targetCol = this.gridCol + deltaCol;
-    const targetRow = this.gridRow + deltaRow;
-    const targetWorld = tileCenter(targetCol, targetRow);
-    const container = this.getContainer();
-
-    this.tweenFX = container.x;
-    this.tweenFY = container.y;
-    this.tweenTX = targetWorld.x;
-    this.tweenTY = targetWorld.y;
-    this.tweenTC = targetCol;
-    this.tweenTR = targetRow;
-    this.tweenProg = 0;
-    this.tweenLin = chained;
-    this.isTween = true;
-    this.isMoving = true;
-    this.dir = direction;
-
-    this.emitMove(true);
-  }
-
   private emitMove(moving: boolean) {
     const mapData = GameBridge.mapData;
     if (!mapData) return;
     const state: MoveState = {
-      col: moving ? this.tweenTC : this.gridCol,
-      row: moving ? this.tweenTR : this.gridRow,
+      col: this.gridCol,
+      row: this.gridRow,
       direction: this.dir,
       moving,
       zoneKey: getZoneKey(this.gridCol, this.gridRow, mapData.zones),
