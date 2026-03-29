@@ -7,10 +7,11 @@ import type { Player, RemotePlayer } from '../types'
 // avoiding mixed-content errors when the page is served over HTTPS.
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || undefined
 
+/** Connect socket.io and expose synchronized multiplayer state/events. */
 export function useSocket(player: Player, accessToken: string) {
   const [socket, setSocket] = useState<Socket | null>(null)
   const [remotePlayers, setRemotePlayers] = useState<Map<string, RemotePlayer>>(new Map())
-  const [spawnPosition, setSpawnPosition] = useState<{ col: number; row: number } | null>(null)
+  const [serverSpawn, setServerSpawn] = useState<{ col: number; row: number } | null>(null)
   const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>('connecting')
   const [lastDisconnectReason, setLastDisconnectReason] = useState<string | null>(null)
   const [lastError, setLastError] = useState<string | null>(null)
@@ -35,54 +36,83 @@ export function useSocket(player: Player, accessToken: string) {
 
   useEffect(() => {
     console.log('[socket] connecting to', SERVER_URL ?? 'current origin', '| token present:', !!tokenRef.current, '| token length:', tokenRef.current?.length)
-    const s = io(SERVER_URL, { auth: { token: tokenRef.current } })
+    const socketClient = io(SERVER_URL, { auth: { token: tokenRef.current } })
     setStatus('connecting')
-    socketRef.current = s
-    setSocket(s)
+    socketRef.current = socketClient
+    setSocket(socketClient)
 
-    s.on('connect', () => {
-      console.log('[socket] connected | id:', s.id)
+    socketClient.on('connect', () => {
+      console.log('[socket] connected | id:', socketClient.id)
       setStatus('connected')
       setLastDisconnectReason(null)
       setLastError(null)
+      setServerSpawn(null)
       console.log('[socket] emitting player:join | name:', playerRef.current.name)
-      s.emit('player:join', { name: playerRef.current.name, avatar: playerRef.current.avatar }, ({ col, row }: { col: number; row: number }) => {
-        console.log('[socket] player:join ack received | spawnTile:', { col, row })
-        setSpawnPosition({ col, row })
-      })
+      socketClient.emit(
+        'player:join',
+        { name: playerRef.current.name, avatar: playerRef.current.avatar },
+        (ack?: { col?: unknown; row?: unknown }) => {
+          const col = typeof ack?.col === 'number' ? ack.col : null
+          const row = typeof ack?.row === 'number' ? ack.row : null
+          if (col === null || row === null) {
+            console.warn('[socket] player:join ack missing spawn payload')
+            return
+          }
+          console.log('[socket] server spawn ack | col:', col, 'row:', row)
+          setServerSpawn({ col, row })
+        },
+      )
     })
 
-    s.on('connect_error', (err) => {
+    socketClient.on('connect_error', (err) => {
       console.error('[socket] connect_error:', err.message)
       setStatus('error')
       setLastError(err?.message ?? String(err))
+      setServerSpawn(null)
     })
 
-    s.on('disconnect', (reason) => {
+    socketClient.on('disconnect', (reason) => {
       console.warn('[socket] disconnected | reason:', reason)
       setStatus('disconnected')
       setLastDisconnectReason(String(reason))
+      setServerSpawn(null)
     })
 
-    s.on('room:state', (players: RemotePlayer[]) => {
+    socketClient.on('room:state', (players: RemotePlayer[]) => {
       console.log('[socket] room:state | remote players:', players.length)
-      setRemotePlayers(new Map(players.map(p => [p.id, { ...p, zoneKey: p.zoneKey ?? null }])))
+      setRemotePlayers(
+        new Map(
+          players.map(remotePlayer => [
+            remotePlayer.id,
+            { ...remotePlayer, zoneKey: remotePlayer.zoneKey ?? null, muted: !!remotePlayer.muted },
+          ]),
+        ),
+      )
     })
 
-    s.on('player:joined', (p: RemotePlayer) => {
-      setRemotePlayers(prev => new Map(prev).set(p.id, { ...p, zoneKey: p.zoneKey ?? null }))
+    socketClient.on('player:joined', (joinedPlayer: RemotePlayer) => {
+      setRemotePlayers(prev => new Map(prev).set(joinedPlayer.id, { ...joinedPlayer, zoneKey: joinedPlayer.zoneKey ?? null, muted: !!joinedPlayer.muted }))
     })
 
-    s.on('player:updated', ({ id, col, row, direction, moving, zoneKey }: Pick<RemotePlayer, 'col' | 'row' | 'direction' | 'moving' | 'zoneKey'> & { id: string }) => {
+    socketClient.on('player:updated', ({ id, col, row, direction, moving, zoneKey }: Pick<RemotePlayer, 'col' | 'row' | 'direction' | 'moving' | 'zoneKey'> & { id: string }) => {
       setRemotePlayers(prev => {
         const next = new Map(prev)
-        const p = next.get(id)
-        if (p) next.set(id, { ...p, col, row, direction, moving, zoneKey: zoneKey ?? null })
+        const existingPlayer = next.get(id)
+        if (existingPlayer) next.set(id, { ...existingPlayer, col, row, direction, moving, zoneKey: zoneKey ?? null })
         return next
       })
     })
 
-    s.on('player:left', ({ id }: { id: string }) => {
+    socketClient.on('player:voice', ({ id, muted }: { id: string; muted: boolean }) => {
+      setRemotePlayers(prev => {
+        const next = new Map(prev)
+        const existingPlayer = next.get(id)
+        if (existingPlayer) next.set(id, { ...existingPlayer, muted: !!muted })
+        return next
+      })
+    })
+
+    socketClient.on('player:left', ({ id }: { id: string }) => {
       setRemotePlayers(prev => {
         const next = new Map(prev)
         next.delete(id)
@@ -93,15 +123,30 @@ export function useSocket(player: Player, accessToken: string) {
     return () => {
       console.log('[socket] cleanup — disconnecting')
       socketRef.current = null
-      s.disconnect()
+      socketClient.disconnect()
     }
   }, []) // connect once — player data is read from ref on 'connect'
 
   // Stable function reference — reads socket from ref, so LocalPlayer's
   // useFrame closure always calls the current socket without a prop re-capture.
+  /** Emit local movement updates to the server. */
   const emitMove = useCallback((state: { col: number; row: number; direction: string; moving: boolean; zoneKey: string | null }) => {
     socketRef.current?.emit('player:move', state)
   }, [])
 
-  return { socket, remotePlayers, emitMove, spawnPosition, status, lastDisconnectReason, lastError }
+  /** Emit local voice mute/unmute state to other players. */
+  const emitVoiceState = useCallback((state: { muted: boolean }) => {
+    socketRef.current?.emit('player:voice', state)
+  }, [])
+
+  return {
+    socket,
+    remotePlayers,
+    serverSpawn,
+    emitMove,
+    emitVoiceState,
+    status,
+    lastDisconnectReason,
+    lastError,
+  }
 }

@@ -9,7 +9,7 @@ import { requireAuth, requireAuthSocket } from './middleware/requireAuth.js'
 const app = express()
 
 const allowedOrigins = process.env.ALLOWED_ORIGINS
-  ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
+  ? process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim())
   : null
 
 app.use(cors({
@@ -38,7 +38,7 @@ const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || ''
 const ZONE_KEYS = ['dev', 'design', 'game']
 const ALLOWED_ROOMS = new Set([
   'gather-world',
-  ...ZONE_KEYS.map(k => `gather-world-zone-${k}`),
+  ...ZONE_KEYS.map(zoneKey => `gather-world-zone-${zoneKey}`),
 ])
 
 if (!LIVEKIT_URL) {
@@ -62,19 +62,19 @@ app.post('/livekit/token', requireAuth, tokenLimiter, async (req, res) => {
     return res.status(500).json({ error: 'LiveKit not configured' })
   }
   try {
-    const at = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
+    const accessToken = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
       identity,
       ttl: tokenIntent === 'prefetch' ? '30s' : '2h',
       name: name || identity,
     })
-    at.addGrant({
+    accessToken.addGrant({
       roomJoin: true,
       room: roomName,
       canPublish: tokenIntent === 'join',
       canSubscribe: tokenIntent === 'join',
       canUpdateOwnMetadata: tokenIntent === 'join',
     })
-    const token = await at.toJwt()
+    const token = await accessToken.toJwt()
     res.json({ token, url: LIVEKIT_URL })
   } catch (err) {
     console.error('[livekit] token error:', err)
@@ -106,6 +106,7 @@ const MOVE_MIN_INTERVAL = 100
 // Minimum ms between chat messages per player (2 messages/second).
 const CHAT_MIN_INTERVAL = 500
 
+/** Pick a random spawn tile from the central open area. */
 function randomSpawn() {
   const col = SPAWN_COL_MIN + Math.floor(Math.random() * (SPAWN_COL_MAX - SPAWN_COL_MIN + 1))
   const row = SPAWN_ROW_MIN + Math.floor(Math.random() * (SPAWN_ROW_MAX - SPAWN_ROW_MIN + 1))
@@ -113,20 +114,23 @@ function randomSpawn() {
 }
 
 // Validation helpers
-const isValidAvatar = (a) =>
-  a && typeof a === 'object' &&
-  typeof a.shirt === 'string' && /^#[0-9A-Fa-f]{6}$/.test(a.shirt)
+/** Validate avatar payload format from client join requests. */
+const isValidAvatar = (avatar) =>
+  avatar && typeof avatar === 'object' &&
+  typeof avatar.shirt === 'string' && /^#[0-9A-Fa-f]{6}$/.test(avatar.shirt)
 
+/** Validate incoming tile coordinates are within server world bounds. */
 const isValidTile = (col, row) =>
   Number.isInteger(col) && Number.isInteger(row) &&
   col >= 0 && col < GRID_COLS &&
   row >= 0 && row < GRID_ROWS
 
 const VALID_DIRECTIONS = new Set(['down', 'up', 'left', 'right'])
-const isValidDirection = (d) => typeof d === 'string' && VALID_DIRECTIONS.has(d)
+/** Validate replicated movement direction enum. */
+const isValidDirection = (direction) => typeof direction === 'string' && VALID_DIRECTIONS.has(direction)
 
 // In-memory room state
-// { [userId]: { id, name, avatar, col, row, direction, moving, zoneKey, lastMoveTime, lastChatTime } }
+// { [userId]: { id, name, avatar, col, row, direction, moving, zoneKey, muted, lastMoveTime, lastChatTime } }
 const players = {}
 
 io.use(requireAuthSocket)
@@ -143,18 +147,30 @@ io.on('connection', (socket) => {
     const spawn = randomSpawn()
     // Use socket.userId (stable Supabase UUID) instead of socket.id —
     // survives reconnects so token refresh doesn't respawn the player.
-    players[socket.userId] = { id: socket.userId, name: trimmed, avatar, col: spawn.col, row: spawn.row, direction: 'down', moving: false, zoneKey: null }
+    players[socket.userId] = {
+      id: socket.userId,
+      name: trimmed,
+      avatar,
+      col: spawn.col,
+      row: spawn.row,
+      direction: 'down',
+      moving: false,
+      zoneKey: null,
+      muted: false,
+    }
 
     const others = Object.values(players)
-      .filter(p => p.id !== socket.userId)
-      .map(({ id, name, avatar, col, row, direction, moving, zoneKey }) => ({ id, name, avatar, col, row, direction, moving, zoneKey: zoneKey ?? null }))
+      .filter(playerEntry => playerEntry.id !== socket.userId)
+      .map(({ id, name, avatar, col, row, direction, moving, zoneKey, muted }) => ({
+        id, name, avatar, col, row, direction, moving, zoneKey: zoneKey ?? null, muted: !!muted,
+      }))
     socket.emit('room:state', others)
 
     if (typeof ack === 'function') ack({ col: spawn.col, row: spawn.row })
 
-    const { id, col, row, direction, moving, zoneKey } = players[socket.userId]
+    const { id, col, row, direction, moving, zoneKey, muted } = players[socket.userId]
     socket.broadcast.emit('player:joined', {
-      id, name: trimmed, avatar, col, row, direction, moving, zoneKey: zoneKey ?? null
+      id, name: trimmed, avatar, col, row, direction, moving, zoneKey: zoneKey ?? null, muted: !!muted,
     })
 
     console.log(`[join] ${trimmed} (${socket.userId}) at tile (${spawn.col}, ${spawn.row})`)
@@ -193,6 +209,13 @@ io.on('connection', (socket) => {
     player.moving = moving
     player.zoneKey = validZoneKey
     socket.broadcast.emit('player:updated', { id: socket.userId, col, row, direction, moving, zoneKey: validZoneKey })
+  })
+
+  socket.on('player:voice', ({ muted }) => {
+    const player = players[socket.userId]
+    if (!player || typeof muted !== 'boolean') return
+    player.muted = muted
+    socket.broadcast.emit('player:voice', { id: socket.userId, muted })
   })
 
   socket.on('chat:message', ({ text }) => {

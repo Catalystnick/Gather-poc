@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc:*)",
+      "Bash(node -e \":*)",
+      "WebSearch",
+      "WebFetch(domain:dustinpfister.github.io)",
+      "WebFetch(domain:blog.inscope.tech)",
+      "WebFetch(domain:stemkoski.github.io)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:discourse.threejs.org)",
+      "Bash(find 'd:/ThreejsStuff/order rendering test' -name *.tsx -o -name *.ts -o -name *.js)",
+      "Bash(python -c \":*)",
+      "Bash(powershell -Command \":*)",
+      "Bash(cp \"d:/ThreejsStuff/Gather-poc/client/public/avatars/template.png\" \"d:/ThreejsStuff/order rendering test/react-game/public/assets/avatar_template.png\")",
+      "Bash(cp \"d:/ThreejsStuff/Gather-poc/client/public/avatars/shoes.png\" \"d:/ThreejsStuff/order rendering test/react-game/public/assets/avatar_shoes.png\")",
+      "Bash(cp \"d:/ThreejsStuff/Gather-poc/client/public/avatars/skirt.png\" \"d:/ThreejsStuff/order rendering test/react-game/public/assets/avatar_skirt.png\")",
+      "Bash(cp \"d:/ThreejsStuff/Gather-poc/client/public/avatars/shirt.png\" \"d:/ThreejsStuff/order rendering test/react-game/public/assets/avatar_shirt.png\")",
+      "Bash(cp \"d:/ThreejsStuff/order rendering test/test.ldtk\" \"d:/ThreejsStuff/order rendering test/react-game/public/test.ldtk\")",
+      "Bash(__NEW_LINE_334b82e6a3d6d020__ mkdir:*)",
+      "Bash(__NEW_LINE_334b82e6a3d6d020__ cp:*)",
+      "Bash(__NEW_LINE_334b82e6a3d6d020__ echo:*)",
+      "Bash(wc -l /d/ThreejsStuff/Gather-poc/client/src/components/player/*.tsx)",
+      "Bash(wc -l /d/ThreejsStuff/Gather-poc/client/src/utils/*.ts)",
+      "Bash(wc -l /d/ThreejsStuff/Gather-poc/client/src/utils/*.tsx)",
+      "Bash(npm install:*)",
+      "Bash(xargs grep:*)",
+      "Bash(xargs ls:*)"
+    ]
+  }
+}

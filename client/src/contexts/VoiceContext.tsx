@@ -9,10 +9,10 @@ export interface VoiceState {
   connectedPeers: Set<string>
   peerConnectionStates: Record<string, string>
   remoteGain: number
-  setRemoteGain: (v: number) => void
+  setRemoteGain: (nextValue: number) => void
   /** Linear multiplier (1–4) on remote voice; uses Web Audio gain when room has `webAudioMix`. */
   playbackBoost: number
-  setPlaybackBoost: (v: number) => void
+  setPlaybackBoost: (nextValue: number) => void
   headphonePrompt: string | null
   confirmHeadphones: (accept: boolean) => void
   audioBlocked?: boolean
@@ -25,9 +25,9 @@ export interface VoiceState {
 const VoiceContext = createContext<VoiceState | null>(null)
 
 export function useVoice(): VoiceState {
-  const ctx = useContext(VoiceContext)
-  if (!ctx) throw new Error('useVoice must be used within VoiceProvider')
-  return ctx
+  const voiceContext = useContext(VoiceContext)
+  if (!voiceContext) throw new Error('useVoice must be used within VoiceProvider')
+  return voiceContext
 }
 
 export const VoiceProvider = VoiceContext.Provider

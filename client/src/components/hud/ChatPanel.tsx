@@ -7,6 +7,7 @@ interface Props {
   onSend: (text: string) => void
 }
 
+/** Chat HUD panel with scrolling message log and quick send input. */
 export default function ChatPanel({ messages, onSend }: Props) {
   const [input, setInput] = useState('')
   const logRef = useRef<HTMLDivElement>(null)
@@ -17,6 +18,7 @@ export default function ChatPanel({ messages, onSend }: Props) {
     }
   }, [messages])
 
+  /** Send current input as a chat message and clear the entry box. */
   function handleSend() {
     const text = input.trim()
     if (!text) return
@@ -27,10 +29,10 @@ export default function ChatPanel({ messages, onSend }: Props) {
   return (
     <HUDPanel style={styles.position}>
       <div ref={logRef} style={styles.log}>
-        {messages.map((m) => (
-          <div key={`${m.id}-${m.timestamp}`} style={styles.message}>
-            <span style={styles.sender}>{m.name}: </span>
-            <span>{m.text}</span>
+        {messages.map((message) => (
+          <div key={`${message.id}-${message.timestamp}`} style={styles.message}>
+            <span style={styles.sender}>{message.name}: </span>
+            <span>{message.text}</span>
           </div>
         ))}
       </div>
@@ -38,8 +40,8 @@ export default function ChatPanel({ messages, onSend }: Props) {
         <input
           style={styles.input}
           value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && handleSend()}
+          onChange={event => setInput(event.target.value)}
+          onKeyDown={event => event.key === 'Enter' && handleSend()}
           placeholder="Say something..."
         />
         <button style={styles.btn} onClick={handleSend}>Send</button>

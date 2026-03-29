@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 
+/** Account creation page with email verification handoff. */
 export default function SignupPage() {
   const { signUpWithEmail, signInWithGoogle, isAuthenticated } = useAuth()
   const navigate = useNavigate()
@@ -16,8 +17,8 @@ export default function SignupPage() {
     if (isAuthenticated) navigate('/game', { replace: true })
   }, [isAuthenticated, navigate])
 
-  const handleEmailSignup = useCallback(async (e: React.FormEvent) => {
-    e.preventDefault()
+  const handleEmailSignup = useCallback(async (event: React.FormEvent) => {
+    event.preventDefault()
     setError(null)
 
     // Client-side check — avoids a round-trip for a trivial mismatch
@@ -31,11 +32,11 @@ export default function SignupPage() {
     }
 
     setSubmitting(true)
-    const err = await signUpWithEmail(email, password)
+    const signUpError = await signUpWithEmail(email, password)
     setSubmitting(false)
 
-    if (err) {
-      setError(err.message)
+    if (signUpError) {
+      setError(signUpError.message)
     } else {
       // session is null until email is verified — go to holding page
       navigate('/verify-pending', { state: { email } })
@@ -65,7 +66,7 @@ export default function SignupPage() {
             type="email"
             placeholder="Email"
             value={email}
-            onChange={e => setEmail(e.target.value)}
+            onChange={event => setEmail(event.target.value)}
             required
             autoComplete="email"
           />
@@ -74,7 +75,7 @@ export default function SignupPage() {
             type="password"
             placeholder="Password (min 8 characters)"
             value={password}
-            onChange={e => setPassword(e.target.value)}
+            onChange={event => setPassword(event.target.value)}
             required
             autoComplete="new-password"
           />
@@ -83,7 +84,7 @@ export default function SignupPage() {
             type="password"
             placeholder="Confirm password"
             value={confirm}
-            onChange={e => setConfirm(e.target.value)}
+            onChange={event => setConfirm(event.target.value)}
             required
             autoComplete="new-password"
           />

@@ -31,18 +31,16 @@ export interface MicTrack {
   isLocalSpeaking: boolean
   headphonePrompt: string | null
   confirmHeadphones: (accept: boolean) => void
-  echoCancelEnabled: boolean
-  toggleEchoCancel: () => void
   isReady: boolean
   addPublishedClone: (track: MediaStreamTrack) => void
   removePublishedClone: (track: MediaStreamTrack) => void
 }
 
+/** Own microphone lifecycle and expose VAD-gated send streams for LiveKit publishing. */
 export function useMicTrack(): MicTrack {
   const [isMuted, setIsMuted] = useState(false)
   const [isLocalSpeaking, setIsLocalSpeaking] = useState(false)
   const [headphonePrompt, setHeadphonePrompt] = useState<string | null>(null)
-  const [echoCancelEnabled, setEchoCancelEnabled] = useState(true)
   const [isReady, setIsReady] = useState(false)
   const [vadBackend, setVadBackend] = useState<'silero' | 'analyser' | null>(null)
 
@@ -155,9 +153,9 @@ export function useMicTrack(): MicTrack {
         window.removeEventListener('keydown', resumeOnGesture)
         window.removeEventListener('touchstart', resumeOnGesture)
 
-        const g = graphRef.current
+        const graph = graphRef.current
         graphRef.current = null
-        if (g) teardownSendPathGraph(g)
+        if (graph) teardownSendPathGraph(graph)
 
         analyserRef.current = null
         captureRef.current?.stop()
@@ -178,12 +176,13 @@ export function useMicTrack(): MicTrack {
     let cancelled = false
     const scratch = new Uint8Array(new ArrayBuffer(128))
 
+    /** Analyser fallback loop when Silero VAD is unavailable. */
     function tick() {
       if (cancelled) return
       const analyser = analyserRef.current
       const actx = audioCtxRef.current
-      const gv = graphRef.current?.vadGate
-      if (analyser && actx && gv) {
+      const vadGate = graphRef.current?.vadGate
+      if (analyser && actx && vadGate) {
         const rms = analyserRms(analyser, scratch)
         const above = rms > SPEAKING_THRESHOLD
         speakingFrames.current = above
@@ -196,15 +195,15 @@ export function useMicTrack(): MicTrack {
         wasSpeaking.current = speaking
         setIsLocalSpeaking(speaking)
         const target = speaking ? 1 : 0
-        gv.gain.setTargetAtTime(target, actx.currentTime, 0.02)
+        vadGate.gain.setTargetAtTime(target, actx.currentTime, 0.02)
       }
       if (!cancelled) requestAnimationFrame(tick)
     }
 
-    const id = requestAnimationFrame(tick)
+    const animationFrameId = requestAnimationFrame(tick)
     return () => {
       cancelled = true
-      cancelAnimationFrame(id)
+      cancelAnimationFrame(animationFrameId)
     }
   }, [vadBackend])
 
@@ -212,27 +211,27 @@ export function useMicTrack(): MicTrack {
     if (!navigator.mediaDevices?.addEventListener) return
     let cancelled = false
 
-    void navigator.mediaDevices.enumerateDevices().then(devs => {
+    void navigator.mediaDevices.enumerateDevices().then(devices => {
       if (cancelled) return
-      prevOutputIds.current = new Set(devs.filter(d => d.kind === 'audiooutput').map(d => d.deviceId))
+      prevOutputIds.current = new Set(devices.filter(device => device.kind === 'audiooutput').map(device => device.deviceId))
     }).catch(() => {})
 
+    /** Detect newly connected/disconnected output devices for headphone prompts. */
     async function onDeviceChange() {
       if (cancelled) return
       try {
-        const devs = await navigator.mediaDevices.enumerateDevices()
-        const outputs = devs.filter(d => d.kind === 'audiooutput')
-        const newIds = new Set(outputs.map(d => d.deviceId))
+        const devices = await navigator.mediaDevices.enumerateDevices()
+        const outputs = devices.filter(device => device.kind === 'audiooutput')
+        const newIds = new Set(outputs.map(device => device.deviceId))
         const appeared = outputs.filter(
-          d => !prevOutputIds.current.has(d.deviceId) && d.deviceId !== 'default' && d.deviceId !== 'communications',
+          device => !prevOutputIds.current.has(device.deviceId) && device.deviceId !== 'default' && device.deviceId !== 'communications',
         )
-        const disappeared = [...prevOutputIds.current].filter(id => !newIds.has(id))
+        const disappeared = [...prevOutputIds.current].filter(deviceId => !newIds.has(deviceId))
         prevOutputIds.current = newIds
 
         if (headphoneIdRef.current && disappeared.includes(headphoneIdRef.current)) {
           headphoneIdRef.current = null
           if (!echoCancelRef.current) {
-            setEchoCancelEnabled(true)
             echoCancelRef.current = true
             const track = rawMicStreamRef.current?.getAudioTracks()[0]
             if (track) await track.applyConstraints({ echoCancellation: true }).catch(() => {})
@@ -252,28 +251,31 @@ export function useMicTrack(): MicTrack {
     }
   }, [])
 
+  /** Register a published track clone so mute toggles keep all published tracks in sync. */
   const addPublishedClone = useCallback((track: MediaStreamTrack) => {
     publishedClonesRef.current.add(track)
     track.enabled = !mutedRef.current
   }, [])
 
+  /** Remove a previously registered published track clone. */
   const removePublishedClone = useCallback((track: MediaStreamTrack) => {
     publishedClonesRef.current.delete(track)
   }, [])
 
+  /** Toggle local mute and update VAD gate/published track state. */
   const toggleMute = useCallback(() => {
     setIsMuted(prev => {
       const next = !prev
       mutedRef.current = next
       publishedClonesRef.current.forEach(t => { t.enabled = !next })
-      const gv = graphRef.current?.vadGate
+      const vadGate = graphRef.current?.vadGate
       const actx = audioCtxRef.current
       if (next) {
         wasSpeaking.current = false
         speakingFrames.current = 0
         setIsLocalSpeaking(false)
         void micVadRef.current?.pause().catch(() => {})
-        if (gv && actx) gv.gain.setTargetAtTime(0, actx.currentTime, 0.02)
+        if (vadGate && actx) vadGate.gain.setTargetAtTime(0, actx.currentTime, 0.02)
       } else {
         void micVadRef.current?.start().catch(() => {})
       }
@@ -281,24 +283,16 @@ export function useMicTrack(): MicTrack {
     })
   }, [])
 
+  /** Accept or dismiss headphone optimization when a new output device appears. */
   const confirmHeadphones = useCallback(async (accept: boolean) => {
     setHeadphonePrompt(null)
     if (!accept) {
       headphoneIdRef.current = null
       return
     }
-    setEchoCancelEnabled(false)
     echoCancelRef.current = false
     const track = rawMicStreamRef.current?.getAudioTracks()[0]
     await track?.applyConstraints({ echoCancellation: false }).catch(() => {})
-  }, [])
-
-  const toggleEchoCancel = useCallback(async () => {
-    const next = !echoCancelRef.current
-    setEchoCancelEnabled(next)
-    echoCancelRef.current = next
-    const track = rawMicStreamRef.current?.getAudioTracks()[0]
-    if (track) await track.applyConstraints({ echoCancellation: next }).catch(() => {})
   }, [])
 
   return {
@@ -311,8 +305,6 @@ export function useMicTrack(): MicTrack {
     isLocalSpeaking,
     headphonePrompt,
     confirmHeadphones,
-    echoCancelEnabled,
-    toggleEchoCancel,
     isReady,
     addPublishedClone,
     removePublishedClone,

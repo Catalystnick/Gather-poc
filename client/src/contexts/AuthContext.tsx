@@ -16,6 +16,7 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null)
 
+/** Resolve a safe OAuth callback URL that matches the current runtime origin. */
 function getAuthRedirectUrl(): string {
   const runtimeBase = window.location.origin
   const envBase = (import.meta.env.VITE_APP_URL as string | undefined)?.trim()
@@ -40,6 +41,7 @@ function getAuthRedirectUrl(): string {
   }
 }
 
+/** Provide auth/session state and auth actions to the React tree. */
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [session, setSession] = useState<Session | null>(null)
@@ -75,6 +77,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => subscription.unsubscribe()
   }, [])
 
+  /** Sign in using email/password credentials. */
   const signInWithPassword = useCallback(async (email: string, password: string) => {
     console.log('[auth] signInWithPassword →', email)
     const { error } = await supabase.auth.signInWithPassword({ email, password })
@@ -82,6 +85,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return error
   }, [])
 
+  /** Register a new account and trigger verification email flow. */
   const signUpWithEmail = useCallback(async (email: string, password: string) => {
     console.log('[auth] signUpWithEmail →', email)
     const { error } = await supabase.auth.signUp({ email, password, options: { emailRedirectTo: getAuthRedirectUrl() } })
@@ -89,6 +93,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return error
   }, [])
 
+  /** Start Google OAuth login via Supabase redirect flow. */
   const signInWithGoogle = useCallback(async () => {
     const redirectTo = getAuthRedirectUrl()
     console.log('[auth] signInWithGoogle → redirectTo:', redirectTo)
@@ -98,11 +103,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     })
   }, [])
 
+  /** Sign out the current user session. */
   const signOut = useCallback(async () => {
     console.log('[auth] signOut')
     await supabase.auth.signOut()
   }, [])
 
+  /** Re-send signup verification email for the provided address. */
   const resendVerification = useCallback(async (email: string) => {
     console.log('[auth] resendVerification →', email)
     const { error } = await supabase.auth.resend({ type: 'signup', email })
@@ -125,6 +132,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
 
+/** Access auth context with a strict provider guard. */
 export function useAuth(): AuthContextValue {
   const ctx = useContext(AuthContext)
   if (!ctx) throw new Error('useAuth must be used inside <AuthProvider>')

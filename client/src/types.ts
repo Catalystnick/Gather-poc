@@ -20,6 +20,7 @@ export interface RemotePlayer {
   direction: Direction
   moving: boolean
   zoneKey: string | null
+  muted: boolean
 }
 
 export interface ChatMessage {

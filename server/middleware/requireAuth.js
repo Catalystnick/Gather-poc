@@ -7,6 +7,7 @@ if (!SUPABASE_URL) throw new Error("[auth] SUPABASE_URL is not set");
 // Supabase rotates keys gracefully so the cache stays valid across key rotations.
 const JWKS = createRemoteJWKSet(new URL(`${SUPABASE_URL}/auth/v1/.well-known/jwks.json`));
 
+/** Verify Supabase JWT and enforce authenticated role claims. */
 async function verifyToken(token) {
   const { payload } = await jwtVerify(token, JWKS, {
     issuer: `${SUPABASE_URL}/auth/v1`,

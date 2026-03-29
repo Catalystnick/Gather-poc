@@ -19,7 +19,7 @@ export function runOnceAudioSettingsMigration(): void {
     localStorage.removeItem('gather_poc_mic_gain')
     if (localStorage.getItem(AUDIO_SETTINGS_VERSION_KEY) === AUDIO_SETTINGS_VERSION) return
     ;['gather_poc_remote_gain', 'gather_poc_rolloff',
-      'gather_poc_gate_threshold', 'gather_poc_rnnoise'].forEach(k => localStorage.removeItem(k))
+      'gather_poc_gate_threshold', 'gather_poc_rnnoise'].forEach(storageKey => localStorage.removeItem(storageKey))
     localStorage.setItem(AUDIO_SETTINGS_VERSION_KEY, AUDIO_SETTINGS_VERSION)
   } catch { /* storage unavailable */ }
 }
@@ -44,8 +44,8 @@ export function getMicCaptureOptions() {
 }
 
 export function vadAssetBase(): string {
-  const b = import.meta.env.BASE_URL || '/'
-  return b.endsWith('/') ? b : `${b}/`
+  const baseUrl = import.meta.env.BASE_URL || '/'
+  return baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`
 }
 
 export type SendPathGraph = {
@@ -86,10 +86,10 @@ function connectPostRnnoiseToneShaping(ctx: AudioContext, fromNode: AudioNode): 
   output: AudioNode
   disconnect: () => void
 } {
-  const hp = ctx.createBiquadFilter()
-  hp.type = 'highpass'
-  hp.frequency.value = 85
-  hp.Q.value = 0.707
+  const highPassFilter = ctx.createBiquadFilter()
+  highPassFilter.type = 'highpass'
+  highPassFilter.frequency.value = 85
+  highPassFilter.Q.value = 0.707
 
   const warmth = ctx.createBiquadFilter()
   warmth.type = 'peaking'
@@ -108,16 +108,16 @@ function connectPostRnnoiseToneShaping(ctx: AudioContext, fromNode: AudioNode): 
   air.frequency.value = 7_000
   air.gain.value = 2.5
 
-  fromNode.connect(hp)
-  hp.connect(warmth)
+  fromNode.connect(highPassFilter)
+  highPassFilter.connect(warmth)
   warmth.connect(presence)
   presence.connect(air)
 
-  const nodes = [hp, warmth, presence, air]
+  const toneNodes = [highPassFilter, warmth, presence, air]
   return {
     output: air,
     disconnect: () => {
-      for (const n of nodes) try { n.disconnect() } catch { /* ignore */ }
+      for (const node of toneNodes) try { node.disconnect() } catch { /* ignore */ }
     },
   }
 }
@@ -235,8 +235,8 @@ export async function startSileroVad(options: {
         closeGate()
       },
     })
-  } catch (e) {
-    console.warn('[mic] Silero VAD unavailable, using analyser gate:', e)
+  } catch (error) {
+    console.warn('[mic] Silero VAD unavailable, using analyser gate:', error)
     return null
   }
 }
@@ -244,7 +244,9 @@ export async function startSileroVad(options: {
 /** RMS from byte frequency data (analyser fallback). Reuses `scratch` buffer each frame. */
 export function analyserRms(analyser: AnalyserNode, scratch: Uint8Array<ArrayBuffer>): number {
   analyser.getByteFrequencyData(scratch)
-  let s = 0
-  for (let i = 0; i < scratch.length; i++) s += scratch[i] * scratch[i]
-  return Math.sqrt(s / scratch.length)
+  let sumSquares = 0
+  for (let sampleIndex = 0; sampleIndex < scratch.length; sampleIndex++) {
+    sumSquares += scratch[sampleIndex] * scratch[sampleIndex]
+  }
+  return Math.sqrt(sumSquares / scratch.length)
 }

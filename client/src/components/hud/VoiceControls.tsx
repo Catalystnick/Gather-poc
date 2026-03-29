@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react'
+import { HiOutlineSpeakerWave, HiOutlineSpeakerXMark } from 'react-icons/hi2'
+import { CiMicrophoneOff, CiMicrophoneOn } from 'react-icons/ci'
 import { useVoice } from '../../contexts/VoiceContext'
 
 // Slider soft-max: dragging covers 0–SLIDER_MAX.
@@ -8,7 +10,7 @@ const SLIDER_MAX = 10;
 interface GainControlProps {
   label: string
   value: number
-  onChange: (v: number) => void
+  onChange: (nextValue: number) => void
   min?: number
   sliderMax?: number
   step?: number
@@ -17,6 +19,7 @@ interface GainControlProps {
   title?: string
 }
 
+/** Compact slider + numeric input control for voice gain settings. */
 function GainControl({
   label,
   value,
@@ -37,10 +40,11 @@ function GainControl({
     if (!focused) setText(value.toFixed(precision))
   }, [value, focused, precision])
 
+  /** Commit free-typed numeric values with min validation. */
   function commitText(raw: string) {
-    const v = parseFloat(raw)
-    if (!Number.isNaN(v) && v >= min) {
-      onChange(v)
+    const parsedValue = parseFloat(raw)
+    if (!Number.isNaN(parsedValue) && parsedValue >= min) {
+      onChange(parsedValue)
     } else {
       setText(value.toFixed(precision))
     }
@@ -55,21 +59,21 @@ function GainControl({
         max={sliderMax}
         step={step}
         value={Math.min(sliderMax, Math.max(min, value))}
-        onChange={(e) => onChange(parseFloat(e.target.value))}
+        onChange={(event) => onChange(parseFloat(event.target.value))}
         style={styles.slider}
       />
       <input
         type="text"
         inputMode="decimal"
         value={text}
-        onChange={(e) => {
-          setText(e.target.value)
-          const v = parseFloat(e.target.value)
-          if (!Number.isNaN(v) && v >= min) onChange(v)
+        onChange={(event) => {
+          setText(event.target.value)
+          const parsedValue = parseFloat(event.target.value)
+          if (!Number.isNaN(parsedValue) && parsedValue >= min) onChange(parsedValue)
         }}
         onFocus={() => setFocused(true)}
-        onBlur={(e) => { setFocused(false); commitText(e.target.value) }}
-        onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+        onBlur={(event) => { setFocused(false); commitText(event.target.value) }}
+        onKeyDown={(event) => { if (event.key === 'Enter') (event.target as HTMLInputElement).blur() }}
         style={styles.gainInput}
       />
       <span style={styles.gainUnit}>{unit}</span>
@@ -83,6 +87,7 @@ const ZONE_LABELS: Record<string, string> = {
   game: 'Game Zone',
 }
 
+/** Render current voice mode badge (proximity/zone/switching). */
 function ModeLabel({ mode, activeZoneKey }: { mode: string; activeZoneKey: string | null }) {
   if (mode === 'switching') return <span style={styles.modeBadgeSwitching}>Switching...</span>
   if (mode === 'zone' && activeZoneKey) {
@@ -91,10 +96,12 @@ function ModeLabel({ mode, activeZoneKey }: { mode: string; activeZoneKey: strin
   return <span style={styles.modeBadgeProximity}>Proximity</span>
 }
 
+/** Main voice HUD: mute control, mode badge, and gain tuning controls. */
 export default function VoiceControls() {
   const {
     muted,
     toggleMute,
+    isLocalSpeaking,
     remoteGain,
     setRemoteGain,
     playbackBoost,
@@ -106,6 +113,15 @@ export default function VoiceControls() {
     mode,
     activeZoneKey,
   } = useVoice()
+
+  const volumeZero = remoteGain <= 0
+  const micStatus = muted
+    ? { icon: <CiMicrophoneOff size={18} />, label: 'Muted' }
+    : volumeZero
+      ? { icon: <HiOutlineSpeakerXMark size={18} />, label: 'Volume 0' }
+      : isLocalSpeaking
+        ? { icon: <HiOutlineSpeakerWave size={18} />, label: 'Speaking' }
+        : { icon: <CiMicrophoneOn size={18} />, label: 'Mic On' }
 
   return (
     <>
@@ -135,12 +151,15 @@ export default function VoiceControls() {
       <div style={styles.wrapper}>
         <div style={styles.muteRow}>
           <button style={styles.btn} onClick={toggleMute} title={muted ? 'Unmute' : 'Mute'}>
-            {muted ? '🔇 Muted' : '🎤 Live'}
+            <span style={styles.iconLabel}>
+              {micStatus.icon}
+              {micStatus.label}
+            </span>
           </button>
           <ModeLabel mode={mode} activeZoneKey={activeZoneKey} />
         </div>
         <GainControl
-          label="🔊 Speaker"
+          label="Speaker"
           value={remoteGain}
           onChange={setRemoteGain}
           sliderMax={1}
@@ -150,7 +169,7 @@ export default function VoiceControls() {
           title="Remote voice level (0–1), multiplied by output boost below"
         />
         <GainControl
-          label="🔉 Output boost"
+          label="Output boost"
           value={playbackBoost}
           onChange={setPlaybackBoost}
           min={1}
@@ -184,6 +203,12 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'rgba(0,0,0,0.7)', color: '#fff',
     border: '1px solid #444', borderRadius: 20,
     padding: '8px 20px', fontSize: 14, cursor: 'pointer',
+  },
+  iconLabel: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    fontWeight: 600,
   },
   modeBadgeProximity: {
     fontSize: 11, fontWeight: 600,

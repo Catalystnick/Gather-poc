@@ -1,6 +1,7 @@
 import { Navigate, Outlet } from 'react-router-dom'
 import { useAuth } from '../../contexts/AuthContext'
 
+/** Guard routes that require an authenticated session. */
 export default function ProtectedRoute() {
   const { isAuthenticated, isLoading } = useAuth()
 
