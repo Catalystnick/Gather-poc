@@ -294,11 +294,12 @@ export default class GameScene extends Phaser.Scene {
   private setupInput() {
     const keyboard = this.input.keyboard!;
     this.cursors = keyboard.createCursorKeys();
-    this.wKey = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.W);
-    this.sKey = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.S);
-    this.aKey = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.A);
-    this.dKey = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.D);
-    this.eKey = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.E);
+    keyboard.removeCapture(Phaser.Input.Keyboard.KeyCodes.SPACE);
+    this.wKey = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.W, false);
+    this.sKey = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.S, false);
+    this.aKey = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.A, false);
+    this.dKey = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.D, false);
+    this.eKey = keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.E, false);
   }
 
   /** Enable mouse drag panning and suspend it while interaction panels are open. */
