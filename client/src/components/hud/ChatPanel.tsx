@@ -11,12 +11,30 @@ interface Props {
 export default function ChatPanel({ messages, onSend }: Props) {
   const [input, setInput] = useState('')
   const logRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     if (logRef.current) {
       logRef.current.scrollTop = logRef.current.scrollHeight
     }
   }, [messages])
+
+  useEffect(() => {
+    const handlePointerDown = (event: PointerEvent) => {
+      const panelElement = panelRef.current
+      const inputElement = inputRef.current
+      if (!panelElement || !inputElement) return
+      if (!panelElement.contains(event.target as Node)) {
+        inputElement.blur()
+      }
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown, true)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown, true)
+    }
+  }, [])
 
   /** Send current input as a chat message and clear the entry box. */
   function handleSend() {
@@ -28,6 +46,7 @@ export default function ChatPanel({ messages, onSend }: Props) {
 
   return (
     <HUDPanel style={styles.position}>
+      <div ref={panelRef} style={styles.panelInner}>
       <div ref={logRef} style={styles.log}>
         {messages.map((message) => (
           <div key={`${message.id}-${message.timestamp}`} style={styles.message}>
@@ -38,6 +57,7 @@ export default function ChatPanel({ messages, onSend }: Props) {
       </div>
       <div style={styles.inputRow}>
         <input
+          ref={inputRef}
           style={styles.input}
           value={input}
           onChange={event => setInput(event.target.value)}
@@ -45,6 +65,7 @@ export default function ChatPanel({ messages, onSend }: Props) {
           placeholder="Say something..."
         />
         <button style={styles.btn} onClick={handleSend}>Send</button>
+      </div>
       </div>
     </HUDPanel>
   )
@@ -57,6 +78,12 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
     display: 'flex',
     flexDirection: 'column',
+  },
+  panelInner: {
+    display: 'flex',
+    flexDirection: 'column',
+    width: '100%',
+    height: '100%',
   },
   log: {
     padding: '8px 10px', maxHeight: 180, overflowY: 'auto',
