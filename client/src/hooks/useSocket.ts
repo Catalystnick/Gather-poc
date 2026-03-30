@@ -107,6 +107,32 @@ export function useSocket(player: Player, accessToken: string) {
       })
     })
 
+    socketClient.on('player:teleported', (teleportedPlayer: RemotePlayer) => {
+      setRemotePlayers(prev => {
+        const next = new Map(prev)
+        const existingPlayer = next.get(teleportedPlayer.id)
+        if (existingPlayer) {
+          next.set(teleportedPlayer.id, {
+            ...existingPlayer,
+            col: teleportedPlayer.col,
+            row: teleportedPlayer.row,
+            direction: teleportedPlayer.direction,
+            moving: !!teleportedPlayer.moving,
+            zoneKey: teleportedPlayer.zoneKey ?? null,
+            muted: !!teleportedPlayer.muted,
+          })
+          return next
+        }
+
+        next.set(teleportedPlayer.id, {
+          ...teleportedPlayer,
+          zoneKey: teleportedPlayer.zoneKey ?? null,
+          muted: !!teleportedPlayer.muted,
+        })
+        return next
+      })
+    })
+
     socketClient.on('player:voice', ({ id, muted }: { id: string; muted: boolean }) => {
       setRemotePlayers(prev => {
         const next = new Map(prev)

@@ -119,7 +119,7 @@ export function useLdtk() {
     const controller = new AbortController();
     setMapError(null);
 
-    fetch('/test.ldtk', { signal: controller.signal })
+    fetch('/hub.ldtk', { signal: controller.signal })
       .then((response) => {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return response.json() as Promise<LdtkProject>;

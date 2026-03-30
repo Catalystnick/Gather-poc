@@ -10,25 +10,25 @@ import {
 import {
   BAKED,
   YSORTED,
-} from "../content/maps/test/constants";
+} from "../content/maps/hub/constants";
 import { CAMERA_LERP, CAMERA_ZOOM, TILE_PX, tileCenter } from "../engine/constants";
 import {
   applyNearestTextureFilters,
   preloadSceneAssets,
-} from "../content/maps/test/assetPipeline";
+} from "../content/maps/hub/assetPipeline";
 import { CameraDragController } from "../engine/cameraDragController";
 import { getEntityTopLeft } from "../engine/entityPlacement";
-import { GraveInteractionController } from "../content/maps/test/graveInteractionController";
+import { GraveInteractionController } from "../content/maps/hub/graveInteractionController";
 import { LayerRenderer } from "../engine/layerRenderer";
 import { LocalMovementController } from "../engine/localMovementController";
-import { NpcInteractionController } from "../content/maps/test/npcInteractionController";
+import { NpcInteractionController } from "../content/maps/hub/npcInteractionController";
 import { RemotePlayerController } from "../engine/remotePlayerController";
-import { StatueInteractionController } from "../content/maps/test/statueInteractionController";
+import { StatueInteractionController } from "../content/maps/hub/statueInteractionController";
 import {
   TraderAnimationController,
   getTraderDialogTextureKey,
   getTraderIdleTextureKeys,
-} from "../content/maps/test/traderAnimationController";
+} from "../content/maps/hub/traderAnimationController";
 
 export default class GameScene extends Phaser.Scene {
   // Input

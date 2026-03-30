@@ -8,6 +8,7 @@ import { useMicTrack } from "../../hooks/useMicTrack";
 import { useVoice } from "../../hooks/useVoice";
 import { useChat } from "../../hooks/useChat";
 import { useLdtk } from "../../hooks/useLdtk";
+import { buildMentionSuggestions, buildOnlineUsers } from "../../chat/presenceSelectors";
 import GameBridge from "../../game/GameBridge";
 import PhaserGame from "../../game/PhaserGame";
 
@@ -15,6 +16,7 @@ import ChatPanel from "../hud/ChatPanel";
 import VoiceControls from "../hud/VoiceControls";
 import ServerStatusPanel from "../hud/ServerStatusPanel";
 import VoiceConnectionsPanel from "../hud/VoiceConnectionsPanel";
+import TeleportRequestInbox from "../hud/TeleportRequestInbox";
 import type { Player } from "../../types";
 
 interface Props {
@@ -47,7 +49,23 @@ export default function World({ player }: Props) {
     mapData?.zones ?? [],
   );
 
-  const { messages, sendMessage } = useChat(socket);
+  const onlineUsers = useMemo(
+    () => buildOnlineUsers(remotePlayers, { id: userId, name: player.name }),
+    [remotePlayers, userId, player.name],
+  );
+  const mentionSuggestions = useMemo(
+    () => buildMentionSuggestions(onlineUsers, userId),
+    [onlineUsers, userId],
+  );
+
+  const {
+    messages,
+    sendMessage,
+    commandStatus,
+    clearCommandStatus,
+    teleportRequests,
+    respondToTeleportRequest,
+  } = useChat(socket, { currentUserId: userId, onlineUsers });
 
   // ── Wire GameBridge ─────────────────────────────────────────────────────────
 
@@ -108,7 +126,14 @@ export default function World({ player }: Props) {
       <div style={rootStyle}>
         <PhaserGame style={canvasStyle} />
 
-        <ChatPanel messages={messages} onSend={sendMessage} />
+        <ChatPanel
+          messages={messages}
+          onSend={sendMessage}
+          commandStatus={commandStatus}
+          onDismissStatus={clearCommandStatus}
+          mentionSuggestions={mentionSuggestions}
+        />
+        <TeleportRequestInbox requests={teleportRequests} onRespond={respondToTeleportRequest} />
         <VoiceControls />
         <ServerStatusPanel
           socketStatus={status}

@@ -5,6 +5,12 @@ import cors from 'cors'
 import { AccessToken } from 'livekit-server-sdk'
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit'
 import { requireAuth, requireAuthSocket } from './middleware/requireAuth.js'
+import { TeleportRequestsStore } from './chat/teleportRequestsStore.js'
+import {
+  handleTagSend,
+  handleTeleportRequest,
+  handleTeleportRespond,
+} from './chat/commandRouter.js'
 
 const app = express()
 
@@ -132,11 +138,13 @@ const isValidDirection = (direction) => typeof direction === 'string' && VALID_D
 // In-memory room state
 // { [userId]: { id, name, avatar, col, row, direction, moving, zoneKey, muted, lastMoveTime, lastChatTime } }
 const players = {}
+const teleportRequests = new TeleportRequestsStore({ cooldownMs: 30_000 })
 
 io.use(requireAuthSocket)
 
 io.on('connection', (socket) => {
   console.log(`[connect] ${socket.userId}`)
+  socket.join(`user:${socket.userId}`)
 
   socket.on('player:join', (payload, ack) => {
     const { name, avatar } = (payload && typeof payload === 'object') ? payload : {}
@@ -240,7 +248,41 @@ io.on('connection', (socket) => {
     })
   })
 
+  socket.on('tag:send', (payload, ack) => {
+    const result = handleTagSend({
+      socket,
+      io,
+      players,
+      payload,
+    })
+    if (typeof ack === 'function') ack(result)
+  })
+
+  socket.on('teleport:request', (payload, ack) => {
+    const result = handleTeleportRequest({
+      socket,
+      io,
+      players,
+      payload,
+      teleportRequests,
+    })
+    if (typeof ack === 'function') ack(result)
+  })
+
+  socket.on('teleport:respond', (payload, ack) => {
+    const result = handleTeleportRespond({
+      socket,
+      io,
+      players,
+      payload,
+      teleportRequests,
+      isValidTile,
+    })
+    if (typeof ack === 'function') ack(result)
+  })
+
   socket.on('disconnect', () => {
+    teleportRequests.clearForUser(socket.userId)
     const player = players[socket.userId]
     if (player) {
       console.log(`[leave] ${player.name} (${socket.userId})`)
