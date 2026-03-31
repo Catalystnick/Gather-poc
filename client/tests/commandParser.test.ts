@@ -18,5 +18,11 @@ assert(plain.kind === 'plain', 'Expected leading-space slash to be plain text')
 const tag = parseChatInput('@tag @Alice hello', users, 'self-111111')
 assert(tag.kind === 'tag', 'Expected @tag parsing to succeed')
 
+const tagWithoutPayload = parseChatInput('@tag', users, 'self-111111')
+assert(tagWithoutPayload.kind === 'error', 'Expected bare @tag to fail')
+
+const tagWithoutMessage = parseChatInput('@tag @Alice', users, 'self-111111')
+assert(tagWithoutMessage.kind === 'error', 'Expected @tag without message to fail')
+
 const tp = parseChatInput('/teleport @Bob move please', users, 'self-111111')
 assert(tp.kind === 'teleport', 'Expected /teleport parsing to succeed')

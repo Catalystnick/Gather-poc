@@ -119,6 +119,14 @@ function randomSpawn() {
   return { col, row }
 }
 
+function looksLikeReservedCommand(text) {
+  const lower = text.toLowerCase()
+  return lower === '@tag'
+    || lower.startsWith('@tag ')
+    || lower === '/teleport'
+    || lower.startsWith('/teleport ')
+}
+
 // Validation helpers
 /** Validate avatar payload format from client join requests. */
 const isValidAvatar = (avatar) =>
@@ -232,6 +240,11 @@ io.on('connection', (socket) => {
     const player = players[socket.userId]
     const trimmed = typeof text === 'string' ? text.trim() : ''
     if (!player || !trimmed || trimmed.length > 500) return
+    if (looksLikeReservedCommand(trimmed)) {
+      console.warn(`[chat] blocked reserved command text from ${socket.userId}: ${trimmed}`)
+      return
+    }
+    console.log(`[chat] ${socket.userId} (${player.name}) -> ${trimmed}`)
 
     const now = Date.now()
     if (player.lastChatTime !== undefined && now - player.lastChatTime < CHAT_MIN_INTERVAL) {

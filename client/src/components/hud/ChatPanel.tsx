@@ -1,83 +1,207 @@
-import { useEffect, useRef, useState } from "react";
-import HUDPanel from "./HUDPanel";
-import type { ChatMessage } from "../../types";
-import type { CommandStatus, MentionSuggestion } from "../../chat/types";
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { EditorContent, useEditor } from '@tiptap/react'
+import StarterKit from '@tiptap/starter-kit'
+import Mention from '@tiptap/extension-mention'
+import HUDPanel from './HUDPanel'
+import type { ChatMessage } from '../../types'
+import type { CommandStatus, MentionSuggestion } from '../../chat/types'
+import { useChatTokenValidation } from '../../chat/useChatTokenValidation'
+import { createSuggestionRenderer, type SuggestionItem } from './tiptap/suggestionRenderer'
+import { SlashCommandExtension } from './tiptap/SlashCommandExtension'
 
 interface Props {
-  messages: ChatMessage[];
-  onSend: (text: string) => void;
-  commandStatus: CommandStatus | null;
-  onDismissStatus: () => void;
-  mentionSuggestions: MentionSuggestion[];
+  messages: ChatMessage[]
+  onSend: (text: string) => void
+  commandStatus: CommandStatus | null
+  onDismissStatus: () => void
+  mentionSuggestions: MentionSuggestion[]
 }
 
-function getLastToken(input: string) {
-  const parts = input.trimEnd().split(/\s+/);
-  return parts[parts.length - 1] ?? "";
+const commandOptions = [
+  { command: '/teleport', description: 'Request teleport with @users + message' },
+]
+
+function renderMessageWithTags(
+  text: string,
+  isValidMentionToken: (token: string) => boolean,
+  isValidCommandToken: (token: string) => boolean,
+) {
+  const parts = text.split(/(@[A-Za-z0-9_\-]+|\/[A-Za-z0-9_\-]+)/g)
+  return parts.map((part, index) => {
+    if (part.startsWith('@') && isValidMentionToken(part)) {
+      return (
+        <span key={`${part}-${index}`} style={styles.inlineTag}>
+          {part}
+        </span>
+      )
+    }
+
+    if (part.startsWith('/') && isValidCommandToken(part)) {
+      return (
+        <span key={`${part}-${index}`} style={styles.inlineCommand}>
+          {part}
+        </span>
+      )
+    }
+
+    return <span key={`${part}-${index}`}>{part}</span>
+  })
 }
 
-/** Simplified chat HUD panel with command and mention popups. */
+function getComposerText(editor: NonNullable<ReturnType<typeof useEditor>>) {
+  return editor.getText({ blockSeparator: ' ' })
+}
+
+function tryConvertTypedMentionAtCursor(
+  editor: NonNullable<ReturnType<typeof useEditor>>,
+  getMentionByTypedToken: (typedWithoutAt: string) => MentionSuggestion | null,
+) {
+  const from = editor.state.selection.from
+  const before = editor.state.doc.textBetween(Math.max(0, from - 120), from, '\n', ' ')
+  const match = before.match(/@([A-Za-z0-9_\-]+)$/)
+  if (!match) return false
+
+  const suggestion = getMentionByTypedToken(match[1])
+
+  if (!suggestion) return false
+
+  const label = suggestion.token.startsWith('@') ? suggestion.token.slice(1) : suggestion.token
+  editor
+    .chain()
+    .focus()
+    .deleteRange({ from: from - match[0].length, to: from })
+    .insertContent([
+      {
+        type: 'mention',
+        attrs: {
+          id: suggestion.id,
+          label,
+        },
+      },
+      { type: 'text', text: ' ' },
+    ])
+    .run()
+
+  return true
+}
+
+/** Chat panel rewritten around Tiptap suggestion extensions for @mentions and slash commands. */
 export default function ChatPanel({ messages, onSend, commandStatus, onDismissStatus, mentionSuggestions }: Props) {
-  const [input, setInput] = useState("");
-  const [hideCommandList, setHideCommandList] = useState(false);
-  const [hideMentionList, setHideMentionList] = useState(false);
-  const logRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const logRef = useRef<HTMLDivElement>(null)
+  const editorShellRef = useRef<HTMLDivElement>(null)
+  const mentionsRef = useRef<MentionSuggestion[]>(mentionSuggestions)
+  const {
+    isValidMentionToken,
+    isValidCommandToken,
+    getMentionByTypedToken,
+  } = useChatTokenValidation({
+    mentionSuggestions,
+    commandTokens: commandOptions.map(item => item.command),
+  })
+  const [isEditorEmpty, setIsEditorEmpty] = useState(true)
 
-  const showCommands = input.startsWith("/") && !hideCommandList;
-
-  const lastToken = getLastToken(input);
-  const mentionQuery = lastToken.startsWith("@") ? lastToken.slice(1).toLowerCase() : null;
-  const visibleMentions =
-    hideMentionList || mentionQuery === null
-      ? []
-      : mentionSuggestions
-          .filter((suggestion) => {
-            if (!mentionQuery) return true;
-            return suggestion.name.toLowerCase().includes(mentionQuery) || suggestion.token.toLowerCase().includes(mentionQuery);
-          })
-          .slice(0, 6);
+  const mentionRenderer = useMemo(
+    () =>
+      createSuggestionRenderer({
+        getAnchorClientRect: () => editorShellRef.current?.getBoundingClientRect() ?? null,
+        placement: 'top-start',
+      }),
+    [],
+  )
 
   useEffect(() => {
-    if (!logRef.current) return;
-    logRef.current.scrollTop = logRef.current.scrollHeight;
-  }, [messages]);
+    mentionsRef.current = mentionSuggestions
+  }, [mentionSuggestions])
+
+  const editor = useEditor({
+    extensions: [
+      StarterKit.configure({
+        heading: false,
+        blockquote: false,
+        codeBlock: false,
+        bulletList: false,
+        orderedList: false,
+        listItem: false,
+        horizontalRule: false,
+      }),
+      Mention.configure({
+        HTMLAttributes: {
+          style:
+            'background: rgba(241,196,15,0.18); border: 1px solid rgba(241,196,15,0.55); border-radius: 4px; padding: 1px 4px; color: #f1c40f; font-weight: 600;',
+        },
+        renderText({ node }) {
+          return `@${node.attrs.label ?? 'user'}`
+        },
+        suggestion: {
+          char: '@',
+          allowSpaces: false,
+          items: ({ query }) => {
+            const normalized = query.toLowerCase()
+            return mentionsRef.current
+              .filter((suggestion) => {
+                if (!normalized) return true
+                return suggestion.name.toLowerCase().includes(normalized)
+                  || suggestion.token.toLowerCase().includes(normalized)
+              })
+              .slice(0, 6)
+              .map((suggestion): SuggestionItem => ({
+                title: suggestion.name,
+                subtitle: suggestion.token,
+                payload: suggestion,
+              }))
+          },
+          command: ({ editor, range, props }) => {
+            const suggestion = (props as unknown as SuggestionItem).payload as MentionSuggestion
+            const label = suggestion.token.startsWith('@') ? suggestion.token.slice(1) : suggestion.token
+            editor
+              .chain()
+              .focus()
+              .insertContentAt(range, [
+                {
+                  type: 'mention',
+                  attrs: {
+                    id: suggestion.id,
+                    label,
+                  },
+                },
+                { type: 'text', text: ' ' },
+              ])
+              .run()
+          },
+          render: mentionRenderer,
+        },
+      }),
+      SlashCommandExtension.configure({
+        commands: commandOptions,
+        getSuggestionAnchorRect: () => editorShellRef.current?.getBoundingClientRect() ?? null,
+      }),
+    ],
+    content: '',
+    editorProps: {
+      attributes: {
+        style: 'outline: none; color: #fff; font-size: 13px; line-height: 1.4; white-space: pre-wrap;',
+      },
+    },
+    onCreate: ({ editor }) => {
+      setIsEditorEmpty(editor.isEmpty)
+    },
+    onUpdate: ({ editor }) => {
+      setIsEditorEmpty(editor.isEmpty)
+    },
+  })
+
+  useEffect(() => {
+    if (!logRef.current) return
+    logRef.current.scrollTop = logRef.current.scrollHeight
+  }, [messages])
 
   function sendCurrent() {
-    if (!input.trim()) return;
-    onSend(input);
-    setInput("");
-    setHideCommandList(false);
-    setHideMentionList(false);
-  }
+    if (!editor) return
+    const text = getComposerText(editor).trim()
+    if (!text) return
 
-  function insertCommand(command: string) {
-    const next = `${command} `;
-    setInput(next);
-    setHideCommandList(true);
-    setHideMentionList(true);
-    requestAnimationFrame(() => {
-      inputRef.current?.focus();
-      inputRef.current?.setSelectionRange(next.length, next.length);
-    });
-  }
-
-  function replaceLastToken(nextToken: string) {
-    const trimmed = input.trimEnd();
-    const parts = trimmed ? trimmed.split(/\s+/) : [];
-    if (!parts.length) {
-      setInput(`${nextToken} `);
-      setHideMentionList(true);
-      return;
-    }
-    parts[parts.length - 1] = nextToken;
-    const next = `${parts.join(" ")} `;
-    setInput(next);
-    setHideMentionList(true);
-    requestAnimationFrame(() => {
-      inputRef.current?.focus();
-      inputRef.current?.setSelectionRange(next.length, next.length);
-    });
+    onSend(text)
+    editor.commands.clearContent()
   }
 
   return (
@@ -85,9 +209,15 @@ export default function ChatPanel({ messages, onSend, commandStatus, onDismissSt
       <div style={styles.panelInner}>
         <div ref={logRef} style={styles.log}>
           {messages.map((message) => (
-            <div key={`${message.id}-${message.timestamp}`} style={styles.message}>
-              <span style={styles.sender}>{message.name}: </span>
-              <span>{message.text}</span>
+            <div
+              key={`${message.id}-${message.timestamp}`}
+              style={message.id.startsWith('tag:') ? { ...styles.message, ...styles.tagMessage } : styles.message}
+            >
+              <span style={message.id.startsWith('tag:') ? { ...styles.sender, ...styles.tagSender } : styles.sender}>
+                {message.id.startsWith('tag:') ? '[TAG] ' : ''}
+                {message.name}:{' '}
+              </span>
+              <span>{renderMessageWithTags(message.text, isValidMentionToken, isValidCommandToken)}</span>
             </div>
           ))}
         </div>
@@ -96,7 +226,7 @@ export default function ChatPanel({ messages, onSend, commandStatus, onDismissSt
           <div
             style={{
               ...styles.status,
-              ...(commandStatus.kind === "error" ? styles.statusError : commandStatus.kind === "success" ? styles.statusSuccess : styles.statusInfo),
+              ...(commandStatus.kind === 'error' ? styles.statusError : commandStatus.kind === 'success' ? styles.statusSuccess : styles.statusInfo),
             }}
             onClick={onDismissStatus}
           >
@@ -106,83 +236,26 @@ export default function ChatPanel({ messages, onSend, commandStatus, onDismissSt
 
         <div style={styles.inputRow}>
           <div style={styles.inputStack}>
-            {showCommands && (
-              <div style={styles.popup}>
-                <button
-                  type="button"
-                  style={styles.popupItem}
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    insertCommand("/teleport");
-                  }}
-                >
-                  <span style={styles.popupLeft}>/teleport</span>
-                  <span style={styles.popupRight}>Request teleport with @users + message</span>
-                </button>
-              </div>
-            )}
-
-            {!!visibleMentions.length && (
-              <div style={styles.popup}>
-                {visibleMentions.map((suggestion) => (
-                  <button
-                    key={suggestion.id}
-                    type="button"
-                    style={styles.popupItem}
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      replaceLastToken(suggestion.token);
-                    }}
-                  >
-                    <span style={styles.popupLeft}>{suggestion.name}</span>
-                    <span style={styles.popupRight}>{suggestion.token}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-
-            <input
-              ref={inputRef}
-              style={styles.input}
-              value={input}
-              onChange={(event) => {
-                setInput(event.target.value);
-                if (!event.target.value.startsWith("/")) {
-                  setHideCommandList(false);
-                }
-                if (!event.target.value.includes("@")) {
-                  setHideMentionList(false);
-                } else {
-                  setHideMentionList(false);
-                }
-              }}
+            <div
+              ref={editorShellRef}
+              style={styles.editorShell}
               onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  setHideCommandList(true);
-                  return;
-                }
-
-                if (event.key === "Tab") {
-                  if (showCommands) {
-                    event.preventDefault();
-                    insertCommand("/teleport");
-                    return;
-                  }
-
-                  if (visibleMentions.length) {
-                    event.preventDefault();
-                    replaceLastToken(visibleMentions[0].token);
-                    return;
+                if (event.key === ' ') {
+                  if (editor && tryConvertTypedMentionAtCursor(editor, getMentionByTypedToken)) {
+                    event.preventDefault()
+                    return
                   }
                 }
 
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  sendCurrent();
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  sendCurrent()
                 }
               }}
-              placeholder="Say something..."
-            />
+            >
+              <EditorContent editor={editor} style={styles.editorContent} />
+              {isEditorEmpty && <span style={styles.placeholder}>Say something...</span>}
+            </div>
           </div>
 
           <button style={styles.btn} onClick={sendCurrent}>
@@ -191,87 +264,96 @@ export default function ChatPanel({ messages, onSend, commandStatus, onDismissSt
         </div>
       </div>
     </HUDPanel>
-  );
+  )
 }
 
 const styles: Record<string, React.CSSProperties> = {
   position: {
     bottom: 20,
     left: 20,
-    overflow: "visible",
-    display: "flex",
-    flexDirection: "column",
+    overflow: 'visible',
+    display: 'flex',
+    flexDirection: 'column',
   },
   panelInner: {
-    display: "flex",
-    flexDirection: "column",
-    width: "100%",
-    height: "100%",
-    overflow: "visible",
+    display: 'flex',
+    flexDirection: 'column',
+    width: '100%',
+    height: '100%',
+    overflow: 'visible',
   },
   log: {
-    padding: "8px 10px",
+    padding: '8px 10px',
     maxHeight: 180,
-    overflowY: "auto",
-    display: "flex",
-    flexDirection: "column",
+    overflowY: 'auto',
+    display: 'flex',
+    flexDirection: 'column',
     gap: 4,
   },
-  message: { fontSize: 13, color: "#fff", lineHeight: 1.4 },
-  sender: { fontWeight: 600, color: "#3498db" },
-  status: { padding: "6px 10px", fontSize: 12, cursor: "pointer" },
-  statusError: { background: "rgba(192, 57, 43, 0.22)", color: "#ffb5ab" },
-  statusSuccess: { background: "rgba(46, 204, 113, 0.2)", color: "#b7f0c9" },
-  statusInfo: { background: "rgba(52, 152, 219, 0.2)", color: "#bedef7" },
-  inputRow: { display: "flex", borderTop: "1px solid #333" },
-  inputStack: { position: "relative", flex: 1 },
-  input: {
-    width: "100%",
-    background: "transparent",
-    border: "none",
-    color: "#fff",
-    padding: "8px 10px",
+  message: { fontSize: 13, color: '#fff', lineHeight: 1.4 },
+  sender: { fontWeight: 600, color: '#3498db' },
+  tagMessage: {
+    background: 'rgba(241, 196, 15, 0.12)',
+    borderLeft: '3px solid #f1c40f',
+    padding: '4px 6px',
+    borderRadius: 4,
+  },
+  tagSender: {
+    color: '#f1c40f',
+  },
+  status: { padding: '6px 10px', fontSize: 12, cursor: 'pointer' },
+  statusError: { background: 'rgba(192, 57, 43, 0.22)', color: '#ffb5ab' },
+  statusSuccess: { background: 'rgba(46, 204, 113, 0.2)', color: '#b7f0c9' },
+  statusInfo: { background: 'rgba(52, 152, 219, 0.2)', color: '#bedef7' },
+  inputRow: { display: 'flex', borderTop: '1px solid #333' },
+  inputStack: { position: 'relative', flex: 1 },
+  editorShell: {
+    minHeight: 33,
+    position: 'relative',
+    display: 'flex',
+    alignItems: 'center',
+    padding: '6px 10px',
+    color: '#fff',
     fontSize: 13,
-    outline: "none",
+    cursor: 'text',
+  },
+  editorContent: {
+    width: '100%',
+    minHeight: 20,
+    display: 'block',
+    caretColor: '#fff',
+  },
+  placeholder: {
+    position: 'absolute',
+    left: 10,
+    top: '50%',
+    transform: 'translateY(-50%)',
+    color: '#8a8a8a',
+    pointerEvents: 'none',
+    fontSize: 13,
   },
   btn: {
-    background: "#3498db",
-    border: "none",
-    color: "#fff",
-    padding: "0 14px",
-    cursor: "pointer",
+    background: '#3498db',
+    border: 'none',
+    color: '#fff',
+    padding: '0 14px',
+    cursor: 'pointer',
     fontSize: 13,
   },
-  popup: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 38,
-    background: "rgba(18, 18, 18, 0.95)",
-    border: "1px solid #323232",
-    borderRadius: 8,
-    zIndex: 40,
-    maxHeight: 180,
-    overflowY: "auto",
-  },
-  popupItem: {
-    width: "100%",
-    border: "none",
-    background: "transparent",
-    color: "#fff",
-    display: "flex",
-    justifyContent: "space-between",
-    textAlign: "left",
-    padding: "7px 10px",
-    cursor: "pointer",
-    fontSize: 12,
-  },
-  popupLeft: {
+  inlineTag: {
+    background: 'rgba(241,196,15,0.18)',
+    border: '1px solid rgba(241,196,15,0.55)',
+    borderRadius: 4,
+    padding: '0 4px',
+    color: '#f1c40f',
     fontWeight: 600,
-    marginRight: 8,
   },
-  popupRight: {
-    color: "#8aaac3",
-    fontFamily: "monospace",
+  inlineCommand: {
+    background: 'rgba(52,152,219,0.18)',
+    border: '1px solid rgba(52,152,219,0.55)',
+    borderRadius: 4,
+    padding: '0 4px',
+    color: '#7fc8ff',
+    fontWeight: 600,
   },
-};
+}

@@ -32,6 +32,7 @@ export function useChat(socket: Socket | null, options: UseChatOptions) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [commandStatus, setCommandStatus] = useState<CommandStatus | null>(null)
   const [teleportRequests, setTeleportRequests] = useState<TeleportIncomingRequest[]>([])
+  const [tagPings, setTagPings] = useState<TagIncoming[]>([])
 
   useEffect(() => {
     if (!socket) return
@@ -41,12 +42,17 @@ export function useChat(socket: Socket | null, options: UseChatOptions) {
     })
 
     socket.on('tag:incoming', (event: TagIncoming) => {
+      console.log('[tag] incoming:', event)
       setMessages(prev => appendMessage(prev, {
         id: `tag:${event.id}`,
         name: 'System',
         text: `${event.fromName} tagged you: ${event.message}`,
         timestamp: event.timestamp,
       }))
+      setTagPings(prev => [event, ...prev.filter(item => item.id !== event.id)].slice(0, 5))
+      window.setTimeout(() => {
+        setTagPings(prev => prev.filter(item => item.id !== event.id))
+      }, 8000)
 
       const notificationKey = `tag:${event.id}`
       if (shouldNotifyHiddenTab(notificationKey)) {
@@ -93,20 +99,33 @@ export function useChat(socket: Socket | null, options: UseChatOptions) {
     if (!socket) return
 
     maybeRequestNotificationPermission()
+    console.log('[chat] send input:', rawInput)
 
     const parsed = parseChatInput(rawInput, onlineUsers, currentUserId)
+    console.log('[chat] parsed input:', parsed)
     if (parsed.kind === 'error') {
       setCommandStatus({ kind: 'error', text: parsed.error })
       return
     }
 
     if (parsed.kind === 'plain') {
+      const lower = parsed.text.toLowerCase()
+      if (lower === '@tag' || lower.startsWith('@tag ')) {
+        setCommandStatus({ kind: 'error', text: 'Add at least one @user and a message for @tag.' })
+        return
+      }
+
       socket.emit('chat:message', { text: parsed.text })
       setCommandStatus(null)
       return
     }
 
     if (parsed.kind === 'tag') {
+      if (!parsed.payload.message.trim()) {
+        setCommandStatus({ kind: 'error', text: 'Tag message cannot be empty.' })
+        return
+      }
+
       socket.emit('tag:send', parsed.payload, (ack?: {
         ok?: boolean
         sent?: { name: string }[]
@@ -170,6 +189,10 @@ export function useChat(socket: Socket | null, options: UseChatOptions) {
     setCommandStatus(null)
   }, [])
 
+  const dismissTagPing = useCallback((id: string) => {
+    setTagPings(prev => prev.filter(item => item.id !== id))
+  }, [])
+
   useEffect(() => {
     if (!commandStatus) return
     const timer = window.setTimeout(() => setCommandStatus(null), 4500)
@@ -181,6 +204,8 @@ export function useChat(socket: Socket | null, options: UseChatOptions) {
     sendMessage,
     commandStatus,
     clearCommandStatus,
+    tagPings,
+    dismissTagPing,
     teleportRequests,
     respondToTeleportRequest,
   }

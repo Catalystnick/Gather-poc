@@ -63,8 +63,11 @@ function extractTargetsAndMessage(
 export function parseChatInput(rawInput: string, onlineUsers: OnlineUser[], currentUserId: string): ParsedInput {
   if (!rawInput.trim()) return { kind: 'error', error: 'Message cannot be empty.' }
 
-  if (rawInput.startsWith('@tag ')) {
-    const tokens = rawInput.trim().split(/\s+/)
+  const trimmed = rawInput.trim()
+  const lower = trimmed.toLowerCase()
+
+  if (lower === '@tag' || lower.startsWith('@tag ')) {
+    const tokens = trimmed.split(/\s+/)
     const extracted = extractTargetsAndMessage(tokens.slice(1), onlineUsers, currentUserId)
     if ('error' in extracted) return { kind: 'error', error: extracted.error }
     return {
@@ -73,8 +76,8 @@ export function parseChatInput(rawInput: string, onlineUsers: OnlineUser[], curr
     }
   }
 
-  if (rawInput.startsWith('/')) {
-    const tokens = rawInput.trim().split(/\s+/)
+  if (trimmed.startsWith('/')) {
+    const tokens = trimmed.split(/\s+/)
     const command = tokens[0].toLowerCase()
 
     if (command !== '/teleport') {
@@ -90,5 +93,5 @@ export function parseChatInput(rawInput: string, onlineUsers: OnlineUser[], curr
     }
   }
 
-  return { kind: 'plain', text: rawInput.trim() }
+  return { kind: 'plain', text: trimmed }
 }

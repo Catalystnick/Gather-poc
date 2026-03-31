@@ -5,6 +5,10 @@ function cleanMessage(value) {
   return trimmed.length > 500 ? trimmed.slice(0, 500) : trimmed
 }
 
+function hasMessageContent(value) {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
 function chooseTeleportDestination({ players, targetCol, targetRow, isValidTile }) {
   const offsets = [
     [1, 0],
@@ -38,10 +42,15 @@ export function handleTagSend({ socket, io, players, payload }) {
     return { ok: false, error: 'sender_not_joined' }
   }
 
+  if (!hasMessageContent(payload?.message)) {
+    return { ok: false, error: 'empty_message' }
+  }
+
   const message = cleanMessage(payload?.message)
   if (!message) {
     return { ok: false, error: 'message_required' }
   }
+  console.log(`[tag] ${socket.userId} (${sender.name}) -> "${message}"`)
 
   const { accepted, rejected } = resolveOnlineTargets({
     targetUserIds: payload?.targetUserIds,
@@ -84,6 +93,7 @@ export function handleTeleportRequest({ socket, io, players, payload, teleportRe
   if (!message) {
     return { ok: false, error: 'message_required' }
   }
+  console.log(`[teleport:request] ${socket.userId} (${sender.name}) -> "${message}"`)
 
   const { accepted, rejected } = resolveOnlineTargets({
     targetUserIds: payload?.targetUserIds,

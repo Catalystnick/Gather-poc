@@ -16,6 +16,7 @@ import ChatPanel from "../hud/ChatPanel";
 import VoiceControls from "../hud/VoiceControls";
 import ServerStatusPanel from "../hud/ServerStatusPanel";
 import VoiceConnectionsPanel from "../hud/VoiceConnectionsPanel";
+import TagPingStack from "../hud/TagPingStack";
 import TeleportRequestInbox from "../hud/TeleportRequestInbox";
 import type { Player } from "../../types";
 
@@ -63,6 +64,8 @@ export default function World({ player }: Props) {
     sendMessage,
     commandStatus,
     clearCommandStatus,
+    tagPings,
+    dismissTagPing,
     teleportRequests,
     respondToTeleportRequest,
   } = useChat(socket, { currentUserId: userId, onlineUsers });
@@ -133,6 +136,7 @@ export default function World({ player }: Props) {
           onDismissStatus={clearCommandStatus}
           mentionSuggestions={mentionSuggestions}
         />
+        <TagPingStack pings={tagPings} onDismiss={dismissTagPing} />
         <TeleportRequestInbox requests={teleportRequests} onRespond={respondToTeleportRequest} />
         <VoiceControls />
         <ServerStatusPanel
