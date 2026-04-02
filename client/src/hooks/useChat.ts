@@ -20,6 +20,17 @@ import type {
 
 const MAX_MESSAGES = 200
 const STALE_TELEPORT_RESPONSE_ERRORS = new Set(['not_found', 'sender_offline', 'forbidden'])
+const NON_BLOCKING_TELEPORT_RESULT_REASONS = new Set(['target_offline', 'sender_offline'])
+const CHAT_DEBUG = import.meta.env.DEV
+
+function logChatDebug(message: string, payload?: unknown) {
+  if (!CHAT_DEBUG) return
+  if (payload === undefined) {
+    console.log(message)
+    return
+  }
+  console.log(message, payload)
+}
 
 function appendMessage(prev: ChatMessage[], nextMessage: ChatMessage) {
   const next = [...prev, nextMessage]
@@ -80,7 +91,7 @@ export function useChat(socket: Socket | null, options: UseChatOptions) {
         && (mentionedByUserId || mentionTokens.includes(currentUserToken))
 
       if (!mentionedCurrentUser) {
-        console.log('[notify][mention] skipped mention sound/notification', {
+        logChatDebug('[notify][mention] skipped mention sound/notification', {
           fromUserId: normalizedMessage.id,
           currentUserId,
           mentionedByUserId,
@@ -90,7 +101,7 @@ export function useChat(socket: Socket | null, options: UseChatOptions) {
         return
       }
 
-      console.log('[notify][mention] invoking playTagSound()', {
+      logChatDebug('[notify][mention] invoking playTagSound()', {
         fromUserId: normalizedMessage.id,
         fromName: normalizedMessage.name,
       })
@@ -98,7 +109,7 @@ export function useChat(socket: Socket | null, options: UseChatOptions) {
 
       const notificationKey = `mention:${normalizedMessage.id}:${normalizedMessage.timestamp}:${currentUserToken}`
       const shouldNotify = shouldNotifyAnyVisibility(notificationKey)
-      console.log('[notify][mention] chat mention detected:', {
+      logChatDebug('[notify][mention] chat mention detected:', {
         notificationKey,
         fromUserId: normalizedMessage.id,
         fromName: normalizedMessage.name,
@@ -111,14 +122,14 @@ export function useChat(socket: Socket | null, options: UseChatOptions) {
           `Mention from ${normalizedMessage.name}`,
           normalizedMessage.body ?? normalizedMessage.text,
         ).then((shown) => {
-          console.log('[notify][mention] dispatch result:', {
+          logChatDebug('[notify][mention] dispatch result:', {
             notificationKey,
             shown,
             debug: getNotificationDebugState(),
           })
         })
       } else {
-        console.log('[notify][mention] skipped notification dispatch')
+        logChatDebug('[notify][mention] skipped notification dispatch')
       }
     })
 
@@ -132,8 +143,8 @@ export function useChat(socket: Socket | null, options: UseChatOptions) {
     })
 
     socket.on('tag:incoming', (event: TagIncoming) => {
-      console.log('[tag] incoming:', event)
-      console.log('[notify][tag] incoming event:', {
+      logChatDebug('[tag] incoming:', event)
+      logChatDebug('[notify][tag] incoming event:', {
         tagId: event.id,
         fromUserId: event.fromUserId,
         fromName: event.fromName,
@@ -149,27 +160,27 @@ export function useChat(socket: Socket | null, options: UseChatOptions) {
       window.setTimeout(() => {
         setTagPings(prev => prev.filter(item => item.id !== event.id))
       }, 8000)
-      console.log('[notify][tag] invoking playTagSound()', { tagId: event.id })
+      logChatDebug('[notify][tag] invoking playTagSound()', { tagId: event.id })
       playTagSound()
-      console.log('[notify][tag] playTagSound() call completed', { tagId: event.id })
+      logChatDebug('[notify][tag] playTagSound() call completed', { tagId: event.id })
 
       const notificationKey = `tag:${event.id}`
       const shouldNotify = shouldNotifyAnyVisibility(notificationKey)
-      console.log('[notify][tag] gate decision:', {
+      logChatDebug('[notify][tag] gate decision:', {
         notificationKey,
         shouldNotify,
         debug: getNotificationDebugState(),
       })
       if (shouldNotify) {
         void showBrowserNotification(`Tag from ${event.fromName}`, event.message).then((shown) => {
-          console.log('[notify][tag] dispatch result:', {
+          logChatDebug('[notify][tag] dispatch result:', {
             notificationKey,
             shown,
             debug: getNotificationDebugState(),
           })
         })
       } else {
-        console.log('[notify][tag] skipped notification dispatch')
+        logChatDebug('[notify][tag] skipped notification dispatch')
       }
     })
 
@@ -207,7 +218,12 @@ export function useChat(socket: Socket | null, options: UseChatOptions) {
       } else if (event.status === 'declined') {
         setCommandStatus({ kind: 'info', text: `${event.targetName ?? 'User'} declined the teleport request.` })
       } else {
-        setCommandStatus({ kind: 'error', text: `Teleport request failed: ${event.reason ?? 'unknown'}` })
+        const reason = event.reason ?? 'unknown'
+        if (NON_BLOCKING_TELEPORT_RESULT_REASONS.has(reason)) {
+          setCommandStatus({ kind: 'info', text: 'Teleport request is no longer active.' })
+        } else {
+          setCommandStatus({ kind: 'error', text: `Teleport request failed: ${reason}` })
+        }
       }
     })
 
@@ -225,10 +241,10 @@ export function useChat(socket: Socket | null, options: UseChatOptions) {
     if (!socket) return
 
     maybeRequestNotificationPermission()
-    console.log('[chat] send input:', rawInput)
+    logChatDebug('[chat] send input:', rawInput)
 
     const parsed = parseChatInput(rawInput, onlineUsers, currentUserId)
-    console.log('[chat] parsed input:', parsed)
+    logChatDebug('[chat] parsed input:', parsed)
     if (parsed.kind === 'error') {
       setCommandStatus({ kind: 'error', text: parsed.error })
       return

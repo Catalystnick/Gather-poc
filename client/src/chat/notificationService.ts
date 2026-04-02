@@ -47,16 +47,18 @@ function unlockAudioContext() {
   logSound('AudioContext already unlocked', { state: ctx.state })
 }
 
-function getTagSoundUrl() {
+function resolveAssetUrl(assetPath: string) {
   const base = import.meta.env.BASE_URL ?? '/'
   const normalizedBase = base.endsWith('/') ? base : `${base}/`
-  return `${normalizedBase}${TAG_SOUND_PATH}`
+  return `${normalizedBase}${assetPath}`
+}
+
+function getTagSoundUrl() {
+  return resolveAssetUrl(TAG_SOUND_PATH)
 }
 
 function getTeleportSoundUrl() {
-  const base = import.meta.env.BASE_URL ?? '/'
-  const normalizedBase = base.endsWith('/') ? base : `${base}/`
-  return `${normalizedBase}${TELEPORT_SOUND_PATH}`
+  return resolveAssetUrl(TELEPORT_SOUND_PATH)
 }
 
 function getTagAudioElement(): HTMLAudioElement | null {
@@ -145,7 +147,7 @@ function getTeleportAudioElement(): HTMLAudioElement | null {
 
 function primeTagAudioElement() {
   const audio = getTagAudioElement()
-  if (!audio) return
+  if (!audio) return false
   try {
     logSound('Priming audio element via load()', {
       src: audio.currentSrc || audio.src,
@@ -153,15 +155,17 @@ function primeTagAudioElement() {
       networkState: audio.networkState,
     })
     audio.load()
+    return true
   } catch (error) {
     logSound('Audio preload failed', error)
     // Ignore preload failures and fall back to synth sound at playback time.
+    return false
   }
 }
 
 function primeTeleportAudioElement() {
   const audio = getTeleportAudioElement()
-  if (!audio) return
+  if (!audio) return false
   try {
     logSound('Priming teleport audio element via load()', {
       src: audio.currentSrc || audio.src,
@@ -169,9 +173,11 @@ function primeTeleportAudioElement() {
       networkState: audio.networkState,
     })
     audio.load()
+    return true
   } catch (error) {
     logSound('Teleport audio preload failed', error)
     // Ignore preload failures and fall back to synth sound at playback time.
+    return false
   }
 }
 
@@ -252,6 +258,75 @@ function playTeleportSoundFallback() {
   oscillator.stop(ctx.currentTime + 0.17)
 }
 
+function getPlaybackDebugContext() {
+  return {
+    visibility: typeof document === 'undefined' ? 'unknown' : document.visibilityState,
+    userActivation:
+      typeof navigator !== 'undefined' && navigator.userActivation
+        ? {
+            hasBeenActive: navigator.userActivation.hasBeenActive,
+            isActive: navigator.userActivation.isActive,
+          }
+        : null,
+  }
+}
+
+function playAudioElementWithFallback(options: {
+  audio: HTMLAudioElement | null
+  emptyAudioMessage: string
+  playCalledMessage: string
+  playResolvedMessage: string
+  playRejectedMessage: string
+  playThrewMessage: string
+  fallback: () => void
+}) {
+  const {
+    audio,
+    emptyAudioMessage,
+    playCalledMessage,
+    playResolvedMessage,
+    playRejectedMessage,
+    playThrewMessage,
+    fallback,
+  } = options
+  if (!audio) {
+    logSound(emptyAudioMessage)
+    fallback()
+    return
+  }
+
+  try {
+    audio.currentTime = 0
+    const playPromise = audio.play()
+    logSound(playCalledMessage, {
+      src: audio.currentSrc || audio.src,
+      paused: audio.paused,
+      muted: audio.muted,
+      volume: audio.volume,
+      readyState: audio.readyState,
+      networkState: audio.networkState,
+      currentTime: audio.currentTime,
+    })
+    if (!playPromise || typeof playPromise.then !== 'function') return
+
+    void playPromise
+      .then(() => {
+        logSound(playResolvedMessage, {
+          src: audio.currentSrc || audio.src,
+          paused: audio.paused,
+          currentTime: audio.currentTime,
+        })
+      })
+      .catch((error) => {
+        logSound(playRejectedMessage, error)
+        fallback()
+      })
+  } catch (error) {
+    logSound(playThrewMessage, error)
+    fallback()
+  }
+}
+
 let _faviconLink: HTMLLinkElement | null = null
 let _badgeFaviconUrl: string | null = null
 const TAB_BADGE_PREFIX = '• '
@@ -297,99 +372,29 @@ export function setTabBadge(active: boolean) {
 }
 
 export function playTagSound() {
-  logSound('playTagSound invoked', {
-    visibility: typeof document === 'undefined' ? 'unknown' : document.visibilityState,
-    userActivation:
-      typeof navigator !== 'undefined' && navigator.userActivation
-        ? {
-            hasBeenActive: navigator.userActivation.hasBeenActive,
-            isActive: navigator.userActivation.isActive,
-          }
-        : null,
+  logSound('playTagSound invoked', getPlaybackDebugContext())
+  playAudioElementWithFallback({
+    audio: getTagAudioElement(),
+    emptyAudioMessage: 'No audio element available, using fallback sound',
+    playCalledMessage: 'audio.play() called',
+    playResolvedMessage: 'audio.play() resolved',
+    playRejectedMessage: 'audio.play() rejected, falling back',
+    playThrewMessage: 'audio.play() threw synchronously, falling back',
+    fallback: playTagSoundFallback,
   })
-  const audio = getTagAudioElement()
-  if (!audio) {
-    logSound('No audio element available, using fallback sound')
-    playTagSoundFallback()
-    return
-  }
-
-  try {
-    audio.currentTime = 0
-    const playPromise = audio.play()
-    logSound('audio.play() called', {
-      src: audio.currentSrc || audio.src,
-      paused: audio.paused,
-      muted: audio.muted,
-      volume: audio.volume,
-      readyState: audio.readyState,
-      networkState: audio.networkState,
-      currentTime: audio.currentTime,
-    })
-    void playPromise
-      .then(() => {
-        logSound('audio.play() resolved', {
-          src: audio.currentSrc || audio.src,
-          paused: audio.paused,
-          currentTime: audio.currentTime,
-        })
-      })
-      .catch((error) => {
-        logSound('audio.play() rejected, falling back', error)
-        playTagSoundFallback()
-      })
-  } catch (error) {
-    logSound('audio.play() threw synchronously, falling back', error)
-    playTagSoundFallback()
-  }
 }
 
 export function playTeleportSound() {
-  logSound('playTeleportSound invoked', {
-    visibility: typeof document === 'undefined' ? 'unknown' : document.visibilityState,
-    userActivation:
-      typeof navigator !== 'undefined' && navigator.userActivation
-        ? {
-            hasBeenActive: navigator.userActivation.hasBeenActive,
-            isActive: navigator.userActivation.isActive,
-          }
-        : null,
+  logSound('playTeleportSound invoked', getPlaybackDebugContext())
+  playAudioElementWithFallback({
+    audio: getTeleportAudioElement(),
+    emptyAudioMessage: 'No teleport audio element available, using fallback sound',
+    playCalledMessage: 'teleport audio.play() called',
+    playResolvedMessage: 'teleport audio.play() resolved',
+    playRejectedMessage: 'teleport audio.play() rejected, falling back',
+    playThrewMessage: 'teleport audio.play() threw synchronously, falling back',
+    fallback: playTeleportSoundFallback,
   })
-  const audio = getTeleportAudioElement()
-  if (!audio) {
-    logSound('No teleport audio element available, using fallback sound')
-    playTeleportSoundFallback()
-    return
-  }
-
-  try {
-    audio.currentTime = 0
-    const playPromise = audio.play()
-    logSound('teleport audio.play() called', {
-      src: audio.currentSrc || audio.src,
-      paused: audio.paused,
-      muted: audio.muted,
-      volume: audio.volume,
-      readyState: audio.readyState,
-      networkState: audio.networkState,
-      currentTime: audio.currentTime,
-    })
-    void playPromise
-      .then(() => {
-        logSound('teleport audio.play() resolved', {
-          src: audio.currentSrc || audio.src,
-          paused: audio.paused,
-          currentTime: audio.currentTime,
-        })
-      })
-      .catch((error) => {
-        logSound('teleport audio.play() rejected, falling back', error)
-        playTeleportSoundFallback()
-      })
-  } catch (error) {
-    logSound('teleport audio.play() threw synchronously, falling back', error)
-    playTeleportSoundFallback()
-  }
 }
 
 function isNotificationSupported() {
@@ -557,8 +562,12 @@ export function ensureNotificationPermissionOnUserGesture() {
       permission: isNotificationSupported() ? Notification.permission : 'unavailable',
     })
     unlockAudioContext()
-    primeTagAudioElement()
-    primeTeleportAudioElement()
+    const primedTagAudio = primeTagAudioElement()
+    const primedTeleportAudio = primeTeleportAudioElement()
+    logSound('Audio assets primed on gesture', {
+      primedTagAudio,
+      primedTeleportAudio,
+    })
     if (isNotificationSupported() && Notification.permission === 'default') {
       logSound('Requesting notification permission from gesture handler')
       void Notification.requestPermission()
