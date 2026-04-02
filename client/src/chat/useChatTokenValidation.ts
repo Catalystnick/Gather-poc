@@ -7,9 +7,14 @@ interface UseChatTokenValidationOptions {
   extraMentionTokens?: string[]
 }
 
+/**
+ * Builds fast, case-insensitive token validators used by chat input UX.
+ * Keeps lookups memoized so validation stays cheap while typing.
+ */
 export function useChatTokenValidation(options: UseChatTokenValidationOptions) {
   const { mentionSuggestions, commandTokens, extraMentionTokens = [] } = options
 
+  // Includes both dynamic mention suggestions and optional static aliases.
   const validMentionTokens = useMemo(
     () => new Set([
       ...mentionSuggestions.map(item => item.token.toLowerCase()),
@@ -23,6 +28,7 @@ export function useChatTokenValidation(options: UseChatTokenValidationOptions) {
     [commandTokens],
   )
 
+  // Maps typed text (without @) to a full mention suggestion.
   const mentionByNormalizedToken = useMemo(() => {
     const map = new Map<string, MentionSuggestion>()
     for (const suggestion of mentionSuggestions) {

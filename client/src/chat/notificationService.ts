@@ -9,6 +9,7 @@ const TAG_SOUND_PATH = 'ping%20audio/tag%20ping.mp3'
 const TELEPORT_SOUND_PATH = 'ping%20audio/teleport%20ping.mp3'
 const SOUND_DEBUG = import.meta.env.DEV
 
+/** Dev-only logger for tracing notification/audio behavior. */
 function logSound(message: string, payload?: unknown) {
   if (!SOUND_DEBUG) return
   if (payload === undefined) {
@@ -18,6 +19,7 @@ function logSound(message: string, payload?: unknown) {
   console.log(`[notify][sound] ${message}`, payload)
 }
 
+/** Lazily creates and caches a single AudioContext instance. */
 function getAudioContext(): AudioContext | null {
   if (typeof window === 'undefined') {
     logSound('AudioContext unavailable: no window')
@@ -34,6 +36,7 @@ function getAudioContext(): AudioContext | null {
   return _audioCtx
 }
 
+/** Attempts to resume audio playback after a user gesture. */
 function unlockAudioContext() {
   const ctx = getAudioContext()
   if (!ctx) return
@@ -47,20 +50,24 @@ function unlockAudioContext() {
   logSound('AudioContext already unlocked', { state: ctx.state })
 }
 
+/** Resolves a public asset path against the app base URL. */
 function resolveAssetUrl(assetPath: string) {
   const base = import.meta.env.BASE_URL ?? '/'
   const normalizedBase = base.endsWith('/') ? base : `${base}/`
   return `${normalizedBase}${assetPath}`
 }
 
+/** Returns the resolved URL for the tag ping sound asset. */
 function getTagSoundUrl() {
   return resolveAssetUrl(TAG_SOUND_PATH)
 }
 
+/** Returns the resolved URL for the teleport ping sound asset. */
 function getTeleportSoundUrl() {
   return resolveAssetUrl(TELEPORT_SOUND_PATH)
 }
 
+/** Creates/reuses the HTMLAudioElement used for tag sounds. */
 function getTagAudioElement(): HTMLAudioElement | null {
   if (typeof window === 'undefined') {
     logSound('Cannot create audio element: no window')
@@ -103,6 +110,7 @@ function getTagAudioElement(): HTMLAudioElement | null {
   return audio
 }
 
+/** Creates/reuses the HTMLAudioElement used for teleport sounds. */
 function getTeleportAudioElement(): HTMLAudioElement | null {
   if (typeof window === 'undefined') {
     logSound('Cannot create teleport audio element: no window')
@@ -145,6 +153,7 @@ function getTeleportAudioElement(): HTMLAudioElement | null {
   return audio
 }
 
+/** Eagerly loads the tag sound so first playback is less delayed. */
 function primeTagAudioElement() {
   const audio = getTagAudioElement()
   if (!audio) return false
@@ -163,6 +172,7 @@ function primeTagAudioElement() {
   }
 }
 
+/** Eagerly loads the teleport sound so first playback is less delayed. */
 function primeTeleportAudioElement() {
   const audio = getTeleportAudioElement()
   if (!audio) return false
@@ -181,6 +191,7 @@ function primeTeleportAudioElement() {
   }
 }
 
+/** Fallback two-tone beep used when file playback fails. */
 function playTagSoundFallback() {
   logSound('Using fallback oscillator sound')
   const ctx = getAudioContext()
@@ -226,6 +237,7 @@ function playTagSoundFallback() {
   osc2.stop(now + 0.4)
 }
 
+/** Fallback descending tone used when teleport sound playback fails. */
 function playTeleportSoundFallback() {
   logSound('Using teleport fallback oscillator sound')
   const ctx = getAudioContext()
@@ -258,6 +270,7 @@ function playTeleportSoundFallback() {
   oscillator.stop(ctx.currentTime + 0.17)
 }
 
+/** Captures runtime context useful when debugging blocked playback. */
 function getPlaybackDebugContext() {
   return {
     visibility: typeof document === 'undefined' ? 'unknown' : document.visibilityState,
@@ -271,6 +284,7 @@ function getPlaybackDebugContext() {
   }
 }
 
+/** Shared safe-play helper that falls back to synthesized audio on failure. */
 function playAudioElementWithFallback(options: {
   audio: HTMLAudioElement | null
   emptyAudioMessage: string
@@ -331,6 +345,7 @@ let _faviconLink: HTMLLinkElement | null = null
 let _badgeFaviconUrl: string | null = null
 const TAB_BADGE_PREFIX = '• '
 
+/** Finds or creates the current favicon link element. */
 function getFaviconLink(): HTMLLinkElement {
   if (_faviconLink) return _faviconLink
   let link = document.querySelector<HTMLLinkElement>('link[rel~="icon"]')
@@ -343,6 +358,7 @@ function getFaviconLink(): HTMLLinkElement {
   return link
 }
 
+/** Builds and caches an orange-dot favicon used as a tab badge. */
 function getBadgeFaviconUrl(): string {
   if (_badgeFaviconUrl) return _badgeFaviconUrl
   const canvas = document.createElement('canvas')
@@ -357,6 +373,7 @@ function getBadgeFaviconUrl(): string {
   return _badgeFaviconUrl
 }
 
+/** Toggles the tab badge and title prefix when attention is needed. */
 export function setTabBadge(active: boolean) {
   if (typeof document === 'undefined') return
   getFaviconLink().href = active ? getBadgeFaviconUrl() : ''
@@ -371,6 +388,7 @@ export function setTabBadge(active: boolean) {
   }
 }
 
+/** Plays the tag notification sound, with oscillator fallback. */
 export function playTagSound() {
   logSound('playTagSound invoked', getPlaybackDebugContext())
   playAudioElementWithFallback({
@@ -384,6 +402,7 @@ export function playTagSound() {
   })
 }
 
+/** Plays the teleport notification sound, with oscillator fallback. */
 export function playTeleportSound() {
   logSound('playTeleportSound invoked', getPlaybackDebugContext())
   playAudioElementWithFallback({
@@ -397,6 +416,7 @@ export function playTeleportSound() {
   })
 }
 
+/** Checks if browser notifications are available in this environment. */
 function isNotificationSupported() {
   if (typeof window === 'undefined') return false
   if (!('Notification' in window)) return false
@@ -404,11 +424,13 @@ function isNotificationSupported() {
   return window.isSecureContext || window.location.hostname === 'localhost'
 }
 
+/** Checks whether service-worker-based notifications are available. */
 function isServiceWorkerNotificationSupported() {
   if (typeof window === 'undefined') return false
   return 'serviceWorker' in navigator
 }
 
+/** Registers and caches the notification service worker registration. */
 async function registerNotificationServiceWorker() {
   if (!isServiceWorkerNotificationSupported()) return null
   if (serviceWorkerRegistrationPromise) return serviceWorkerRegistrationPromise
@@ -429,6 +451,7 @@ async function registerNotificationServiceWorker() {
   return serviceWorkerRegistrationPromise
 }
 
+/** Returns a compact snapshot of current notification capability/state. */
 export function getNotificationDebugState() {
   if (typeof window === 'undefined') {
     return {
@@ -450,6 +473,7 @@ export function getNotificationDebugState() {
   } as const
 }
 
+/** Applies visibility + cooldown gating per notification key. */
 function shouldNotifyByKey(
   key: string,
   options?: { cooldownMs?: number; requireHidden?: boolean },
@@ -469,14 +493,17 @@ function shouldNotifyByKey(
   return true
 }
 
+/** Hidden-tab-only notification gate with cooldown protection. */
 export function shouldNotifyHiddenTab(key: string, cooldownMs = DEFAULT_COOLDOWN_MS) {
   return shouldNotifyByKey(key, { cooldownMs, requireHidden: true })
 }
 
+/** Notification gate that ignores tab visibility, still with cooldown. */
 export function shouldNotifyAnyVisibility(key: string, cooldownMs = DEFAULT_COOLDOWN_MS) {
   return shouldNotifyByKey(key, { cooldownMs, requireHidden: false })
 }
 
+/** Dispatches a browser notification via SW first, then API fallback. */
 export async function showBrowserNotification(title: string, body: string) {
   if (!isNotificationSupported() || Notification.permission !== 'granted') return false
 
@@ -517,6 +544,7 @@ export async function showBrowserNotification(title: string, body: string) {
   }
 }
 
+/** Requests permission if needed and primes SW registration when granted. */
 export function maybeRequestNotificationPermission() {
   logSound('maybeRequestNotificationPermission called', {
     notificationSupported: isNotificationSupported(),
@@ -541,6 +569,7 @@ export function maybeRequestNotificationPermission() {
   }
 }
 
+/** One-time gesture hook to unlock audio and request notification permission. */
 export function ensureNotificationPermissionOnUserGesture() {
   if (typeof window === 'undefined') return
   if (gesturePermissionHookInstalled) return
