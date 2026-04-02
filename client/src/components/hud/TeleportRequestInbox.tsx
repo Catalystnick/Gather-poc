@@ -1,4 +1,6 @@
+import { useEffect, useRef } from 'react'
 import HUDPanel from './HUDPanel'
+import { playTeleportSound } from '../../chat/notificationService'
 import type { TeleportIncomingRequest } from '../../chat/types'
 
 interface Props {
@@ -7,6 +9,24 @@ interface Props {
 }
 
 export default function TeleportRequestInbox({ requests, onRespond }: Props) {
+  const seenRequestIdsRef = useRef<Set<string>>(new Set())
+
+  useEffect(() => {
+    const currentIds = new Set(requests.map(request => request.requestId))
+    const seen = seenRequestIdsRef.current
+    let hasNewRequest = false
+
+    for (const requestId of currentIds) {
+      if (!seen.has(requestId)) {
+        hasNewRequest = true
+        break
+      }
+    }
+
+    seenRequestIdsRef.current = currentIds
+    if (hasNewRequest) playTeleportSound()
+  }, [requests])
+
   if (!requests.length) return null
 
   return (
@@ -33,9 +53,12 @@ export default function TeleportRequestInbox({ requests, onRespond }: Props) {
 
 const styles: Record<string, React.CSSProperties> = {
   position: {
-    top: 20,
-    right: 20,
-    width: 320,
+    top: '50%',
+    left: '50%',
+    transform: 'translate(-50%, -50%)',
+    width: 360,
+    maxWidth: 'calc(100vw - 24px)',
+    zIndex: 20,
   },
   wrapper: {
     display: 'flex',

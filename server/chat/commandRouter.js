@@ -136,6 +136,12 @@ export function handleTeleportRequest({ socket, io, players, payload, teleportRe
       message,
       timestamp: result.request.createdAt,
     })
+    if (result.replacedRequestId) {
+      io.to(`user:${targetId}`).emit('teleport:request_cleared', {
+        requestId: result.replacedRequestId,
+        reason: 'replaced',
+      })
+    }
 
     sent.push({
       userId: targetId,
@@ -161,7 +167,16 @@ export function handleTeleportRequest({ socket, io, players, payload, teleportRe
   }
 }
 
-export function handleTeleportRespond({ socket, io, players, payload, teleportRequests, isValidTile }) {
+export function handleTeleportRespond({
+  socket,
+  io,
+  players,
+  payload,
+  teleportRequests,
+  isValidTile,
+  tileCenter,
+  detectZoneKey,
+}) {
   const responder = players[socket.userId]
   if (!responder) {
     return { ok: false, error: 'responder_not_joined' }
@@ -230,29 +245,23 @@ export function handleTeleportRespond({ socket, io, players, payload, teleportRe
 
   responder.col = destination.col
   responder.row = destination.row
-  responder.moving = false
-  responder.zoneKey = sender.zoneKey ?? null
-
-  io.emit('player:updated', {
-    id: socket.userId,
-    col: destination.col,
-    row: destination.row,
-    direction: responder.direction,
+  const world = tileCenter(destination.col, destination.row)
+  responder.x = world.x
+  responder.y = world.y
+  responder.vx = 0
+  responder.vy = 0
+  responder.inputState = {
+    seq: Number.isInteger(responder.lastProcessedInputSeq)
+      ? responder.lastProcessedInputSeq
+      : 0,
+    inputX: 0,
+    inputY: 0,
+    facing: responder.facing,
     moving: false,
-    zoneKey: responder.zoneKey,
-  })
-
-  socket.broadcast.emit('player:teleported', {
-    id: responder.id,
-    name: responder.name,
-    avatar: responder.avatar,
-    col: responder.col,
-    row: responder.row,
-    direction: responder.direction,
-    moving: responder.moving,
-    zoneKey: responder.zoneKey ?? null,
-    muted: !!responder.muted,
-  })
+    clientTimeMs: Date.now(),
+  }
+  responder.moving = false
+  responder.zoneKey = detectZoneKey(responder.x, responder.y) ?? sender.zoneKey ?? null
 
   io.to(`user:${request.senderId}`).emit('teleport:result', {
     requestId,

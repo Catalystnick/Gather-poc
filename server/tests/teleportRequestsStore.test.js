@@ -78,3 +78,20 @@ test('respond validates target ownership', () => {
   assert.equal(accepted.ok, true)
   assert.equal(store.getPendingForTarget('t1').length, 0)
 })
+
+test('clearForUser returns removed pending requests', () => {
+  const store = new TeleportRequestsStore({ cooldownMs: 0 })
+  const created = store.createOrReplace({
+    senderId: 's1',
+    senderName: 'Sender',
+    targetId: 't1',
+    message: 'first',
+  })
+
+  if (!created.ok) throw new Error('Expected request creation to succeed')
+
+  const cleared = store.clearForUser('s1')
+  assert.equal(cleared.length, 1)
+  assert.equal(cleared[0].id, created.request.id)
+  assert.equal(store.getPendingForTarget('t1').length, 0)
+})

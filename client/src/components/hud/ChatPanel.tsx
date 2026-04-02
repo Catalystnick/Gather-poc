@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { EditorContent, useEditor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Mention from '@tiptap/extension-mention'
@@ -15,20 +15,40 @@ interface Props {
   commandStatus: CommandStatus | null
   onDismissStatus: () => void
   mentionSuggestions: MentionSuggestion[]
+  currentUserToken: string
 }
 
 const commandOptions = [
   { command: '/teleport', description: 'Request teleport with @users + message' },
 ]
 
+const COMMAND_MENTION_ID_PREFIX = 'command-token:'
+
+function isCommandMentionId(id: unknown): id is string {
+  return typeof id === 'string' && id.startsWith(COMMAND_MENTION_ID_PREFIX)
+}
+
+function commandMentionId(commandToken: string): string {
+  return `${COMMAND_MENTION_ID_PREFIX}${commandToken.toLowerCase()}`
+}
+
 function renderMessageWithTags(
   text: string,
   isValidMentionToken: (token: string) => boolean,
   isValidCommandToken: (token: string) => boolean,
+  options?: { forceMentionTokenStyle?: boolean },
 ) {
+  const forceMentionTokenStyle = !!options?.forceMentionTokenStyle
   const parts = text.split(/(@[A-Za-z0-9_\-]+|\/[A-Za-z0-9_\-]+)/g)
   return parts.map((part, index) => {
-    if (part.startsWith('@') && isValidMentionToken(part)) {
+    const looksLikeMentionToken = /^@[A-Za-z0-9_\-]+$/.test(part)
+    if (
+      part.startsWith('@') && (
+        part.toLowerCase() === '@tag'
+        || isValidMentionToken(part)
+        || (forceMentionTokenStyle && looksLikeMentionToken)
+      )
+    ) {
       return (
         <span key={`${part}-${index}`} style={styles.inlineTag}>
           {part}
@@ -46,6 +66,44 @@ function renderMessageWithTags(
 
     return <span key={`${part}-${index}`}>{part}</span>
   })
+}
+
+function renderStructuredMessage(
+  message: ChatMessage,
+  isValidMentionToken: (token: string) => boolean,
+  isValidCommandToken: (token: string) => boolean,
+) {
+  const isTagMessage = message.id.startsWith('tag:')
+  if (isTagMessage) {
+    return renderMessageWithTags(
+      message.text,
+      isValidMentionToken,
+      isValidCommandToken,
+      { forceMentionTokenStyle: true },
+    )
+  }
+
+  const mentions = Array.isArray(message.mentions) ? message.mentions : []
+  const body = (message.body ?? message.text).trim()
+  if (!mentions.length) {
+    return renderMessageWithTags(body, isValidMentionToken, isValidCommandToken)
+  }
+
+  const mentionNodes = mentions.map((mention, index) => (
+    <span key={`${mention.userId}-${index}`} style={styles.inlineTag}>
+      {mention.token}
+    </span>
+  ))
+
+  if (!body) return mentionNodes
+
+  return (
+    <>
+      {mentionNodes}
+      <span>{' '}</span>
+      {renderMessageWithTags(body, isValidMentionToken, isValidCommandToken)}
+    </>
+  )
 }
 
 function getComposerText(editor: NonNullable<ReturnType<typeof useEditor>>) {
@@ -85,8 +143,47 @@ function tryConvertTypedMentionAtCursor(
   return true
 }
 
+function tryConvertTypedCommandAtCursor(
+  editor: NonNullable<ReturnType<typeof useEditor>>,
+  isValidCommandToken: (token: string) => boolean,
+) {
+  const from = editor.state.selection.from
+  const before = editor.state.doc.textBetween(0, from, '\n', ' ')
+  if (!/^\s*\/[A-Za-z0-9_\-]+$/.test(before)) return false
+  const match = before.match(/\/[A-Za-z0-9_\-]+$/)
+  if (!match) return false
+
+  const commandToken = match[0]
+  if (!isValidCommandToken(commandToken)) return false
+
+  editor
+    .chain()
+    .focus()
+    .deleteRange({ from: from - commandToken.length, to: from })
+    .insertContent([
+      {
+        type: 'mention',
+        attrs: {
+          id: commandMentionId(commandToken),
+          label: commandToken,
+        },
+      },
+      { type: 'text', text: ' ' },
+    ])
+    .run()
+
+  return true
+}
+
 /** Chat panel rewritten around Tiptap suggestion extensions for @mentions and slash commands. */
-export default function ChatPanel({ messages, onSend, commandStatus, onDismissStatus, mentionSuggestions }: Props) {
+export default function ChatPanel({
+  messages,
+  onSend,
+  commandStatus,
+  onDismissStatus,
+  mentionSuggestions,
+  currentUserToken,
+}: Props) {
   const logRef = useRef<HTMLDivElement>(null)
   const editorShellRef = useRef<HTMLDivElement>(null)
   const mentionsRef = useRef<MentionSuggestion[]>(mentionSuggestions)
@@ -97,6 +194,7 @@ export default function ChatPanel({ messages, onSend, commandStatus, onDismissSt
   } = useChatTokenValidation({
     mentionSuggestions,
     commandTokens: commandOptions.map(item => item.command),
+    extraMentionTokens: [currentUserToken],
   })
   const [isEditorEmpty, setIsEditorEmpty] = useState(true)
 
@@ -125,12 +223,24 @@ export default function ChatPanel({ messages, onSend, commandStatus, onDismissSt
         horizontalRule: false,
       }),
       Mention.configure({
-        HTMLAttributes: {
-          style:
-            'background: rgba(241,196,15,0.18); border: 1px solid rgba(241,196,15,0.55); border-radius: 4px; padding: 1px 4px; color: #f1c40f; font-weight: 600;',
+        renderHTML({ node }) {
+          const commandToken = isCommandMentionId(node.attrs.id)
+          const style = commandToken
+            ? 'background: rgba(52,152,219,0.18); border: 1px solid rgba(52,152,219,0.55); border-radius: 4px; padding: 1px 4px; color: #7fc8ff; font-weight: 600;'
+            : 'background: rgba(241,196,15,0.18); border: 1px solid rgba(241,196,15,0.55); border-radius: 4px; padding: 1px 4px; color: #f1c40f; font-weight: 600;'
+          return [
+            'span',
+            {
+              style,
+              'data-token-kind': commandToken ? 'command' : 'mention',
+            },
+            commandToken ? node.attrs.label ?? '' : `@${node.attrs.label ?? 'user'}`,
+          ]
         },
         renderText({ node }) {
-          return `@${node.attrs.label ?? 'user'}`
+          return isCommandMentionId(node.attrs.id)
+            ? `${node.attrs.label ?? ''}`
+            : `@${node.attrs.label ?? 'user'}`
         },
         suggestion: {
           char: '@',
@@ -174,6 +284,24 @@ export default function ChatPanel({ messages, onSend, commandStatus, onDismissSt
       SlashCommandExtension.configure({
         commands: commandOptions,
         getSuggestionAnchorRect: () => editorShellRef.current?.getBoundingClientRect() ?? null,
+        insertCommandToken: ({ editor, range, command }) => {
+          editor
+            .chain()
+            .focus()
+            .deleteRange(range)
+            .insertContent([
+              {
+                type: 'mention',
+                attrs: {
+                  id: commandMentionId(command),
+                  label: command,
+                },
+              },
+              { type: 'text', text: ' ' },
+            ])
+            .run()
+          return true
+        },
       }),
     ],
     content: '',
@@ -195,31 +323,67 @@ export default function ChatPanel({ messages, onSend, commandStatus, onDismissSt
     logRef.current.scrollTop = logRef.current.scrollHeight
   }, [messages])
 
-  function sendCurrent() {
+  const sendCurrent = useCallback(() => {
     if (!editor) return
     const text = getComposerText(editor).trim()
     if (!text) return
 
     onSend(text)
     editor.commands.clearContent()
-  }
+  }, [editor, onSend])
+
+  useEffect(() => {
+    if (!editor) return
+
+    const onWindowKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Enter') return
+      if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return
+
+      const active = document.activeElement as HTMLElement | null
+      const activeTag = active?.tagName
+      const insideChatEditor = !!(active && editorShellRef.current?.contains(active))
+      const typingElsewhere = (activeTag === 'INPUT' || activeTag === 'TEXTAREA') && !insideChatEditor
+      if (typingElsewhere) return
+
+      if (!editor.isFocused) {
+        event.preventDefault()
+        editor.commands.focus('end')
+        return
+      }
+
+      event.preventDefault()
+      sendCurrent()
+    }
+
+    window.addEventListener('keydown', onWindowKeyDown)
+    return () => window.removeEventListener('keydown', onWindowKeyDown)
+  }, [editor, sendCurrent])
 
   return (
     <HUDPanel style={styles.position}>
       <div style={styles.panelInner}>
         <div ref={logRef} style={styles.log}>
-          {messages.map((message) => (
+          {messages.map((message) => {
+            const isTagMessage = message.id.startsWith('tag:')
+            return (
             <div
               key={`${message.id}-${message.timestamp}`}
-              style={message.id.startsWith('tag:') ? { ...styles.message, ...styles.tagMessage } : styles.message}
+              style={isTagMessage ? { ...styles.message, ...styles.tagMessage } : styles.message}
             >
-              <span style={message.id.startsWith('tag:') ? { ...styles.sender, ...styles.tagSender } : styles.sender}>
-                {message.id.startsWith('tag:') ? '[TAG] ' : ''}
+              <span style={isTagMessage ? { ...styles.sender, ...styles.tagSender } : styles.sender}>
+                {isTagMessage ? '[TAG] ' : ''}
                 {message.name}:{' '}
               </span>
-              <span>{renderMessageWithTags(message.text, isValidMentionToken, isValidCommandToken)}</span>
+              <span>
+                {renderStructuredMessage(
+                  message,
+                  isValidMentionToken,
+                  isValidCommandToken,
+                )}
+              </span>
             </div>
-          ))}
+            )
+          })}
         </div>
 
         {commandStatus && (
@@ -240,17 +404,24 @@ export default function ChatPanel({ messages, onSend, commandStatus, onDismissSt
               ref={editorShellRef}
               style={styles.editorShell}
               onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  event.preventDefault()
+                  editor?.commands.blur()
+                  ;(document.activeElement as HTMLElement | null)?.blur?.()
+                  return
+                }
+
                 if (event.key === ' ') {
+                  if (editor && tryConvertTypedCommandAtCursor(editor, isValidCommandToken)) {
+                    event.preventDefault()
+                    return
+                  }
                   if (editor && tryConvertTypedMentionAtCursor(editor, getMentionByTypedToken)) {
                     event.preventDefault()
                     return
                   }
                 }
 
-                if (event.key === 'Enter') {
-                  event.preventDefault()
-                  sendCurrent()
-                }
               }}
             >
               <EditorContent editor={editor} style={styles.editorContent} />

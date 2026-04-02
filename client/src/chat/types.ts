@@ -1,3 +1,5 @@
+import type { ChatMention } from '../types'
+
 export interface OnlineUser {
   id: string
   name: string
@@ -39,7 +41,7 @@ export interface MentionSuggestion extends OnlineUser {
 }
 
 export type ParsedInput =
-  | { kind: 'plain'; text: string }
+  | { kind: 'plain'; text: string; body: string; mentions: ChatMention[] }
   | { kind: 'tag'; payload: TagCommandPayload }
   | { kind: 'teleport'; payload: TeleportCommandPayload }
   | { kind: 'error'; error: string }

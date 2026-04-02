@@ -4,8 +4,11 @@ import { Server } from 'socket.io'
 import cors from 'cors'
 import { AccessToken } from 'livekit-server-sdk'
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit'
+import { readFileSync } from 'node:fs'
 import { requireAuth, requireAuthSocket } from './middleware/requireAuth.js'
 import { TeleportRequestsStore } from './chat/teleportRequestsStore.js'
+import { createChatRateLimiter } from './chat/chatRateLimiter.js'
+import { normalizeInput, simulateAuthoritativeStep } from './world/movementMath.js'
 import {
   handleTagSend,
   handleTeleportRequest,
@@ -39,6 +42,7 @@ const tokenLimiter = rateLimit({
 const LIVEKIT_URL = process.env.LIVEKIT_URL
 const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || ''
 const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || ''
+
 // Zone keys — must be kept in sync with WORLD_ZONES keys in client/src/data/worldMap.ts.
 // Any change here requires a coordinated client + server deploy.
 const ZONE_KEYS = ['dev', 'design', 'game']
@@ -90,12 +94,17 @@ app.post('/livekit/token', requireAuth, tokenLimiter, async (req, res) => {
 
 const httpServer = createServer(app)
 const io = new Server(httpServer, {
-  cors: { origin: allowedOrigins ?? '*' }
+  cors: { origin: allowedOrigins ?? '*' },
 })
 
-// Grid dimensions — must match client COLS/ROWS in FloorMap.tsx.
 const GRID_COLS = 60
 const GRID_ROWS = 60
+const TILE_PX = 16
+const WORLD_PX_MAX = GRID_COLS * TILE_PX - 0.001
+const SIMULATION_HZ = 60
+const SNAPSHOT_HZ = 20
+const FIXED_DT_SECONDS = 1 / SIMULATION_HZ
+const MOVE_SPEED_PX_PER_SECOND = TILE_PX * 4.6
 
 // Spawn in the open central area, clear of all zone fences.
 // Cols 27–33, rows 27–33 map to the world centre with no fences.
@@ -104,19 +113,20 @@ const SPAWN_COL_MAX = 33
 const SPAWN_ROW_MIN = 27
 const SPAWN_ROW_MAX = 33
 
-// Maximum Manhattan distance per move event — must be 1 for grid movement.
-const MAX_STEP = 1
-// Minimum ms between accepted move events. Slightly under TWEEN_DURATION (150ms)
-// to absorb frame-rate jitter without dropping legitimate inputs.
-const MOVE_MIN_INTERVAL = 100
-// Minimum ms between chat messages per player (2 messages/second).
-const CHAT_MIN_INTERVAL = 500
+const CHAT_BURST_TOKENS = 1
+const CHAT_REFILL_PER_SECOND = 1
 
-/** Pick a random spawn tile from the central open area. */
-function randomSpawn() {
-  const col = SPAWN_COL_MIN + Math.floor(Math.random() * (SPAWN_COL_MAX - SPAWN_COL_MIN + 1))
-  const row = SPAWN_ROW_MIN + Math.floor(Math.random() * (SPAWN_ROW_MAX - SPAWN_ROW_MIN + 1))
-  return { col, row }
+const VALID_DIRECTIONS = new Set(['down', 'up', 'left', 'right'])
+const teleportRequests = new TeleportRequestsStore({ cooldownMs: 30_000 })
+const chatRateLimiter = createChatRateLimiter({
+  burstTokens: CHAT_BURST_TOKENS,
+  refillPerSecond: CHAT_REFILL_PER_SECOND,
+})
+const players = {}
+let worldTick = 0
+
+function tileCenter(col, row) {
+  return { x: col * TILE_PX + TILE_PX / 2, y: row * TILE_PX + TILE_PX / 2 }
 }
 
 function looksLikeReservedCommand(text) {
@@ -127,26 +137,208 @@ function looksLikeReservedCommand(text) {
     || lower.startsWith('/teleport ')
 }
 
-// Validation helpers
-/** Validate avatar payload format from client join requests. */
-const isValidAvatar = (avatar) =>
-  avatar && typeof avatar === 'object' &&
-  typeof avatar.shirt === 'string' && /^#[0-9A-Fa-f]{6}$/.test(avatar.shirt)
+function sanitizeTokenName(name) {
+  return String(name || '')
+    .trim()
+    .replace(/\s+/g, '_')
+    .replace(/[^A-Za-z0-9_\-]/g, '')
+}
 
-/** Validate incoming tile coordinates are within server world bounds. */
-const isValidTile = (col, row) =>
-  Number.isInteger(col) && Number.isInteger(row) &&
-  col >= 0 && col < GRID_COLS &&
-  row >= 0 && row < GRID_ROWS
+function tokenForPlayerName(name) {
+  const safe = sanitizeTokenName(name)
+  return `@${safe || 'user'}`
+}
 
-const VALID_DIRECTIONS = new Set(['down', 'up', 'left', 'right'])
-/** Validate replicated movement direction enum. */
-const isValidDirection = (direction) => typeof direction === 'string' && VALID_DIRECTIONS.has(direction)
+function toZoneKey(identifier) {
+  return identifier
+    .replace(/_?(zone|Zone)_?(trigger|Trigger)/g, '')
+    .replace(/_{2,}/g, '_')
+    .replace(/^_|_$/g, '')
+    .toLowerCase()
+}
 
-// In-memory room state
-// { [userId]: { id, name, avatar, col, row, direction, moving, zoneKey, muted, lastMoveTime, lastChatTime } }
-const players = {}
-const teleportRequests = new TeleportRequestsStore({ cooldownMs: 30_000 })
+function loadWorldData() {
+  try {
+    const url = new URL('../client/public/hub.ldtk', import.meta.url)
+    const raw = JSON.parse(readFileSync(url, 'utf8'))
+    const level = raw?.levels?.[0]
+    const layers = level?.layerInstances ?? []
+    const collisionLayer = layers.find((layer) => layer.__identifier === 'Collision_grid')
+    const collisionCsv = collisionLayer?.intGridCsv ?? []
+    const gridWidth = collisionLayer?.__cWid ?? GRID_COLS
+    const gridHeight = collisionLayer?.__cHei ?? GRID_ROWS
+
+    const zones = layers
+      .flatMap((layer) => layer.entityInstances ?? [])
+      .filter((entity) => String(entity.__identifier || '').toLowerCase().includes('zone'))
+      .map((entity) => ({
+        key: toZoneKey(entity.__identifier),
+        minX: entity.px[0] / TILE_PX,
+        maxX: (entity.px[0] + entity.width) / TILE_PX - 1,
+        minY: entity.px[1] / TILE_PX,
+        maxY: (entity.px[1] + entity.height) / TILE_PX - 1,
+      }))
+
+    return {
+      collisionCsv,
+      gridWidth,
+      gridHeight,
+      zones,
+    }
+  } catch (error) {
+    console.error('[world] failed to load hub.ldtk collision data:', error)
+    return {
+      collisionCsv: [],
+      gridWidth: GRID_COLS,
+      gridHeight: GRID_ROWS,
+      zones: [],
+    }
+  }
+}
+
+const worldData = loadWorldData()
+
+function isValidAvatar(avatar) {
+  return avatar && typeof avatar === 'object'
+    && typeof avatar.shirt === 'string'
+    && /^#[0-9A-Fa-f]{6}$/.test(avatar.shirt)
+}
+
+function isValidTile(col, row) {
+  return Number.isInteger(col) && Number.isInteger(row)
+    && col >= 0 && col < GRID_COLS
+    && row >= 0 && row < GRID_ROWS
+}
+
+function isWalkableTile(col, row) {
+  if (!isValidTile(col, row)) return false
+  const idx = row * worldData.gridWidth + col
+  if (idx < 0 || idx >= worldData.collisionCsv.length) return false
+  return worldData.collisionCsv[idx] === 0
+}
+
+function isValidDirection(direction) {
+  return typeof direction === 'string' && VALID_DIRECTIONS.has(direction)
+}
+
+function canOccupyWorld(worldX, worldY) {
+  const col = Math.floor(worldX / TILE_PX)
+  const row = Math.floor(worldY / TILE_PX)
+  return isWalkableTile(col, row)
+}
+
+function detectZoneKey(worldX, worldY) {
+  const tileX = worldX / TILE_PX
+  const tileY = worldY / TILE_PX
+  for (const zone of worldData.zones) {
+    if (
+      tileX >= zone.minX && tileX <= zone.maxX
+      && tileY >= zone.minY && tileY <= zone.maxY
+    ) {
+      return zone.key
+    }
+  }
+  return null
+}
+
+function randomSpawn() {
+  const candidates = []
+  for (let row = SPAWN_ROW_MIN; row <= SPAWN_ROW_MAX; row++) {
+    for (let col = SPAWN_COL_MIN; col <= SPAWN_COL_MAX; col++) {
+      if (isWalkableTile(col, row)) candidates.push({ col, row })
+    }
+  }
+  if (!candidates.length) return { col: 30, row: 30 }
+  return candidates[Math.floor(Math.random() * candidates.length)]
+}
+
+function serializePlayerState(player) {
+  return {
+    id: player.id,
+    name: player.name,
+    avatar: player.avatar,
+    x: player.x,
+    y: player.y,
+    vx: player.vx,
+    vy: player.vy,
+    facing: player.facing,
+    moving: player.moving,
+    lastProcessedInputSeq: player.lastProcessedInputSeq ?? 0,
+    zoneKey: player.zoneKey ?? null,
+    muted: !!player.muted,
+  }
+}
+
+function normalizeChatMentions(rawMentions) {
+  if (!Array.isArray(rawMentions)) return []
+  const mentions = []
+  const seenUserIds = new Set()
+  for (const rawMention of rawMentions) {
+    if (!rawMention || typeof rawMention !== 'object') continue
+    const userId = typeof rawMention.userId === 'string' ? rawMention.userId.trim() : ''
+    if (!userId || seenUserIds.has(userId)) continue
+    const mentionedPlayer = players[userId]
+    if (!mentionedPlayer) continue
+    mentions.push({
+      userId,
+      token: tokenForPlayerName(mentionedPlayer.name),
+    })
+    seenUserIds.add(userId)
+    if (mentions.length >= 16) break
+  }
+  return mentions
+}
+
+function emitWorldSnapshot() {
+  io.emit('world:snapshot', {
+    serverTimeMs: Date.now(),
+    tick: worldTick,
+    players: Object.values(players).map(serializePlayerState),
+  })
+}
+
+function simulatePlayer(player) {
+  const input = player.inputState ?? {
+    seq: player.lastProcessedInputSeq ?? 0,
+    inputX: 0,
+    inputY: 0,
+    facing: player.facing,
+    moving: false,
+  }
+
+  const next = simulateAuthoritativeStep({
+    player,
+    input,
+    dtSeconds: FIXED_DT_SECONDS,
+    speedPxPerSecond: MOVE_SPEED_PX_PER_SECOND,
+    worldPxMax: WORLD_PX_MAX,
+    canOccupyWorld,
+    isValidDirection,
+    detectZoneKey,
+    tilePx: TILE_PX,
+  })
+  player.x = next.x
+  player.y = next.y
+  player.vx = next.vx
+  player.vy = next.vy
+  player.moving = next.moving
+  player.facing = next.facing
+  player.lastProcessedInputSeq = next.lastProcessedInputSeq
+  player.col = next.col
+  player.row = next.row
+  player.zoneKey = next.zoneKey
+}
+
+setInterval(() => {
+  worldTick += 1
+  for (const player of Object.values(players)) {
+    simulatePlayer(player)
+  }
+}, Math.floor(1000 / SIMULATION_HZ))
+
+setInterval(() => {
+  emitWorldSnapshot()
+}, Math.floor(1000 / SNAPSHOT_HZ))
 
 io.use(requireAuthSocket)
 
@@ -158,75 +350,78 @@ io.on('connection', (socket) => {
     const { name, avatar } = (payload && typeof payload === 'object') ? payload : {}
     const trimmed = typeof name === 'string' ? name.trim() : ''
     if (!trimmed || trimmed.length > 24 || !isValidAvatar(avatar)) {
-      console.warn(`[join] invalid payload from ${socket.userId}`)
       if (typeof ack === 'function') ack({ error: 'invalid_payload' })
       return
     }
+
     const spawn = randomSpawn()
-    // Use socket.userId (stable Supabase UUID) instead of socket.id —
-    // survives reconnects so token refresh doesn't respawn the player.
+    const world = tileCenter(spawn.col, spawn.row)
+    const zoneKey = detectZoneKey(world.x, world.y)
+
     players[socket.userId] = {
       id: socket.userId,
       name: trimmed,
       avatar,
+      x: world.x,
+      y: world.y,
+      vx: 0,
+      vy: 0,
       col: spawn.col,
       row: spawn.row,
-      direction: 'down',
+      facing: 'down',
       moving: false,
-      zoneKey: null,
+      zoneKey,
       muted: false,
+      inputState: {
+        seq: 0,
+        inputX: 0,
+        inputY: 0,
+        facing: 'down',
+        moving: false,
+        clientTimeMs: Date.now(),
+      },
+      lastProcessedInputSeq: 0,
     }
 
     const others = Object.values(players)
       .filter(playerEntry => playerEntry.id !== socket.userId)
-      .map(({ id, name, avatar, col, row, direction, moving, zoneKey, muted }) => ({
-        id, name, avatar, col, row, direction, moving, zoneKey: zoneKey ?? null, muted: !!muted,
-      }))
+      .map(serializePlayerState)
     socket.emit('room:state', others)
 
-    if (typeof ack === 'function') ack({ col: spawn.col, row: spawn.row })
+    if (typeof ack === 'function') {
+      ack({ col: spawn.col, row: spawn.row, x: world.x, y: world.y })
+    }
 
-    const { id, col, row, direction, moving, zoneKey, muted } = players[socket.userId]
-    socket.broadcast.emit('player:joined', {
-      id, name: trimmed, avatar, col, row, direction, moving, zoneKey: zoneKey ?? null, muted: !!muted,
-    })
-
-    console.log(`[join] ${trimmed} (${socket.userId}) at tile (${spawn.col}, ${spawn.row})`)
+    socket.broadcast.emit('player:joined', serializePlayerState(players[socket.userId]))
+    emitWorldSnapshot()
   })
 
-  socket.on('player:move', ({ col, row, direction, moving, zoneKey }) => {
+  socket.on('player:input', (payload) => {
     const player = players[socket.userId]
-    if (!player) return
-    if (!isValidTile(col, row)) return
-    if (!isValidDirection(direction) || typeof moving !== 'boolean') return
+    if (!player || !payload || typeof payload !== 'object') return
 
-    // Reject moves larger than one tile (prevents teleportation).
-    const dist = Math.abs(col - player.col) + Math.abs(row - player.row)
-    if (dist > MAX_STEP) {
-      console.warn(`[move] step violation from ${socket.userId}: dist=${dist}`)
+    const seq = Number.isInteger(payload.seq) ? payload.seq : null
+    const inputX = Number.isFinite(payload.inputX) ? payload.inputX : null
+    const inputY = Number.isFinite(payload.inputY) ? payload.inputY : null
+    const moving = typeof payload.moving === 'boolean' ? payload.moving : null
+    const facing = isValidDirection(payload.facing) ? payload.facing : null
+    const clientTimeMs = Number.isFinite(payload.clientTimeMs) ? payload.clientTimeMs : Date.now()
+    if (seq === null || inputX === null || inputY === null || moving === null || facing === null) {
       return
     }
 
-    // Rate-limit only actual position changes (dist > 0).
-    // Idle events (same tile, moving:false) are animation-only updates — they
-    // must not update lastMoveTime or the buffered step that fires in the same
-    // frame will be incorrectly rejected.
-    const now = Date.now()
-    if (dist > 0) {
-      if (player.lastMoveTime !== undefined && (now - player.lastMoveTime) < MOVE_MIN_INTERVAL) {
-        console.warn(`[move] rate violation from ${socket.userId}: ${now - player.lastMoveTime}ms since last move`)
-        return
-      }
-      player.lastMoveTime = now
-    }
+    const lastInputSeq = Number.isInteger(player.inputState?.seq) ? player.inputState.seq : -1
+    if (seq < lastInputSeq) return
 
-    const validZoneKey = ZONE_KEYS.includes(zoneKey) ? zoneKey : null
-    player.col = col
-    player.row = row
-    player.direction = direction
-    player.moving = moving
-    player.zoneKey = validZoneKey
-    socket.broadcast.emit('player:updated', { id: socket.userId, col, row, direction, moving, zoneKey: validZoneKey })
+    const normalized = normalizeInput(inputX, inputY, moving)
+    player.inputState = {
+      seq,
+      inputX: normalized.inputX,
+      inputY: normalized.inputY,
+      facing,
+      moving: normalized.moving,
+      clientTimeMs,
+    }
   })
 
   socket.on('player:voice', ({ muted }) => {
@@ -236,27 +431,32 @@ io.on('connection', (socket) => {
     socket.broadcast.emit('player:voice', { id: socket.userId, muted })
   })
 
-  socket.on('chat:message', ({ text }) => {
+  socket.on('chat:message', (payload) => {
     const player = players[socket.userId]
-    const trimmed = typeof text === 'string' ? text.trim() : ''
-    if (!player || !trimmed || trimmed.length > 500) return
-    if (looksLikeReservedCommand(trimmed)) {
-      console.warn(`[chat] blocked reserved command text from ${socket.userId}: ${trimmed}`)
-      return
-    }
-    console.log(`[chat] ${socket.userId} (${player.name}) -> ${trimmed}`)
+    if (!player || !payload || typeof payload !== 'object') return
+
+    const rawBody = typeof payload.body === 'string'
+      ? payload.body
+      : (typeof payload.text === 'string' ? payload.text : '')
+    const body = rawBody.trim()
+    if (!body || body.length > 500) return
+    if (looksLikeReservedCommand(body)) return
+
+    const mentions = normalizeChatMentions(payload.mentions)
 
     const now = Date.now()
-    if (player.lastChatTime !== undefined && now - player.lastChatTime < CHAT_MIN_INTERVAL) {
-      console.warn(`[chat] rate limit from ${socket.userId}`)
+    const rateCheck = chatRateLimiter.canSend(socket.userId, now)
+    if (!rateCheck.allowed) {
+      socket.emit('chat:rate_limited', { retryAfterMs: rateCheck.retryAfterMs })
       return
     }
 
-    player.lastChatTime = now
     io.emit('chat:message', {
       id: socket.userId,
       name: player.name,
-      text: trimmed,
+      text: body,
+      body,
+      mentions,
       timestamp: now,
     })
   })
@@ -290,22 +490,41 @@ io.on('connection', (socket) => {
       payload,
       teleportRequests,
       isValidTile,
+      tileCenter,
+      detectZoneKey,
     })
+    if (result.ok && result.status === 'accepted') emitWorldSnapshot()
     if (typeof ack === 'function') ack(result)
   })
 
   socket.on('disconnect', () => {
-    teleportRequests.clearForUser(socket.userId)
+    const clearedTeleportRequests = teleportRequests.clearForUser(socket.userId)
+    for (const request of clearedTeleportRequests) {
+      if (request.senderId === socket.userId) {
+        io.to(`user:${request.targetId}`).emit('teleport:request_cleared', {
+          requestId: request.id,
+          reason: 'sender_disconnected',
+        })
+      } else if (request.targetId === socket.userId) {
+        io.to(`user:${request.senderId}`).emit('teleport:result', {
+          requestId: request.id,
+          status: 'failed',
+          reason: 'target_offline',
+          targetUserId: request.targetId,
+        })
+      }
+    }
+    chatRateLimiter.clear(socket.userId)
     const player = players[socket.userId]
     if (player) {
-      console.log(`[leave] ${player.name} (${socket.userId})`)
       delete players[socket.userId]
       io.emit('player:left', { id: socket.userId })
+      emitWorldSnapshot()
     }
   })
 })
 
 const PORT = process.env.PORT || 3001
-httpServer.listen(PORT, '0.0.0.0', () =>
+httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`)
-)
+})

@@ -337,7 +337,8 @@ export default class GameScene extends Phaser.Scene {
     });
 
     this.remotePlayers.sync(GameBridge.remotePlayers);
-    this.remotePlayers.updateAnimations(dt, GameBridge.remotePlayers);
+    this.remotePlayers.updatePositions(dt);
+    this.remotePlayers.updateAnimations(dt);
     this.traderAnimation.update(dt);
     this.updateVoiceIndicators(_time);
     this.graveInteraction?.update(this.eKey);

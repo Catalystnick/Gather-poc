@@ -4,14 +4,18 @@ import type { MentionSuggestion } from './types'
 interface UseChatTokenValidationOptions {
   mentionSuggestions: MentionSuggestion[]
   commandTokens: string[]
+  extraMentionTokens?: string[]
 }
 
 export function useChatTokenValidation(options: UseChatTokenValidationOptions) {
-  const { mentionSuggestions, commandTokens } = options
+  const { mentionSuggestions, commandTokens, extraMentionTokens = [] } = options
 
   const validMentionTokens = useMemo(
-    () => new Set(mentionSuggestions.map(item => item.token.toLowerCase())),
-    [mentionSuggestions],
+    () => new Set([
+      ...mentionSuggestions.map(item => item.token.toLowerCase()),
+      ...extraMentionTokens.map(token => token.toLowerCase()),
+    ]),
+    [mentionSuggestions, extraMentionTokens],
   )
 
   const validCommandTokens = useMemo(

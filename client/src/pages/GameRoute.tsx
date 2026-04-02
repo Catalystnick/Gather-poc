@@ -1,7 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Leva } from "leva";
 import AvatarSelect from "../components/ui/AvatarSelect";
 import World from "../components/scene/World";
+import {
+  ensureNotificationPermissionOnUserGesture,
+  maybeRequestNotificationPermission,
+} from "../chat/notificationService";
 import type { Player } from "../types";
 
 const STORAGE_KEY = "gather_poc_avatar";
@@ -24,8 +28,16 @@ function loadSaved(): Player | null {
 export default function GameRoute() {
   const [player, setPlayer] = useState<Player | null>(null);
 
+  // Install permission/audio priming hooks as soon as the game route loads so
+  // the very first user gesture can unlock audio and trigger notification prompt.
+  useEffect(() => {
+    ensureNotificationPermissionOnUserGesture();
+  }, []);
+
   /** Persist selected player profile and enter the world scene. */
   function handleJoin(nextPlayer: Player) {
+    // Join click/submit is a user gesture, so this is the best point to ask.
+    maybeRequestNotificationPermission();
     localStorage.setItem(STORAGE_KEY, JSON.stringify(nextPlayer));
     setPlayer(nextPlayer);
   }

@@ -1,4 +1,4 @@
-import { Extension } from '@tiptap/core'
+import { Extension, type Editor } from '@tiptap/core'
 import Suggestion from '@tiptap/suggestion'
 import { createSuggestionRenderer, type SuggestionItem } from './suggestionRenderer'
 
@@ -10,6 +10,11 @@ export interface SlashCommandOption {
 interface SlashCommandExtensionOptions {
   commands: SlashCommandOption[]
   getSuggestionAnchorRect?: (() => DOMRect | null) | null
+  insertCommandToken?: ((params: {
+    editor: Editor
+    range: { from: number; to: number }
+    command: string
+  }) => boolean) | null
 }
 
 declare module '@tiptap/core' {
@@ -27,6 +32,7 @@ export const SlashCommandExtension = Extension.create<SlashCommandExtensionOptio
     return {
       commands: [],
       getSuggestionAnchorRect: null,
+      insertCommandToken: null,
     }
   },
 
@@ -61,11 +67,13 @@ export const SlashCommandExtension = Extension.create<SlashCommandExtensionOptio
               payload: option,
             })),
         command: ({ editor, range, props }) => {
+          const command = (props.payload as SlashCommandOption).command
+          if (this.options.insertCommandToken?.({ editor, range, command })) return
           editor
             .chain()
             .focus()
             .deleteRange(range)
-            .insertContent(`${(props.payload as SlashCommandOption).command} `)
+            .insertContent(`${command} `)
             .run()
         },
         render: renderer,

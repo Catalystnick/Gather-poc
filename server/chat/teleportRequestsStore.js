@@ -87,11 +87,14 @@ export class TeleportRequestsStore {
   }
 
   clearForUser(userId) {
+    const cleared = []
     for (const [requestId, request] of this.pendingById.entries()) {
       if (request.senderId === userId || request.targetId === userId) {
         this.pendingById.delete(requestId)
         this.pendingByPair.delete(pairKey(request.senderId, request.targetId))
+        cleared.push(request)
       }
     }
+    return cleared
   }
 }
