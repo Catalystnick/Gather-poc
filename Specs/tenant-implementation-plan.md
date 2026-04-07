@@ -44,7 +44,7 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 
 - Phase A: implemented in code.
 - Phase B: implemented in code (world-scoped runtime + `world:join`/`world:change` + temporary portal mapping).
-- Phase C: not implemented yet.
+- Phase C: implemented in code (tenant/world-scoped teleport store + teleport policy guards + instance-scoped cleanup).
 - Phase D: not implemented yet.
 - Phase E: not implemented yet.
 - Phase F: partially implemented (`POST /tenant/bootstrap` exists; remaining admin endpoints pending).
@@ -171,6 +171,21 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - Cross-tenant teleport requests are rejected.
 - Cross-instance mentions/tags/teleport do not resolve.
 - Disconnect clears only relevant instance-scoped requests.
+
+### Status (2026-04-07)
+
+- Implemented in code:
+  - teleport request store is now scoped by `worldId`, `tenantId`, `senderId`, and `targetId`: `server/chat/teleportRequestsStore.js`
+  - teleport request/response handlers now require scoped context (`worldId`, `tenantId`): `server/chat/commandRouter.js`
+  - socket guards enforce:
+    - `main_plaza` teleport denial
+    - same-tenant active-member teleport policy in the active interior world
+    - world-scoped disconnect cleanup for pending teleport requests
+  - references: `server/socket/registerGameSocketHandlers.js`
+- Validation:
+  - updated store and movement tests:
+    - `server/tests/teleportRequestsStore.test.js`
+    - `server/tests/teleportMovementState.test.js`
 
 ## 3.4 Phase D - LiveKit Refactor (Dedicated)
 

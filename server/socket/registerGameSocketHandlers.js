@@ -45,6 +45,50 @@ function inferInstanceType(worldId, tenantContext) {
   return "tenant_interior";
 }
 
+function isMainPlazaWorld(worldId, tenantContext) {
+  if (!worldId) return false;
+  if (worldId === "main_plaza") return true;
+  return !!tenantContext?.mainPlazaWorldId && worldId === tenantContext.mainPlazaWorldId;
+}
+
+function normalizeTargetUserIds(rawTargetUserIds) {
+  if (!Array.isArray(rawTargetUserIds)) return [];
+  const uniqueTargetIds = new Set();
+  for (const value of rawTargetUserIds) {
+    if (typeof value !== "string") continue;
+    const targetId = value.trim();
+    if (!targetId) continue;
+    uniqueTargetIds.add(targetId);
+  }
+  return [...uniqueTargetIds];
+}
+
+function isActiveInteriorMemberForWorld(tenantContext, worldId) {
+  if (!tenantContext?.hasMembership) return false;
+  if (!tenantContext.homeTenantId) return false;
+  if (!tenantContext.homeInteriorWorldId) return false;
+  return tenantContext.homeInteriorWorldId === worldId;
+}
+
+function resolveTeleportScope({ worldId, tenantContext, enableTenantSocketContext }) {
+  if (isMainPlazaWorld(worldId, tenantContext)) {
+    return { ok: false, error: "teleport:not_allowed_in_plaza" };
+  }
+
+  if (!enableTenantSocketContext) {
+    return { ok: true, tenantId: "legacy" };
+  }
+
+  if (!isActiveInteriorMemberForWorld(tenantContext, worldId)) {
+    return { ok: false, error: "teleport:not_allowed_cross_tenant" };
+  }
+
+  return {
+    ok: true,
+    tenantId: tenantContext.homeTenantId,
+  };
+}
+
 function normalizeChatMentions(rawMentions, players) {
   if (!Array.isArray(rawMentions)) return [];
   const mentions = [];
@@ -176,6 +220,56 @@ async function authorizeWorldAccess({ socket, worldId, canAccessWorld, enableTen
     console.error("[tenant] world access check failed for user:", socket.userId, "world:", worldId, error);
     return false;
   }
+}
+
+async function resolveTargetTenantContext({ targetId, resolveTenantContext }) {
+  try {
+    return await resolveTenantContext(targetId);
+  } catch (error) {
+    console.error("[tenant] target context lookup failed for user:", targetId, error);
+    return null;
+  }
+}
+
+async function filterTeleportTargets({
+  worldId,
+  senderUserId,
+  senderTenantContext,
+  targetUserIds,
+  worldPlayers,
+  resolveTenantContext,
+  enableTenantSocketContext,
+}) {
+  const requestedTargetIds = normalizeTargetUserIds(targetUserIds);
+  if (!enableTenantSocketContext) {
+    return { allowedTargetIds: requestedTargetIds, rejected: [] };
+  }
+
+  const onlineTargetIds = requestedTargetIds.filter(
+    (targetId) => targetId !== senderUserId && worldPlayers.has(targetId),
+  );
+  const targetContexts = await Promise.all(
+    onlineTargetIds.map((targetId) => resolveTargetTenantContext({ targetId, resolveTenantContext })),
+  );
+
+  const blockedTargetIds = new Set();
+  const rejected = [];
+
+  for (let i = 0; i < onlineTargetIds.length; i += 1) {
+    const targetId = onlineTargetIds[i];
+    const targetContext = targetContexts[i];
+    const sameTenant = targetContext?.homeTenantId === senderTenantContext.homeTenantId;
+    const targetCanTeleportInWorld = isActiveInteriorMemberForWorld(targetContext, worldId);
+
+    if (!sameTenant || !targetCanTeleportInWorld) {
+      blockedTargetIds.add(targetId);
+      rejected.push({ userId: targetId, reason: "not_allowed_cross_tenant" });
+      continue;
+    }
+  }
+
+  const allowedTargetIds = requestedTargetIds.filter((targetId) => !blockedTargetIds.has(targetId));
+  return { allowedTargetIds, rejected };
 }
 
 function resolveJoinWorldId(payload, tenantContext) {
@@ -471,34 +565,115 @@ export function registerGameSocketHandlers({ io, runtime, teleportRequests, chat
       if (typeof ack === "function") ack(result);
     });
 
-    socket.on("teleport:request", (payload, ack) => {
+    socket.on("teleport:request", async (payload, ack) => {
       const worldContext = getSocketWorldPlayers(runtime, socketWorldIndex, socket.id);
       if (!worldContext) {
         if (typeof ack === "function") ack({ ok: false, error: "world_not_joined" });
         return;
       }
+
+      const senderTenantContext = await resolveSocketTenantContext({
+        socket,
+        resolveTenantContext,
+        enableTenantSocketContext,
+      });
+      if (enableTenantSocketContext && !senderTenantContext) {
+        if (typeof ack === "function") ack({ ok: false, error: "tenant_context_unavailable" });
+        return;
+      }
+
+      const teleportScope = resolveTeleportScope({
+        worldId: worldContext.worldId,
+        tenantContext: senderTenantContext,
+        enableTenantSocketContext,
+      });
+      if (!teleportScope.ok) {
+        if (typeof ack === "function") ack({ ok: false, error: teleportScope.error });
+        return;
+      }
+
+      const targetFilter = await filterTeleportTargets({
+        worldId: worldContext.worldId,
+        senderUserId: socket.userId,
+        senderTenantContext,
+        targetUserIds: payload?.targetUserIds,
+        worldPlayers: worldContext.players,
+        resolveTenantContext,
+        enableTenantSocketContext,
+      });
+
+      if (!targetFilter.allowedTargetIds.length && targetFilter.rejected.length) {
+        if (typeof ack === "function") {
+          ack({
+            ok: false,
+            error: "teleport:not_allowed_cross_tenant",
+            rejected: targetFilter.rejected,
+          });
+        }
+        return;
+      }
+
       const result = handleTeleportRequest({
         socket,
         io,
         players: worldContext.players,
-        payload,
+        payload: {
+          ...payload,
+          targetUserIds: targetFilter.allowedTargetIds,
+        },
         teleportRequests,
+        teleportContext: {
+          worldId: worldContext.worldId,
+          tenantId: teleportScope.tenantId,
+        },
       });
+
+      if (targetFilter.rejected.length) {
+        const mergedRejected = [...(result.rejected ?? []), ...targetFilter.rejected];
+        if (typeof ack === "function") ack({ ...result, rejected: mergedRejected });
+        return;
+      }
+
       if (typeof ack === "function") ack(result);
     });
 
-    socket.on("teleport:respond", (payload, ack) => {
+    socket.on("teleport:respond", async (payload, ack) => {
       const worldContext = getSocketWorldPlayers(runtime, socketWorldIndex, socket.id);
       if (!worldContext) {
         if (typeof ack === "function") ack({ ok: false, error: "world_not_joined" });
         return;
       }
+
+      const responderTenantContext = await resolveSocketTenantContext({
+        socket,
+        resolveTenantContext,
+        enableTenantSocketContext,
+      });
+      if (enableTenantSocketContext && !responderTenantContext) {
+        if (typeof ack === "function") ack({ ok: false, error: "tenant_context_unavailable" });
+        return;
+      }
+
+      const teleportScope = resolveTeleportScope({
+        worldId: worldContext.worldId,
+        tenantContext: responderTenantContext,
+        enableTenantSocketContext,
+      });
+      if (!teleportScope.ok) {
+        if (typeof ack === "function") ack({ ok: false, error: teleportScope.error });
+        return;
+      }
+
       const result = handleTeleportRespond({
         socket,
         io,
         players: worldContext.players,
         payload,
         teleportRequests,
+        teleportContext: {
+          worldId: worldContext.worldId,
+          tenantId: teleportScope.tenantId,
+        },
         isValidTile: runtime.isValidTile,
         tileCenter: runtime.tileCenter,
         detectZoneKey: runtime.detectZoneKey,
@@ -508,7 +683,10 @@ export function registerGameSocketHandlers({ io, runtime, teleportRequests, chat
     });
 
     socket.on("disconnect", () => {
-      const clearedTeleportRequests = teleportRequests.clearForUser(socket.userId);
+      const worldId = socketWorldIndex.get(socket.id) ?? null;
+      const clearedTeleportRequests = worldId
+        ? teleportRequests.clearForUserInWorld({ worldId, userId: socket.userId })
+        : [];
       for (const request of clearedTeleportRequests) {
         if (request.senderId === socket.userId) {
           io.to(`user:${request.targetId}`).emit("teleport:request_cleared", {

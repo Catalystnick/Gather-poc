@@ -91,10 +91,23 @@ export function handleTagSend({ socket, io, players, payload }) {
   }
 }
 
-export function handleTeleportRequest({ socket, io, players, payload, teleportRequests }) {
+export function handleTeleportRequest({
+  socket,
+  io,
+  players,
+  payload,
+  teleportRequests,
+  teleportContext,
+}) {
   const sender = getPlayer(players, socket.userId)
   if (!sender) {
     return { ok: false, error: 'sender_not_joined' }
+  }
+
+  const worldId = typeof teleportContext?.worldId === 'string' ? teleportContext.worldId : ''
+  const tenantId = typeof teleportContext?.tenantId === 'string' ? teleportContext.tenantId : ''
+  if (!worldId || !tenantId) {
+    return { ok: false, error: 'invalid_scope' }
   }
 
   const message = cleanMessage(payload?.message)
@@ -122,6 +135,8 @@ export function handleTeleportRequest({ socket, io, players, payload, teleportRe
 
   for (const targetId of accepted) {
     const result = teleportRequests.createOrReplace({
+      worldId,
+      tenantId,
       senderId: socket.userId,
       senderName: sender.name,
       targetId,
@@ -181,6 +196,7 @@ export function handleTeleportRespond({
   players,
   payload,
   teleportRequests,
+  teleportContext,
   isValidTile,
   tileCenter,
   detectZoneKey,
@@ -196,10 +212,18 @@ export function handleTeleportRespond({
     return { ok: false, error: 'request_id_required' }
   }
 
+  const worldId = typeof teleportContext?.worldId === 'string' ? teleportContext.worldId : ''
+  const tenantId = typeof teleportContext?.tenantId === 'string' ? teleportContext.tenantId : ''
+  if (!worldId || !tenantId) {
+    return { ok: false, error: 'invalid_scope' }
+  }
+
   const response = teleportRequests.respond({
     requestId,
     targetId: socket.userId,
     decision,
+    worldId,
+    tenantId,
   })
 
   if (!response.ok) {

@@ -38,6 +38,8 @@ test('accepted teleport writes authoritative movement state', () => {
   }
 
   const created = teleportRequests.createOrReplace({
+    worldId: 'world-a',
+    tenantId: 'tenant-a',
     senderId: 'sender-1',
     senderName: 'Sender',
     targetId: 'target-1',
@@ -52,6 +54,7 @@ test('accepted teleport writes authoritative movement state', () => {
     players,
     payload: { requestId: created.request.id, decision: 'accept' },
     teleportRequests,
+    teleportContext: { worldId: 'world-a', tenantId: 'tenant-a' },
     isValidTile: () => true,
     tileCenter: (col, row) => ({ x: col * 16 + 8, y: row * 16 + 8 }),
     detectZoneKey: () => 'dev',
