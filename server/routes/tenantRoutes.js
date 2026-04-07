@@ -1,0 +1,66 @@
+import express from 'express'
+import { requireAuth } from '../middleware/requireAuth.js'
+import { TenantServiceError } from '../tenant/errors.js'
+import {
+  bootstrapCreateTenant,
+  bootstrapJoinInvite,
+  resolveTenantContext,
+} from '../tenant/tenantService.js'
+
+const tenantRouter = express.Router()
+
+function sendTenantError(res, error) {
+  if (error instanceof TenantServiceError) {
+    // Known service errors are returned as-is for predictable client handling.
+    return res.status(error.status).json({
+      error: error.code,
+      message: error.message,
+      details: error.details ?? undefined,
+    })
+  }
+  console.error('[tenant] unexpected error:', error)
+  return res.status(500).json({
+    error: 'internal_error',
+    message: 'Unexpected tenant service failure',
+  })
+}
+
+tenantRouter.get('/me', requireAuth, async (req, res) => {
+  try {
+    const context = await resolveTenantContext(req.user.sub)
+    return res.json(context)
+  } catch (error) {
+    return sendTenantError(res, error)
+  }
+})
+
+tenantRouter.post('/bootstrap', requireAuth, async (req, res) => {
+  const mode = req.body?.mode
+  try {
+    // Bootstrap supports only the two onboarding entry paths.
+    if (mode === 'create_tenant') {
+      const context = await bootstrapCreateTenant({
+        userId: req.user.sub,
+        tenantName: req.body?.tenantName,
+      })
+      return res.json(context)
+    }
+
+    if (mode === 'join_invite') {
+      const context = await bootstrapJoinInvite({
+        userId: req.user.sub,
+        inviteToken: req.body?.inviteToken,
+      })
+      return res.json(context)
+    }
+
+    return res.status(400).json({
+      error: 'invalid_mode',
+      message: 'mode must be create_tenant or join_invite',
+    })
+  } catch (error) {
+    return sendTenantError(res, error)
+  }
+})
+
+export default tenantRouter
