@@ -35,6 +35,25 @@ type WorldSnapshotPayload = {
   players: SnapshotPlayerPayload[]
 }
 
+type JoinAckPayload = {
+  x?: unknown
+  y?: unknown
+  col?: unknown
+  row?: unknown
+  error?: unknown
+}
+
+type SocketEventHandlers = {
+  onConnect: () => void
+  onConnectError: (err: Error) => void
+  onDisconnect: (reason: string) => void
+  onRoomState: (players: SnapshotPlayerPayload[]) => void
+  onPlayerJoined: (joinedPlayer: SnapshotPlayerPayload) => void
+  onWorldSnapshot: (snapshot: WorldSnapshotPayload) => void
+  onPlayerVoice: (event: { id: string; muted: boolean }) => void
+  onPlayerLeft: (event: { id: string }) => void
+}
+
 function facingOrDefault(facing: unknown): Direction {
   return facing === 'up' || facing === 'left' || facing === 'right' ? facing : 'down'
 }
@@ -71,6 +90,103 @@ function toRemotePlayer(
   }
 }
 
+function parseSpawnFromJoinAck(ack?: JoinAckPayload): { col: number; row: number } | null {
+  if (!ack || ack.error) return null
+
+  // New server shape (preferred): tile-space spawn.
+  const colFromAck = typeof ack.col === 'number' ? ack.col : null
+  const rowFromAck = typeof ack.row === 'number' ? ack.row : null
+  if (colFromAck !== null && rowFromAck !== null) {
+    return { col: colFromAck, row: rowFromAck }
+  }
+
+  // Backward-compatible fallback: world-space spawn.
+  const x = typeof ack.x === 'number' ? ack.x : null
+  const y = typeof ack.y === 'number' ? ack.y : null
+  if (x === null || y === null) return null
+
+  return {
+    col: Math.floor(x / TILE_PX),
+    row: Math.floor(y / TILE_PX),
+  }
+}
+
+function buildRemotePlayersForRoomState(
+  players: SnapshotPlayerPayload[],
+  userId: string,
+): Map<string, RemotePlayer> {
+  // room:state is an immediate baseline snapshot after join.
+  const snapshotTimeMs = performance.now()
+  const serverTimeMs = Date.now()
+  return new Map(
+    players
+      .filter((entry) => entry.id !== userId)
+      .map((entry) => [entry.id, toRemotePlayer(entry, snapshotTimeMs, serverTimeMs)]),
+  )
+}
+
+function applySnapshot(
+  snapshot: WorldSnapshotPayload,
+  userId: string,
+): {
+  local: LocalAuthoritativeState | null
+  remote: Map<string, RemotePlayer>
+} {
+  const snapshotTimeMs = performance.now()
+  const serverTimeMs = Number.isFinite(snapshot.serverTimeMs) ? snapshot.serverTimeMs : Date.now()
+  const remote = new Map<string, RemotePlayer>()
+  let local: LocalAuthoritativeState | null = null
+
+  for (const playerState of snapshot.players ?? []) {
+    const facing = facingOrDefault(playerState.facing)
+    if (playerState.id === userId) {
+      local = {
+        x: playerState.x,
+        y: playerState.y,
+        vx: playerState.vx,
+        vy: playerState.vy,
+        facing,
+        moving: !!playerState.moving,
+        lastProcessedInputSeq: Number.isInteger(playerState.lastProcessedInputSeq)
+          ? playerState.lastProcessedInputSeq
+          : 0,
+        serverTimeMs,
+      }
+      continue
+    }
+
+    remote.set(playerState.id, toRemotePlayer(playerState, snapshotTimeMs, serverTimeMs))
+  }
+
+  return { local, remote }
+}
+
+function bindSocketEventHandlers(
+  socketClient: Socket,
+  handlers: SocketEventHandlers,
+): () => void {
+  // Centralized bind/unbind keeps listener cleanup symmetric and avoids leaks.
+  socketClient.on('connect', handlers.onConnect)
+  socketClient.on('connect_error', handlers.onConnectError)
+  socketClient.on('disconnect', handlers.onDisconnect)
+  socketClient.on('room:state', handlers.onRoomState)
+  socketClient.on('player:joined', handlers.onPlayerJoined)
+  socketClient.on('world:snapshot', handlers.onWorldSnapshot)
+  socketClient.on('player:voice', handlers.onPlayerVoice)
+  socketClient.on('player:left', handlers.onPlayerLeft)
+
+  return () => {
+    socketClient.off('connect', handlers.onConnect)
+    socketClient.off('connect_error', handlers.onConnectError)
+    socketClient.off('disconnect', handlers.onDisconnect)
+    socketClient.off('room:state', handlers.onRoomState)
+    socketClient.off('player:joined', handlers.onPlayerJoined)
+    socketClient.off('world:snapshot', handlers.onWorldSnapshot)
+    socketClient.off('player:voice', handlers.onPlayerVoice)
+    socketClient.off('player:left', handlers.onPlayerLeft)
+  }
+}
+
 /** Connect socket.io and expose synchronized multiplayer state/events. */
 export function useSocket(player: Player, accessToken: string, userId: string) {
   const [socket, setSocket] = useState<Socket | null>(null)
@@ -92,8 +208,76 @@ export function useSocket(player: Player, accessToken: string, userId: string) {
   const tokenRef = useRef(accessToken)
   const socketRef = useRef<Socket | null>(null)
   const canConnect = userId.trim().length > 0 && accessToken.trim().length > 0
+  // Clears any stale multiplayer state when auth/session/socket context changes.
+  const clearWorldRuntimeState = useCallback(() => {
+    setServerSpawn(null)
+    setLocalAuthoritativeState(null)
+    setRemotePlayers(new Map())
+  }, [])
+  const joinCurrentPlayer = useCallback((socketClient: Socket) => {
+    socketClient.emit(
+      'player:join',
+      { name: playerRef.current.name, avatar: playerRef.current.avatar },
+      (ack?: JoinAckPayload) => {
+        const spawn = parseSpawnFromJoinAck(ack)
+        if (spawn) setServerSpawn(spawn)
+      },
+    )
+  }, [])
+
+  const handleConnectError = useCallback((err: Error) => {
+    setStatus('error')
+    setLastError(err?.message ?? String(err))
+    setServerSpawn(null)
+  }, [])
+
+  const handleDisconnect = useCallback((reason: string) => {
+    setStatus('disconnected')
+    setLastDisconnectReason(String(reason))
+    clearWorldRuntimeState()
+  }, [clearWorldRuntimeState])
+
+  const handleRoomState = useCallback((players: SnapshotPlayerPayload[]) => {
+    setRemotePlayers(buildRemotePlayersForRoomState(players, userId))
+  }, [userId])
+
+  const handlePlayerJoined = useCallback((joinedPlayer: SnapshotPlayerPayload) => {
+    const snapshotTimeMs = performance.now()
+    const serverTimeMs = Date.now()
+    if (joinedPlayer.id === userId) return
+    setRemotePlayers((prev) =>
+      new Map(prev).set(
+        joinedPlayer.id,
+        toRemotePlayer(joinedPlayer, snapshotTimeMs, serverTimeMs),
+      ),
+    )
+  }, [userId])
+
+  const handleWorldSnapshot = useCallback((snapshot: WorldSnapshotPayload) => {
+    const nextState = applySnapshot(snapshot, userId)
+    setLocalAuthoritativeState(nextState.local)
+    setRemotePlayers(nextState.remote)
+  }, [userId])
+
+  const handlePlayerVoice = useCallback(({ id, muted }: { id: string; muted: boolean }) => {
+    setRemotePlayers((prev) => {
+      const next = new Map(prev)
+      const existing = next.get(id)
+      if (existing) next.set(id, { ...existing, muted: !!muted })
+      return next
+    })
+  }, [])
+
+  const handlePlayerLeft = useCallback(({ id }: { id: string }) => {
+    setRemotePlayers((prev) => {
+      const next = new Map(prev)
+      next.delete(id)
+      return next
+    })
+  }, [])
 
   useEffect(() => {
+    // Keep token hot-swapped for future reconnect attempts.
     tokenRef.current = accessToken
     if (socketRef.current) {
       socketRef.current.auth = { token: accessToken }
@@ -106,6 +290,7 @@ export function useSocket(player: Player, accessToken: string, userId: string) {
   }, [accessToken])
 
   useEffect(() => {
+    // Lifecycle effect: create socket only when authenticated identity is ready.
     if (!canConnect) {
       socketRef.current?.disconnect()
       socketRef.current = null
@@ -113,9 +298,7 @@ export function useSocket(player: Player, accessToken: string, userId: string) {
       setStatus('disconnected')
       setLastDisconnectReason(null)
       setLastError(null)
-      setServerSpawn(null)
-      setLocalAuthoritativeState(null)
-      setRemotePlayers(new Map())
+      clearWorldRuntimeState()
       return
     }
 
@@ -124,134 +307,43 @@ export function useSocket(player: Player, accessToken: string, userId: string) {
     socketRef.current = socketClient
     setSocket(socketClient)
 
-    socketClient.on('connect', () => {
+    const handleConnect = () => {
+      // Fresh connect = reset transient state, then request authoritative spawn.
       setStatus('connected')
       setLastDisconnectReason(null)
       setLastError(null)
-      setServerSpawn(null)
-      setLocalAuthoritativeState(null)
-      socketClient.emit(
-        'player:join',
-        { name: playerRef.current.name, avatar: playerRef.current.avatar },
-        (ack?: { x?: unknown; y?: unknown; col?: unknown; row?: unknown; error?: unknown }) => {
-          if (ack?.error) return
-          const colFromAck = typeof ack?.col === 'number' ? ack.col : null
-          const rowFromAck = typeof ack?.row === 'number' ? ack.row : null
-          if (colFromAck !== null && rowFromAck !== null) {
-            setServerSpawn({ col: colFromAck, row: rowFromAck })
-            return
-          }
+      clearWorldRuntimeState()
+      joinCurrentPlayer(socketClient)
+    }
 
-          const x = typeof ack?.x === 'number' ? ack.x : null
-          const y = typeof ack?.y === 'number' ? ack.y : null
-          if (x === null || y === null) return
-          setServerSpawn({
-            col: Math.floor(x / TILE_PX),
-            row: Math.floor(y / TILE_PX),
-          })
-        },
-      )
-    })
-
-    socketClient.on('connect_error', (err) => {
-      setStatus('error')
-      setLastError(err?.message ?? String(err))
-      setServerSpawn(null)
-    })
-
-    socketClient.on('disconnect', (reason) => {
-      setStatus('disconnected')
-      setLastDisconnectReason(String(reason))
-      setServerSpawn(null)
-      setLocalAuthoritativeState(null)
-      setRemotePlayers(new Map())
-    })
-
-    socketClient.on('room:state', (players: SnapshotPlayerPayload[]) => {
-      const snapshotTimeMs = performance.now()
-      const serverTimeMs = Date.now()
-      setRemotePlayers(
-        new Map(
-          players
-            .filter((entry) => entry.id !== userId)
-            .map((entry) => [entry.id, toRemotePlayer(entry, snapshotTimeMs, serverTimeMs)]),
-        ),
-      )
-    })
-
-    socketClient.on('player:joined', (joinedPlayer: SnapshotPlayerPayload) => {
-      const snapshotTimeMs = performance.now()
-      const serverTimeMs = Date.now()
-      if (joinedPlayer.id === userId) return
-      setRemotePlayers((prev) =>
-        new Map(prev).set(
-          joinedPlayer.id,
-          toRemotePlayer(joinedPlayer, snapshotTimeMs, serverTimeMs),
-        ),
-      )
-    })
-
-    socketClient.on('world:snapshot', (snapshot: WorldSnapshotPayload) => {
-      const snapshotTimeMs = performance.now()
-      const nextRemote = new Map<string, RemotePlayer>()
-      let nextLocal: LocalAuthoritativeState | null = null
-
-      for (const playerState of snapshot.players ?? []) {
-        const facing = facingOrDefault(playerState.facing)
-        if (playerState.id === userId) {
-          nextLocal = {
-            x: playerState.x,
-            y: playerState.y,
-            vx: playerState.vx,
-            vy: playerState.vy,
-            facing,
-            moving: !!playerState.moving,
-            lastProcessedInputSeq: Number.isInteger(playerState.lastProcessedInputSeq)
-              ? playerState.lastProcessedInputSeq
-              : 0,
-            serverTimeMs: Number.isFinite(snapshot.serverTimeMs)
-              ? snapshot.serverTimeMs
-              : Date.now(),
-          }
-          continue
-        }
-
-        nextRemote.set(
-          playerState.id,
-          toRemotePlayer(
-            playerState,
-            snapshotTimeMs,
-            Number.isFinite(snapshot.serverTimeMs) ? snapshot.serverTimeMs : Date.now(),
-          ),
-        )
-      }
-
-      setLocalAuthoritativeState(nextLocal)
-      setRemotePlayers(nextRemote)
-    })
-
-    socketClient.on('player:voice', ({ id, muted }: { id: string; muted: boolean }) => {
-      setRemotePlayers((prev) => {
-        const next = new Map(prev)
-        const existing = next.get(id)
-        if (existing) next.set(id, { ...existing, muted: !!muted })
-        return next
-      })
-    })
-
-    socketClient.on('player:left', ({ id }: { id: string }) => {
-      setRemotePlayers((prev) => {
-        const next = new Map(prev)
-        next.delete(id)
-        return next
-      })
+    const unbindHandlers = bindSocketEventHandlers(socketClient, {
+      onConnect: handleConnect,
+      onConnectError: handleConnectError,
+      onDisconnect: handleDisconnect,
+      onRoomState: handleRoomState,
+      onPlayerJoined: handlePlayerJoined,
+      onWorldSnapshot: handleWorldSnapshot,
+      onPlayerVoice: handlePlayerVoice,
+      onPlayerLeft: handlePlayerLeft,
     })
 
     return () => {
+      unbindHandlers()
       socketRef.current = null
       socketClient.disconnect()
     }
-  }, [userId, canConnect]) // connect only when authenticated identity + token are ready
+  }, [
+    canConnect,
+    clearWorldRuntimeState,
+    handleConnectError,
+    handleDisconnect,
+    handlePlayerJoined,
+    handlePlayerLeft,
+    handlePlayerVoice,
+    handleRoomState,
+    handleWorldSnapshot,
+    joinCurrentPlayer,
+  ]) // connect only when authenticated identity + token are ready
 
   /** Emit local movement input updates to the server at input cadence. */
   const emitInput = useCallback((state: PlayerInputState) => {
