@@ -15,17 +15,53 @@ export interface RemotePlayer {
   id: string
   name: string
   avatar: Avatar
+  x: number
+  y: number
+  vx: number
+  vy: number
   col: number
   row: number
+  worldX: number
+  worldY: number
   direction: Direction
   moving: boolean
+  lastProcessedInputSeq: number
+  snapshotTimeMs: number
+  serverTimeMs: number
   zoneKey: string | null
   muted: boolean
+}
+
+export interface PlayerInputState {
+  seq: number
+  inputX: number
+  inputY: number
+  facing: Direction
+  moving: boolean
+  clientTimeMs: number
+}
+
+export interface LocalAuthoritativeState {
+  x: number
+  y: number
+  vx: number
+  vy: number
+  facing: Direction
+  moving: boolean
+  lastProcessedInputSeq: number
+  serverTimeMs: number
+}
+
+export interface ChatMention {
+  userId: string
+  token: string
 }
 
 export interface ChatMessage {
   id: string
   name: string
   text: string
+  body?: string
+  mentions?: ChatMention[]
   timestamp: number
 }

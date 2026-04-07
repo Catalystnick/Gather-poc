@@ -24,6 +24,7 @@ import {
 } from 'livekit-client'
 import { getZoneKey } from '../utils/zoneDetection'
 import { tileToWorld } from '../utils/gridHelpers'
+import { TILE_PX } from '../game/engine/constants'
 import {
   ROOM_NAME, ZONE_ROOM_PREFIX,
   type CachedToken, type TokenIntent,
@@ -106,7 +107,7 @@ function dist2(
 
 /** Convert a remote player's tile position into world-space coordinates. */
 function playerPos(remotePlayer: RemotePlayer): { x: number; y: number } {
-  return tileToWorld(remotePlayer.col, remotePlayer.row)
+  return tileToWorld(remotePlayer.worldX / TILE_PX, remotePlayer.worldY / TILE_PX)
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -861,4 +862,3 @@ export function useVoice(
     proximityRoomReady,
   }
 }
-

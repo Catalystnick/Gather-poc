@@ -8,6 +8,8 @@ import { useMicTrack } from "../../hooks/useMicTrack";
 import { useVoice } from "../../hooks/useVoice";
 import { useChat } from "../../hooks/useChat";
 import { useLdtk } from "../../hooks/useLdtk";
+import { buildMentionSuggestions, buildOnlineUsers } from "../../chat/presenceSelectors";
+import { setTabBadge } from "../../chat/notificationService";
 import GameBridge from "../../game/GameBridge";
 import PhaserGame from "../../game/PhaserGame";
 
@@ -15,10 +17,16 @@ import ChatPanel from "../hud/ChatPanel";
 import VoiceControls from "../hud/VoiceControls";
 import ServerStatusPanel from "../hud/ServerStatusPanel";
 import VoiceConnectionsPanel from "../hud/VoiceConnectionsPanel";
+import TagPingStack from "../hud/TagPingStack";
+import TeleportRequestInbox from "../hud/TeleportRequestInbox";
 import type { Player } from "../../types";
 
 interface Props {
   player: Player;
+}
+
+function sanitizeTokenName(name: string) {
+  return name.trim().replace(/\s+/g, '_').replace(/[^A-Za-z0-9_\-]/g, '');
 }
 
 /** Top-level game scene wrapper: bridges React hooks, Phaser runtime, and HUD panels. */
@@ -32,8 +40,17 @@ export default function World({ player }: Props) {
   // positionRef is written by GameScene each frame; read by useVoice for proximity.
   const positionRef = useRef<{ x: number; y: number; z: number }>({ x: 0, y: 0, z: 0 });
 
-  const { socket, remotePlayers, serverSpawn, emitMove, emitVoiceState, status, lastDisconnectReason, lastError } =
-    useSocket(player, accessToken);
+  const {
+    socket,
+    remotePlayers,
+    serverSpawn,
+    localAuthoritativeState,
+    emitInput,
+    emitVoiceState,
+    status,
+    lastDisconnectReason,
+    lastError,
+  } = useSocket(player, accessToken, userId);
 
   const mic = useMicTrack();
 
@@ -47,7 +64,33 @@ export default function World({ player }: Props) {
     mapData?.zones ?? [],
   );
 
-  const { messages, sendMessage } = useChat(socket);
+  const onlineUsers = useMemo(
+    () => buildOnlineUsers(remotePlayers, { id: userId, name: player.name }),
+    [remotePlayers, userId, player.name],
+  );
+  const mentionSuggestions = useMemo(
+    () => buildMentionSuggestions(onlineUsers, userId),
+    [onlineUsers, userId],
+  );
+  const currentUserToken = useMemo(() => {
+    const safe = sanitizeTokenName(player.name);
+    return `@${safe || 'user'}`;
+  }, [player.name]);
+
+  const {
+    messages,
+    sendMessage,
+    commandStatus,
+    clearCommandStatus,
+    tagPings,
+    dismissTagPing,
+    teleportRequests,
+    respondToTeleportRequest,
+  } = useChat(socket, { currentUserId: userId, onlineUsers });
+
+  useEffect(() => {
+    setTabBadge(tagPings.length > 0);
+  }, [tagPings.length]);
 
   // ── Wire GameBridge ─────────────────────────────────────────────────────────
 
@@ -57,7 +100,8 @@ export default function World({ player }: Props) {
   GameBridge.playerId            = userId;
   GameBridge.playerAvatar        = player.avatar;
   GameBridge.serverSpawn         = serverSpawn;
-  GameBridge.onPlayerMove        = emitMove;
+  GameBridge.localAuthoritativeState = localAuthoritativeState;
+  GameBridge.onPlayerInput       = emitInput;
   GameBridge.localMuted          = voiceState.muted;
   GameBridge.localSpeaking       = voiceState.isLocalSpeaking;
   GameBridge.speakingPeers       = voiceState.speakingPeers;
@@ -108,7 +152,16 @@ export default function World({ player }: Props) {
       <div style={rootStyle}>
         <PhaserGame style={canvasStyle} />
 
-        <ChatPanel messages={messages} onSend={sendMessage} />
+        <ChatPanel
+          messages={messages}
+          onSend={sendMessage}
+          commandStatus={commandStatus}
+          onDismissStatus={clearCommandStatus}
+          mentionSuggestions={mentionSuggestions}
+          currentUserToken={currentUserToken}
+        />
+        <TagPingStack pings={tagPings} onDismiss={dismissTagPing} />
+        <TeleportRequestInbox requests={teleportRequests} onRespond={respondToTeleportRequest} />
         <VoiceControls />
         <ServerStatusPanel
           socketStatus={status}
