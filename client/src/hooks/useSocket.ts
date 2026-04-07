@@ -91,13 +91,34 @@ export function useSocket(player: Player, accessToken: string, userId: string) {
   // uses the latest token automatically.
   const tokenRef = useRef(accessToken)
   const socketRef = useRef<Socket | null>(null)
+  const canConnect = userId.trim().length > 0 && accessToken.trim().length > 0
 
   useEffect(() => {
     tokenRef.current = accessToken
-    if (socketRef.current) socketRef.current.auth = { token: accessToken }
+    if (socketRef.current) {
+      socketRef.current.auth = { token: accessToken }
+      // Socket.IO auth middleware rejections do not always recover automatically.
+      // If we were previously denied due to missing/stale token, retry with the fresh token.
+      if (!socketRef.current.connected && accessToken.trim().length > 0) {
+        socketRef.current.connect()
+      }
+    }
   }, [accessToken])
 
   useEffect(() => {
+    if (!canConnect) {
+      socketRef.current?.disconnect()
+      socketRef.current = null
+      setSocket(null)
+      setStatus('disconnected')
+      setLastDisconnectReason(null)
+      setLastError(null)
+      setServerSpawn(null)
+      setLocalAuthoritativeState(null)
+      setRemotePlayers(new Map())
+      return
+    }
+
     const socketClient = io(SERVER_URL, { auth: { token: tokenRef.current } })
     setStatus('connecting')
     socketRef.current = socketClient
@@ -230,7 +251,7 @@ export function useSocket(player: Player, accessToken: string, userId: string) {
       socketRef.current = null
       socketClient.disconnect()
     }
-  }, [userId]) // connect once per authenticated user
+  }, [userId, canConnect]) // connect only when authenticated identity + token are ready
 
   /** Emit local movement input updates to the server at input cadence. */
   const emitInput = useCallback((state: PlayerInputState) => {
