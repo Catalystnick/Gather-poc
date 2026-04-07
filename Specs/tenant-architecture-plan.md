@@ -56,27 +56,16 @@ flowchart TB
     HUD["HUD\nchat/tag/teleport(interior-only)"]
   end
 
-  subgraph Edge["API + Gateway"]
+  subgraph Edge["API + Server"]
     AuthMW["JWT Verify Middleware"]
     TenantSvc["Tenant Service\n(tenant membership, role, world access)"]
     TenantApi["Tenant REST API\nbootstrap + membership + admin"]
-    Gateway["Socket Gateway\ninstance routing + handoff"]
+    Server["Socket Server\ninstance routing + in-memory player state"]
   end
 
-  subgraph Realtime["Realtime Workers (N nodes)"]
-    WorkerA["Worker A\nauthoritative instances"]
-    WorkerB["Worker B\nauthoritative instances"]
-  end
-
-  subgraph Coord["Redis Coordination"]
-    OwnerDir["instance:owner + heartbeats"]
-    Presence["presence indexes + main plaza global text chat bus"]
-    PubSub["Socket adapter pub/sub"]
-  end
-
-  subgraph WorldTopo["World Topology"]
-    Plaza["Shared main_plaza\n(all tenant exteriors)"]
-    Interiors["Tenant interior instances\n(one per tenant in v1)"]
+  subgraph WorldTopo["World Instances (in-memory)"]
+    Plaza["main_plaza\nplayersByWorld[plazaId]"]
+    Interiors["tenant_interior instances\nplayersByWorld[interiorId]"]
   end
 
   subgraph Data["Supabase Postgres"]
@@ -84,7 +73,6 @@ flowchart TB
     Member[(tenant_memberships)]
     Worlds[(worlds)]
     Invite[(tenant_invites)]
-    Links[(world_links optional)]
   end
 
   subgraph Voice["LiveKit"]
@@ -94,36 +82,22 @@ flowchart TB
   Auth --> AuthMW
   AuthMW --> TenantSvc
   TenantCtx --> SocketClient
-  SocketClient --> Gateway
+  SocketClient --> Server
   HUD --> SocketClient
 
   TenantApi --> TenantSvc
-  Gateway --> TenantSvc
-  Gateway --> OwnerDir
-  Gateway --> WorkerA
-  Gateway --> WorkerB
-  SocketClient --> Plaza
-  Plaza -->|enter tenant door| Interiors
-  Interiors -->|exit to plaza| Plaza
+  Server --> TenantSvc
+  Server --> Plaza
+  Server --> Interiors
+  Plaza -->|enter tenant door - loading screen| Interiors
+  Interiors -->|exit to plaza - loading screen| Plaza
 
   TenantSvc --> Org
   TenantSvc --> Member
   TenantSvc --> Worlds
   TenantSvc --> Invite
-  TenantSvc --> Links
 
-  WorkerA --> Presence
-  WorkerB --> Presence
-  WorkerA --> PubSub
-  WorkerB --> PubSub
-  OwnerDir --> PubSub
-  WorkerA --> Plaza
-  WorkerB --> Plaza
-  WorkerA --> Interiors
-  WorkerB --> Interiors
-
-  WorkerA --> LK
-  WorkerB --> LK
+  Server --> LK
 ```
 
 ## 3.2 Core Multi-Tenant Principles
@@ -416,57 +390,7 @@ sequenceDiagram
   API-->>A: updated
 ```
 
-## 6.5 Seamless Portal Transition (Entry Point + LRU Prefetch)
-
-```mermaid
-sequenceDiagram
-  participant C as Client
-  participant G as Socket Gateway
-  participant O as Owner Directory (Redis)
-  participant W as Target Realtime Worker
-  participant T as Tenant Service
-  participant L as Client LRU Cache
-
-  Note over C: Player approaches tenant house door in main plaza
-  C->>G: world:prefetch(targetInteriorWorldId, portalId)
-  G->>T: authorize prefetch access
-
-  alt allowed
-    T-->>G: allowed
-    G->>O: resolve target instance owner
-    O-->>G: ownerNode
-    G->>W: build warm snapshot seed
-    W-->>G: prefetchToken + seedSnapshot + assetHints
-    G-->>C: prefetch ack(prefetchToken, seedSnapshot, assetHints)
-    C->>L: store warm world bundle (LRU)
-  else denied
-    T-->>G: denied
-    G-->>C: prefetch denied
-  end
-
-  Note over C: Player crosses door trigger
-  Note over C: Warm path minimizes loading; cold path shows normal loading transition
-  C->>G: world:change(targetInteriorWorldId, prefetchToken?)
-  G->>T: re-check access + validate token TTL
-  G->>O: resolve current owner
-
-  alt same-node owner + warm handoff valid
-    T-->>G: allowed_via_prefetch
-    G->>W: fast-path join
-    W-->>C: change ack(fast-path spawn + delta)
-  else cross-node owner handoff
-    O-->>G: owner_changed
-    G-->>C: handoff redirect + handoffToken
-    C->>G: reconnect target owner + join
-    G->>W: finalize join
-    W-->>C: change ack(spawn + delta_or_cold)
-  else denied
-    T-->>G: denied
-    G-->>C: ack(error=access_denied)
-  end
-```
-
-## 6.6 Horizontal Routing and Ownership Failover
+## 6.5 Horizontal Routing and Ownership Failover
 
 ```mermaid
 sequenceDiagram
@@ -494,7 +418,7 @@ sequenceDiagram
   Note over W1,W2: Only highest valid epoch may emit authoritative snapshots
 ```
 
-## 6.7 Teleport Inside Interior Instance
+## 6.6 Teleport Inside Interior Instance
 
 ```mermaid
 sequenceDiagram
@@ -590,168 +514,7 @@ This removes tenant/role logic from socket handlers and keeps handlers focused o
 - Zone/privacy voice is available only in designated interior zone spaces.
 - Users must be in the same interior instance and same zone channel to hear each other.
 
-## 7.6 Seamless handoff pipeline (server)
-
-- Add a prewarm path before `world:change`:
-  - `world:prefetch(targetInteriorWorldId, portalId)` authorizes and prepares a warm seed snapshot.
-- Add short-lived prefetch tokens:
-  - server-issued token bound to `userId + targetInteriorWorldId + portalId`, TTL (example: 30s).
-- Keep per-user warm state with LRU semantics:
-  - `warmWorldsByUser: Map<userId, LRU<worldId, WarmWorldState>>`.
-  - cap size small (example: 2-3 worlds) to control memory.
-- On `world:change`, re-check authorization even if token exists:
-  - valid token -> fast-path spawn + delta snapshot.
-  - missing/stale token -> cold-path join (functional fallback, slower UX).
-- Never treat prefetch as authorization grant:
-  - authorization must pass on both prefetch and final change.
-
-## 7.7 Scale-out strategy (Redis + hybrid runtime)
-
-Recommendation for production scale:
-
-- Use a hybrid model, not Redis-only realtime state.
-- Keep `playersByWorld` local/in-memory for per-tick movement, proximity checks, and snapshot generation.
-- Use Redis for cross-node coordination:
-  - global presence/online indexes
-  - world ownership/affinity metadata (optional)
-  - pub/sub fanout between realtime nodes
-  - short-lived shared artifacts (prefetch tokens, rate-limit counters, ephemeral flags)
-- Do not make Redis the primary per-frame store for `PlayerState`; network and serialization overhead will increase latency.
-
-When to adopt:
-
-- Single-node or early PoC: in-memory only is acceptable.
-- Multi-node horizontal scale: add Redis adapter + distributed presence while retaining local world runtime loops.
-
-## 7.8 Horizontal scaling solution (target production topology)
-
-### 7.8.1 Topology
-
-```mermaid
-flowchart LR
-  subgraph Clients["Clients"]
-    C1["Browser Clients"]
-  end
-
-  LB["Ingress / Load Balancer"]
-
-  subgraph Edge["Gateway/API Pods"]
-    GW["Socket Gateway + REST API"]
-  end
-
-  subgraph Workers["Realtime Worker Pods"]
-    P1["main_plaza shard-1\n(shared exteriors)"]
-    P2["main_plaza shard-2\n(shared exteriors)"]
-    I1["tenant interior instance A"]
-    I2["tenant interior instance B"]
-  end
-
-  subgraph Redis["Redis"]
-    OWN["instance:owner + heartbeats"]
-    PS["Socket adapter pub/sub"]
-    PRES["presence + plaza global text chat bus"]
-  end
-
-  subgraph Postgres["Postgres"]
-    DB["tenants, memberships, worlds, invites"]
-  end
-
-  subgraph Voice["LiveKit"]
-    LK["Interior-only voice rooms\nproximity + zone/privacy"]
-  end
-
-  C1 --> LB
-  LB --> GW
-  GW --> OWN
-  GW --> DB
-  GW --> P1
-  GW --> P2
-  GW --> I1
-  GW --> I2
-  P1 --> PS
-  P2 --> PS
-  I1 --> PS
-  I2 --> PS
-  P1 --> PRES
-  P2 --> PRES
-  I1 --> PRES
-  I2 --> PRES
-  I1 --> LK
-  I2 --> LK
-```
-
-- API/Gateway tier:
-  - JWT verification, rate limits, lightweight REST.
-  - Socket handshake and instance routing.
-- Realtime worker tier (N nodes):
-  - authoritative simulation per owned instance.
-  - AOI + delta snapshots + instance-scoped events.
-- Redis tier:
-  - Socket.IO adapter/pub-sub.
-  - instance ownership directory + heartbeats.
-  - cross-node presence + ephemeral coordination state.
-- Postgres tier:
-  - durable tenant metadata (tenants, memberships, worlds, invites).
-- LiveKit tier:
-  - interior-only voice rooms (proximity + interior zones).
-
-### 7.8.2 Instance ownership model
-
-- Each world instance has exactly one active owner worker at a time.
-- Owner worker keeps the hot runtime state in-memory for that instance.
-- Redis keys track ownership and liveness:
-  - `instance:owner:{worldId}` -> `{ nodeId, epoch, lastHeartbeatAt }` with TTL.
-  - `instance:load:{nodeId}` -> occupancy and tick lag metrics.
-- Ownership is acquired/renewed by heartbeat; expiry triggers reassignment.
-
-### 7.8.3 Routing and handoff flow
-
-- On `world:join` / `world:change`:
-  - resolve target instance owner from Redis directory.
-  - if owner is current node, join directly.
-  - if owner is another node, perform controlled handoff (redirect payload + short-lived handoff token).
-- Client reconnects to target worker and resumes in target instance.
-- Authorization is revalidated on final join at the owner worker (never trust redirect alone).
-
-### 7.8.4 Main plaza sharding
-
-- Treat main plaza as multiple shards in production (`main_plaza:1..K`) while preserving one logical plaza UX.
-- Assign users to a plaza shard using deterministic routing (consistent hash or least-loaded strategy).
-- Keep plaza text chat logically global via a dedicated cross-shard pub/sub channel.
-- Interior instances remain isolated per tenant interior world.
-
-### 7.8.5 Redis responsibilities (authoritative boundaries)
-
-- Redis is coordination/state distribution, not per-frame simulation storage.
-- Store in Redis:
-  - Socket.IO adapter channels.
-  - presence indexes (`presence:world:{worldId}` sets/hashes).
-  - ownership + heartbeat keys.
-  - short-lived artifacts (prefetch/handoff tokens, rate-limit buckets).
-- Do not store high-frequency mutable `PlayerState` as the source of truth in Redis.
-
-### 7.8.6 Failure handling
-
-- Worker crash/loss:
-  - heartbeat expires -> ownership key invalidated -> new owner elected.
-  - connected clients receive retry/rejoin signal and reconnect to new owner.
-- Split-brain prevention:
-  - monotonic `epoch` in ownership record; only highest valid epoch may emit authoritative snapshots.
-- Graceful drain:
-  - worker marks itself draining, rejects new joins, hands off active instances before shutdown.
-
-### 7.8.7 Observability and autoscaling signals
-
-- Required metrics per worker/instance:
-  - tick duration and tick lag
-  - outbound bytes/sec
-  - AOI fanout size
-  - snapshot payload size
-  - socket count + active players per instance
-- Autoscale triggers should consider:
-  - sustained high tick lag
-  - sustained high outbound bandwidth
-  - sustained occupancy above per-instance target.
+> Scaling note: the PoC uses single-node in-memory player tracking per instance. Redis-based horizontal scaling, AOI snapshot optimization, and multi-node instance ownership are documented separately in [performance-and-scaling.md](performance-and-scaling.md).
 
 ---
 
@@ -789,17 +552,14 @@ Route behavior:
 - Main plaza auto-entry on session start (acts as tenant selection map).
 - User walks to a tenant house exterior door to trigger `world:change` into that tenant interior.
 - Exiting an interior returns player to main plaza at the corresponding exterior door location.
+- Temporary pre-Tiled testing strategy: remap existing `dev/design/game` zone triggers in main plaza as portal triggers for `world:change`.
+- When Tiled map portal entities are added, remove this temporary zone remapping and switch to dedicated portal triggers.
 
-## 8.5 Seamless world transitions (client LRU)
+## 8.5 World transitions (loading screen)
 
-- Portal/entry-point proximity triggers `world:prefetch` in advance.
-- Client keeps a tiny LRU cache of warm target worlds:
-  - seed snapshot
-  - critical entity state
-  - asset hints/preloaded bundles
-- Crossing the portal uses warm handoff when available:
-  - instant/cross-fade transition with minimal loading interruption.
-- If cache entry is stale/missing, fall back to normal `world:change` path without blocking gameplay.
+- Crossing a portal triggers `world:change`.
+- Client shows a loading screen while the server switches the player to the target instance.
+- Once `world:change` ack is received with spawn position and instance snapshot, the loading screen is dismissed and the game resumes.
 
 ---
 
@@ -818,7 +578,6 @@ Route behavior:
 
 ## 9.2 Socket
 
-- `world:prefetch` request/ack (optional but recommended for seamless transitions)
 - `world:join` request/ack
 - `world:change` request/ack
 - existing movement/tag/teleport events continue, and server enforces active instance membership.
@@ -834,24 +593,21 @@ Route behavior:
 
 ## 10. Migration and Rollout
 
+Detailed execution steps are documented in [`tenant-implementation-plan.md`](./tenant-implementation-plan.md).
+
 ## 10.1 Data migration strategy
 
 - Seed one shared main plaza world row (`world_type='main_plaza'`).
 - For existing tenants, ensure one interior world exists per tenant.
 - For existing users, assign/migrate into a default tenant and default interior world on first tenant bootstrap.
-- Preserve current gameplay access during staged rollout via compatibility fallback until migration finishes.
 
 ## 10.2 Incremental rollout phases
 
 1. DB schema + tenant REST bootstrap.
-2. Socket partitioning for main plaza + interior world join/change.
+2. Socket instance scoping for main plaza + interior world join/change.
 3. Interaction scoping (chat/tag/teleport) and voice room namespacing.
 4. Admin tooling and hardening.
-5. Horizontal scaling rollout:
-   - Redis adapter + instance ownership directory.
-   - worker handoff path for cross-node `world:change`.
-   - main plaza sharding with global plaza text channel.
-   - failure-recovery drills and load validation.
+5. Horizontal scaling rollout — see [performance-and-scaling.md](performance-and-scaling.md).
 
 ---
 
@@ -874,9 +630,8 @@ Route behavior:
 - Teleport requests are accepted only for same-tenant sender/target pairs in the same interior instance.
 - Teleport requests are rejected in `main_plaza`.
 - Interior text chat is restricted to that interior instance and never leaks to other interiors or plaza.
-- Disconnect cleanup only affects relevant world partition.
-- Warm transition fast-path works when prefetch token is valid; cold fallback always works when warm cache misses.
-- Prefetch cache eviction (LRU) never leaks stale/private data across users or sessions.
+- Disconnect cleanup only affects relevant instance.
+- Loading screen is shown on `world:change` and dismissed only after server ack with valid spawn and snapshot.
 
 ### Voice
 
@@ -894,9 +649,7 @@ Route behavior:
 ### Scalability
 
 - Realtime events are emitted to instance-scoped rooms, not global broadcasts.
-- Cross-node `world:change` succeeds via ownership-based handoff without duplicate authoritative owners.
-- Main plaza sharding supports distribution across multiple workers while maintaining global plaza text chat.
-- Under load, tick lag and snapshot fanout remain within defined SLO targets.
+- Horizontal scaling, cross-node handoff, and plaza sharding acceptance criteria are defined in [performance-and-scaling.md](performance-and-scaling.md).
 
 ---
 
@@ -955,27 +708,17 @@ The current server has `ALLOWED_ROOMS` as a static `Set`. The plan renames rooms
 
 #### 13.4 Membership constraint conflicts with visitor presence tracking
 
-Section 4.1 enforces one active membership per user. Section 5.1 allows any authenticated user to enter public tenant interiors. A non-member visitor inside a public interior has no tenant membership — so chat mention resolution, tag targeting, and teleport validation inside that interior are all undefined. The teleport rule requiring "same tenant membership" silently blocks non-member visitors from teleporting even inside interiors they've legitimately entered. This is a hidden behavioral constraint that will be implemented inconsistently.
+Section 4.1 enforces one active membership per user. Section 5.1 allows any authenticated user to enter public tenant interiors. A non-member visitor inside a public interior instance has no tenant membership — so chat mention resolution, tag targeting, and teleport validation inside that instance are all undefined. The teleport rule requiring "same tenant membership" silently blocks non-member visitors from teleporting even inside instances they've legitimately entered. This is a hidden behavioral constraint that will be implemented inconsistently.
 
 **Fix:** Explicitly state whether non-member visitors can: send chat, appear in mentions, be teleported to, and appear in tag resolution. These need defined behaviors, not implicit ones.
 
 ---
 
-#### 13.5 Data migration strategy is a placeholder
-
-Section 10.1 says "preserve current gameplay access during staged rollout via compatibility fallback" but no fallback is defined. The current server has no world or tenant columns. Phase 1 runs against a live system where players use the single-world model. What happens to sockets connecting before TenantContext is bootstrapped? What is the fallback world? This is hand-waved.
-
-**Fix:** Define the compatibility fallback explicitly — e.g., unauthenticated-tenant users are assigned a default main plaza world row, and the old `player:join` event is shimmed to `world:join(mainPlazaWorldId)` during the transition window.
-
----
-
 ### Major Concerns
 
-#### 13.6 Seamless prefetch is PoC-inappropriate complexity
+#### 13.6 ~~Seamless prefetch is PoC-inappropriate complexity~~
 
-Sections 6.5 and 7.6 describe LRU warm cache, prefetch tokens with TTL, fast-path vs cold-path delta snapshots, and same-node vs cross-node owner checks. This is a production optimization, not a PoC feature. Including it without a clear deferral boundary means engineers will implement it in v1 when it isn't needed.
-
-**Fix:** Mark Sections 6.5, 6.6, and 7.8 as `v2 / post-PoC` with a hard scope boundary. The PoC refactor plan should end at horizontal scaling being designed for but not yet implemented.
+Resolved. Prefetch / LRU warm cache has been removed from the plan entirely. Instance transitions will show a loading screen until the server ack is received. Sections 6.5, 7.6, and 8.5 have been updated accordingly.
 
 ---
 
@@ -987,7 +730,7 @@ Section 4.3 mandates row-level security. None of the five rollout phases mention
 
 ---
 
-#### 13.8 `teleportRequests` store has no world key
+#### 13.8 `teleportRequests` store has no instance key
 
 The current `TeleportRequestsStore` is keyed by userId with a global cooldown. The plan requires keying by `(worldId, senderId, targetId, tenantId)`. This is a complete rewrite of the store's key space, expiry logic, and cross-disconnect cleanup. The plan mentions the new key structure (Section 7.4) but does not flag this as a breaking change to the existing store.
 
@@ -995,13 +738,13 @@ The current `TeleportRequestsStore` is keyed by userId with a global cooldown. T
 
 #### 13.9 `world:snapshot` broadcast loop must be rewritten
 
-`io.emit('world:snapshot', ...)` in `server/index.js` broadcasts to every connected client. The plan requires this to become `io.to('world:{worldId}').emit(...)`. This means the snapshot loop must iterate over `playersByWorld` and emit N separate snapshots per tick for N active worlds. Running N snapshot loops at 20 Hz has different memory and CPU characteristics than one. This is not called out as a performance boundary.
+`io.emit('world:snapshot', ...)` in `server/index.js` broadcasts to every connected client. The plan requires this to become `io.to('world:{worldId}').emit(...)`. This means the snapshot loop must iterate over `playersByWorld` and emit N separate snapshots per tick for N active instances. Running N snapshot loops at 20 Hz has different memory and CPU characteristics than one. This is not called out as a performance boundary.
 
 ---
 
-#### 13.10 Main plaza sharding mixed into v1 without scope boundary
+#### 13.10 ~~Main plaza sharding mixed into v1 without scope boundary~~
 
-Section 7.8.4 describes plaza sharding (`main_plaza:1..K`) with no statement of when it becomes active. The current system trivially supports few concurrent users. Including it without a `v2+` marker will cause it to be treated as v1 scope.
+Resolved. Redis horizontal scaling, plaza sharding, and instance ownership model have been moved to [performance-and-scaling.md](performance-and-scaling.md). The tenant plan now uses single-node in-memory player tracking for the PoC.
 
 ---
 
@@ -1009,9 +752,9 @@ Section 7.8.4 describes plaza sharding (`main_plaza:1..K`) with no statement of 
 
 #### 13.11 Disconnect teardown sequence is undefined
 
-Current disconnect cleanup removes from the global `players` object and broadcasts `player:left` globally. Post-refactor, disconnect must: identify which world the player was in, remove from `playersByWorld[worldId]`, clear teleport requests scoped to that world/tenant, emit `player:left` only to the world room, and trigger voice disconnect cleanup for that world's LiveKit room. None of this is defined in the refactor plan and will be implemented inconsistently.
+Current disconnect cleanup removes from the global `players` object and broadcasts `player:left` globally. Post-refactor, disconnect must: identify which instance the player was in, remove from `playersByWorld[worldId]`, clear teleport requests scoped to that instance, emit `player:left` only to the instance's Socket.IO room, and trigger voice disconnect cleanup for that instance's LiveKit room. None of this is defined in the refactor plan and will be implemented inconsistently.
 
-**Fix:** Add a disconnect teardown sequence to Section 7 as a dedicated subsection listing the ordered cleanup steps for world-partitioned state.
+**Fix:** Add a disconnect teardown sequence to Section 7 as a dedicated subsection listing the ordered cleanup steps per instance.
 
 #### 13.12 Supabase token rotation mid-session is unaddressed
 
