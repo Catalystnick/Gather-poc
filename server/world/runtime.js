@@ -76,7 +76,7 @@ function isValidAvatar(avatar) {
 
 export function createWorldRuntime() {
   const worldData = loadWorldData()
-  const players = {}
+  const playersByWorld = new Map()
   let worldTick = 0
 
   function isValidTile(col, row) {
@@ -144,11 +144,54 @@ export function createWorldRuntime() {
     }
   }
 
+  function getWorldPlayers(worldId) {
+    return playersByWorld.get(worldId) ?? null
+  }
+
+  function getOrCreateWorldPlayers(worldId) {
+    const existing = playersByWorld.get(worldId)
+    if (existing) return existing
+    const created = new Map()
+    playersByWorld.set(worldId, created)
+    return created
+  }
+
+  function setPlayer(worldId, userId, player) {
+    const worldPlayers = getOrCreateWorldPlayers(worldId)
+    worldPlayers.set(userId, player)
+  }
+
+  function getPlayer(worldId, userId) {
+    const worldPlayers = getWorldPlayers(worldId)
+    if (!worldPlayers) return null
+    return worldPlayers.get(userId) ?? null
+  }
+
+  function removePlayer(worldId, userId) {
+    const worldPlayers = getWorldPlayers(worldId)
+    if (!worldPlayers) return null
+    const player = worldPlayers.get(userId) ?? null
+    if (!player) return null
+    worldPlayers.delete(userId)
+    if (!worldPlayers.size) playersByWorld.delete(worldId)
+    return player
+  }
+
   function emitWorldSnapshot(io) {
-    io.emit('world:snapshot', {
+    for (const worldId of playersByWorld.keys()) {
+      emitWorldSnapshotForWorld(io, worldId)
+    }
+  }
+
+  function emitWorldSnapshotForWorld(io, worldId) {
+    const worldPlayers = getWorldPlayers(worldId)
+    if (!worldPlayers) return
+
+    io.to(`world:${worldId}`).emit('world:snapshot', {
       serverTimeMs: Date.now(),
       tick: worldTick,
-      players: Object.values(players).map(serializePlayerState),
+      worldId,
+      players: [...worldPlayers.values()].map(serializePlayerState),
     })
   }
 
@@ -187,13 +230,20 @@ export function createWorldRuntime() {
 
   function simulateTick() {
     worldTick += 1
-    for (const player of Object.values(players)) {
-      simulatePlayer(player)
+    for (const worldPlayers of playersByWorld.values()) {
+      for (const player of worldPlayers.values()) {
+        simulatePlayer(player)
+      }
     }
   }
 
   return {
-    players,
+    playersByWorld,
+    getWorldPlayers,
+    getOrCreateWorldPlayers,
+    setPlayer,
+    getPlayer,
+    removePlayer,
     isValidAvatar,
     isValidDirection,
     isValidTile,
@@ -202,6 +252,7 @@ export function createWorldRuntime() {
     randomSpawn,
     serializePlayerState,
     emitWorldSnapshot,
+    emitWorldSnapshotForWorld,
     simulateTick,
     simulationIntervalMs: Math.floor(1000 / SIMULATION_HZ),
     snapshotIntervalMs: Math.floor(1000 / SNAPSHOT_HZ),

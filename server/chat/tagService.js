@@ -10,6 +10,11 @@ function normalizeTargetIds(targetUserIds) {
   return [...unique]
 }
 
+function getPlayer(players, userId) {
+  if (players instanceof Map) return players.get(userId) ?? null
+  return players[userId] ?? null
+}
+
 export function resolveOnlineTargets({ targetUserIds, players, senderId }) {
   const requested = normalizeTargetIds(targetUserIds)
   const accepted = []
@@ -21,7 +26,7 @@ export function resolveOnlineTargets({ targetUserIds, players, senderId }) {
       continue
     }
 
-    if (!players[targetId]) {
+    if (!getPlayer(players, targetId)) {
       rejected.push({ userId: targetId, reason: 'offline' })
       continue
     }
@@ -49,7 +54,7 @@ export function emitTagIncoming({ io, players, senderId, senderName, acceptedTar
     timestamp: now,
     recipients: acceptedTargetIds.map((userId) => ({
       userId,
-      name: players[userId]?.name ?? userId,
+      name: getPlayer(players, userId)?.name ?? userId,
     })),
   }
 }

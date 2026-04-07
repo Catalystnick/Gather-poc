@@ -9,6 +9,16 @@ function hasMessageContent(value) {
   return typeof value === 'string' && value.trim().length > 0
 }
 
+function getPlayer(players, userId) {
+  if (players instanceof Map) return players.get(userId) ?? null
+  return players[userId] ?? null
+}
+
+function listPlayers(players) {
+  if (players instanceof Map) return [...players.values()]
+  return Object.values(players)
+}
+
 function chooseTeleportDestination({ players, targetCol, targetRow, isValidTile }) {
   const offsets = [
     [1, 0],
@@ -22,9 +32,7 @@ function chooseTeleportDestination({ players, targetCol, targetRow, isValidTile 
     [0, 0],
   ]
 
-  const occupied = new Set(
-    Object.values(players).map((player) => `${player.col}:${player.row}`),
-  )
+  const occupied = new Set(listPlayers(players).map((player) => `${player.col}:${player.row}`))
 
   for (const [dc, dr] of offsets) {
     const col = targetCol + dc
@@ -37,7 +45,7 @@ function chooseTeleportDestination({ players, targetCol, targetRow, isValidTile 
 }
 
 export function handleTagSend({ socket, io, players, payload }) {
-  const sender = players[socket.userId]
+  const sender = getPlayer(players, socket.userId)
   if (!sender) {
     return { ok: false, error: 'sender_not_joined' }
   }
@@ -84,7 +92,7 @@ export function handleTagSend({ socket, io, players, payload }) {
 }
 
 export function handleTeleportRequest({ socket, io, players, payload, teleportRequests }) {
-  const sender = players[socket.userId]
+  const sender = getPlayer(players, socket.userId)
   if (!sender) {
     return { ok: false, error: 'sender_not_joined' }
   }
@@ -177,7 +185,7 @@ export function handleTeleportRespond({
   tileCenter,
   detectZoneKey,
 }) {
-  const responder = players[socket.userId]
+  const responder = getPlayer(players, socket.userId)
   if (!responder) {
     return { ok: false, error: 'responder_not_joined' }
   }
@@ -199,7 +207,7 @@ export function handleTeleportRespond({
   }
 
   const request = response.request
-  const sender = players[request.senderId]
+  const sender = getPlayer(players, request.senderId)
   if (!sender) {
     io.to(`user:${request.senderId}`).emit('teleport:result', {
       requestId,

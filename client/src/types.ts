@@ -50,6 +50,7 @@ export interface LocalAuthoritativeState {
   moving: boolean
   lastProcessedInputSeq: number
   serverTimeMs: number
+  zoneKey: string | null
 }
 
 export interface ChatMention {

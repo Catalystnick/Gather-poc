@@ -40,6 +40,16 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 
 ## 3. Delivery Phases
 
+### Implementation Status (as of 2026-04-07)
+
+- Phase A: implemented in code.
+- Phase B: implemented in code (world-scoped runtime + `world:join`/`world:change` + temporary portal mapping).
+- Phase C: not implemented yet.
+- Phase D: not implemented yet.
+- Phase E: not implemented yet.
+- Phase F: partially implemented (`POST /tenant/bootstrap` exists; remaining admin endpoints pending).
+- Phase G: not implemented yet.
+
 ## 3.1 Phase A - Foundations (Schema, RLS, Tenant Service)
 
 ### Goals
@@ -72,6 +82,16 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - `GET /tenant/me` resolves tenant + world context.
 - Tenant service can be called from both REST and socket layers.
 
+### Status (2026-04-07)
+
+- Implemented in code:
+  - migration + seed + constraints + RLS: `supabase/migrations/20260407075655_phase_a_tenant_schema.sql`
+  - tenant service methods + TTL cache: `server/tenant/tenantService.js`
+  - `GET /tenant/me`: `server/routes/tenantRoutes.js`
+  - socket calls tenant service on join path: `server/socket/registerGameSocketHandlers.js`
+  - staged feature flags: `ENABLE_TENANT_ROUTES`, `ENABLE_TENANT_SOCKET_CONTEXT`
+  - RLS non-service-role integration test added: `server/tests/tenantRlsPolicies.test.js` (env-gated)
+
 ## 3.2 Phase B - Realtime Runtime Partitioning
 
 ### Goals
@@ -102,6 +122,30 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 
 - No global `io.emit('world:snapshot')` in runtime path.
 - Players in one interior never appear in another interior/plaza snapshots.
+
+### Status (2026-04-07)
+
+- Implemented in code:
+  - world-partitioned runtime:
+    - `playersByWorld: Map<worldId, Map<userId, PlayerState>>`
+    - `socketWorldIndex: Map<socketId, worldId>`
+  - socket room model:
+    - `user:{userId}`
+    - `world:{worldId}`
+  - world-scoped snapshots:
+    - snapshot loop iterates active worlds and emits to `world:{worldId}` only
+  - world join/change contracts:
+    - `world:join`
+    - `world:change`
+    - `player:join` kept as backward-compatible alias
+  - temporary portal mapping for test runs:
+    - `dev -> interior_world_dev`
+    - `design -> interior_world_design`
+    - `game -> interior_world_game`
+  - client updated to use `world:join` and trigger `world:change` via temporary zone mapping.
+- Validation:
+  - no global `io.emit('world:snapshot')` path remains
+  - added runtime partitioning test: `server/tests/worldRuntimePartitioning.test.js`
 
 ## 3.3 Phase C - Interaction Scoping + Teleport Store Rewrite
 
@@ -223,9 +267,15 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - `server/middleware/requireAuth.js`
 - `server/chat/commandRouter.js`
 - `server/chat/teleportRequestsStore.js`
-- `server/tenant/tenantService.js` (new)
-- `server/routes/tenant/*.js` (new)
-- `server/db/migrations/*` (new)
+- `server/tenant/tenantService.js`
+- `server/tenant/tenantRepository.js`
+- `server/routes/tenantRoutes.js`
+- `server/routes/livekitTokenRoute.js`
+- `server/socket/registerGameSocketHandlers.js`
+- `server/world/runtime.js`
+- `supabase/migrations/*`
+- `server/tests/tenantRlsPolicies.test.js`
+- `server/tests/worldRuntimePartitioning.test.js`
 
 ### Client
 
