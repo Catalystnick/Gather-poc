@@ -550,7 +550,7 @@ export async function grantSelfAdminForDev({ userId, tenantName }) {
 
   if (!existingMembership) {
     const defaultTenantName = `Dev Tenant ${String(userId).slice(0, 8)}`
-    return bootstrapCreateTenant({
+    return createTenantDuringOnboarding({
       userId,
       tenantName: typeof tenantName === 'string' && tenantName.trim() ? tenantName.trim() : defaultTenantName,
     })
@@ -580,7 +580,7 @@ export async function grantSelfAdminForDev({ userId, tenantName }) {
   return resolveTenantContext(userId)
 }
 
-export async function bootstrapCreateTenant({ userId, tenantName }) {
+export async function createTenantDuringOnboarding({ userId, tenantName }) {
   const normalizedTenantName = requireNonEmptyText(tenantName, 'tenant_name', 120)
 
   const existingMembership = await getActiveMembershipByUserId(userId)
@@ -612,7 +612,7 @@ export async function bootstrapCreateTenant({ userId, tenantName }) {
   return resolveTenantContext(userId)
 }
 
-export async function bootstrapJoinInvite({ userId, inviteToken }) {
+export async function joinTenantFromInvite({ userId, inviteToken }) {
   const token = requireNonEmptyText(inviteToken, 'invite_token', 512)
   const invite = await getPendingInviteByToken(token)
 

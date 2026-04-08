@@ -3,10 +3,10 @@ import { requireAuth } from '../middleware/requireAuth.js'
 import { requireTenantPermission } from '../middleware/requireTenantPermission.js'
 import { TenantServiceError } from '../tenant/errors.js'
 import {
-  bootstrapCreateTenant,
-  bootstrapJoinInvite,
+  createTenantDuringOnboarding,
   createTenantInvite,
   grantSelfAdminForDev,
+  joinTenantFromInvite,
   removeTenantMember,
   resolveTenantContext,
   updateTenantMemberRole,
@@ -40,12 +40,12 @@ tenantRouter.get('/me', requireAuth, async (req, res) => {
   }
 })
 
-tenantRouter.post('/bootstrap', requireAuth, async (req, res) => {
+async function handleTenantOnboarding(req, res) {
   const mode = req.body?.mode
   try {
-    // Bootstrap supports only the two onboarding entry paths.
+    // Onboarding supports only the two tenant entry paths.
     if (mode === 'create_tenant') {
-      const context = await bootstrapCreateTenant({
+      const context = await createTenantDuringOnboarding({
         userId: req.user.sub,
         tenantName: req.body?.tenantName,
       })
@@ -53,7 +53,7 @@ tenantRouter.post('/bootstrap', requireAuth, async (req, res) => {
     }
 
     if (mode === 'join_invite') {
-      const context = await bootstrapJoinInvite({
+      const context = await joinTenantFromInvite({
         userId: req.user.sub,
         inviteToken: req.body?.inviteToken,
       })
@@ -67,7 +67,12 @@ tenantRouter.post('/bootstrap', requireAuth, async (req, res) => {
   } catch (error) {
     return sendTenantError(res, error)
   }
-})
+}
+
+// Preferred path name.
+tenantRouter.post('/onboarding', requireAuth, handleTenantOnboarding)
+// Backward-compatible alias.
+tenantRouter.post('/bootstrap', requireAuth, handleTenantOnboarding)
 
 tenantRouter.post('/dev/grant-admin-self', requireAuth, async (req, res) => {
   try {

@@ -9,6 +9,7 @@ interface Props {
   voiceMode: VoiceMode
   activeZoneKey: string | null
   proximityRoomReady?: boolean
+  voiceEnabled: boolean
 }
 
 /** Show live game-server and voice connectivity diagnostics in the HUD. */
@@ -20,6 +21,7 @@ export default function ServerStatusPanel({
   voiceMode,
   activeZoneKey,
   proximityRoomReady,
+  voiceEnabled,
 }: Props) {
   const socketColor =
     socketStatus === 'connected' ? '#2ecc71'
@@ -27,8 +29,9 @@ export default function ServerStatusPanel({
       : socketStatus === 'error' ? '#e74c3c'
       : '#e67e22'
 
-  const livekitColor =
-    proximityRoomReady ? '#2ecc71' : '#f1c40f'
+  const livekitColor = !voiceEnabled
+    ? '#9ca3af'
+    : proximityRoomReady ? '#2ecc71' : '#f1c40f'
 
   return (
     <HUDPanel style={styles.position}>
@@ -63,7 +66,7 @@ export default function ServerStatusPanel({
         <div style={styles.row}>
           <span style={styles.label}>Voice (LiveKit)</span>
           <span style={{ ...styles.value, color: livekitColor }}>
-            {proximityRoomReady ? 'ready' : 'connecting'}
+            {!voiceEnabled ? 'disabled' : proximityRoomReady ? 'ready' : 'connecting'}
           </span>
         </div>
         <div style={styles.subRow}>
@@ -132,4 +135,3 @@ const styles: Record<string, React.CSSProperties> = {
     wordBreak: 'break-word' as const,
   },
 }
-

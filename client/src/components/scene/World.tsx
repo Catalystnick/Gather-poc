@@ -63,6 +63,7 @@ export default function World({ player, initialWorldKey, onWorldKeyChange }: Pro
     positionRef,
     remotePlayers,
     activeWorldId,
+    activeWorldKey,
     mic,
     accessToken,
     userId,
@@ -180,6 +181,7 @@ export default function World({ player, initialWorldKey, onWorldKeyChange }: Pro
           voiceMode={voiceState.mode}
           activeZoneKey={voiceState.activeZoneKey}
           proximityRoomReady={voiceState.proximityRoomReady}
+          voiceEnabled={voiceState.voiceEnabled}
         />
         <VoiceConnectionsPanel rows={connectionRows} />
       </div>

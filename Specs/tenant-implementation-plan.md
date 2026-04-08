@@ -293,7 +293,7 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 ### Goals
 
 - Finalize tenant bootstrap/admin flows in product UX.
-- Enable tenant admin-managed policy controls from the frontend.
+- Keep gameplay UX focused while moving non-game administration to a dashboard surface.
 
 ### Work items
 
@@ -304,7 +304,8 @@ These decisions close ambiguities raised in architecture review issue 13.x.
   - `DELETE /tenant/:tenantId/members/:userId`
   - `PATCH /tenant/:tenantId/settings` (includes `tenant_access_configs` updates)
 - Add client `TenantContext` bootstrap gate.
-- Add admin settings UI for policy toggles backed by `tenant_access_configs`.
+- Add in-game admin settings UI for policy toggles backed by `tenant_access_configs`.
+- Add a protected dashboard route for onboarding + organization administration flows.
 - Add world transition loading state tied to `world:change` ack.
 - Add in-game logout action in the authenticated gameplay shell.
 
@@ -314,6 +315,7 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - Permission enforcement is server-side and role-key changes do not require schema changes.
 - Client cannot enter gameplay route without resolved tenant context.
 - Tenant admins can update policy toggles from frontend, and runtime behavior reflects backend-saved config.
+- Onboarding/invite/member-role administration is dashboard-first (`/dashboard`), not embedded in the gameplay shell.
 
 ### Status (2026-04-08)
 
@@ -326,9 +328,10 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - Implemented in client UX:
   - in-game `Log out` button wired to `AuthContext.signOut()` in gameplay route shell:
     - file: `client/src/pages/GameRoute.tsx`
-  - tenant bootstrap gate now blocks gameplay route until tenant context resolves:
-    - users without membership are shown create-tenant / join-invite flow in-game shell.
-    - files: `client/src/pages/GameRoute.tsx`, `client/src/hooks/useTenantContext.ts`
+  - gameplay route now redirects users without membership to dashboard onboarding:
+    - file: `client/src/pages/GameRoute.tsx`
+  - new protected dashboard route now hosts onboarding and non-game tenant admin flows:
+    - file: `client/src/pages/DashboardRoute.tsx`
   - tenant admin settings panel now allows updating access policy + `tenant_access_configs` toggles from frontend:
     - file: `client/src/pages/GameRoute.tsx`
 - Implemented in code:
@@ -391,6 +394,7 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - `client/src/utils/voiceRoom.ts`
 - `client/src/components/scene/World.tsx`
 - `client/src/contexts/*` (tenant context additions)
+- `client/src/pages/DashboardRoute.tsx`
 
 ## 5. Test Plan by Phase
 

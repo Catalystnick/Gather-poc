@@ -112,7 +112,10 @@ export default function VoiceControls() {
     audioInterrupted,
     mode,
     activeZoneKey,
+    voiceEnabled,
   } = useVoice()
+
+  if (!voiceEnabled) return null
 
   const volumeZero = remoteGain <= 0
   const micStatus = muted

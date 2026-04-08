@@ -8,6 +8,7 @@ const SignupPage        = lazy(() => import('./pages/SignupPage'))
 const VerifyPendingPage = lazy(() => import('./pages/VerifyPendingPage'))
 const AuthCallbackPage  = lazy(() => import('./pages/AuthCallbackPage'))
 const GameRoute         = lazy(() => import('./pages/GameRoute'))
+const DashboardRoute    = lazy(() => import('./pages/DashboardRoute'))
 
 // Lightweight fallback — shown only during the initial chunk fetch.
 // Auth pages are tiny; the game chunk (Three.js + LiveKit + WASM) is large
@@ -33,9 +34,10 @@ export default function App() {
             <Route path="/verify-pending" element={<VerifyPendingPage />} />
             <Route path="/auth/callback"  element={<AuthCallbackPage />} />
             <Route element={<ProtectedRoute />}>
+              <Route path="/dashboard"      element={<DashboardRoute />} />
               <Route path="/game/:worldKey?" element={<GameRoute />} />
             </Route>
-            <Route path="*"               element={<Navigate to="/game" replace />} />
+            <Route path="*"               element={<Navigate to="/dashboard" replace />} />
           </Routes>
         </Suspense>
       </AuthProvider>

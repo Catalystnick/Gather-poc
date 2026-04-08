@@ -12,6 +12,7 @@ Design a multi-tenant system for the current Gather codebase where:
 - realtime presence/chat/tag/teleport/voice are isolated by the currently joined instance (`main_plaza` vs `tenant_interior`),
 - main plaza has global text chat and no proximity/zone voice,
 - teleport is used only inside tenant interiors for users in the same tenant and same interior instance,
+- admin UX is split: in-game admin controls are limited to tenant policy settings, while onboarding/invite/member-role administration is dashboard-first,
 - `revox` is an ordinary tenant like all other tenants (no special platform privileges).
 
 This document is architecture-first and backend-focused, with explicit refactor notes for the current implementation.
@@ -52,8 +53,9 @@ flowchart TB
   subgraph Client["Client (React + Phaser)"]
     Auth["Supabase Session"]
     TenantCtx["Tenant Context\nhomeTenant, roleKey, permissions, currentWorld, instanceType"]
+    Dashboard["Tenant Dashboard\nonboarding + invites + members + roles"]
     SocketClient["Socket.IO Client\nworld:join/world:change"]
-    HUD["HUD\nchat/tag/teleport(interior-only)"]
+    HUD["HUD\nchat/tag/teleport(interior-only)\nadmin policy settings only"]
   end
 
   subgraph Edge["API + Server"]
@@ -84,6 +86,7 @@ flowchart TB
 
   Auth --> AuthMW
   AuthMW --> TenantSvc
+  Dashboard --> TenantApi
   TenantCtx --> SocketClient
   SocketClient --> Server
   HUD --> SocketClient
@@ -117,6 +120,9 @@ flowchart TB
 - **Tenant interior chat/voice = instance-scoped only**.
 - **Zone/privacy voice = interior-designated zones only** (never in main plaza).
 - **Permission enforcement boundary = tenant ownership/admin APIs**.
+- **UX boundary = gameplay vs administration**:
+  - gameplay (`/game`) keeps only in-game policy toggles for authorized admins.
+  - organization onboarding, invite issuance, member/role management are dashboard concerns (`/dashboard`).
 - **Durable tenant metadata = Postgres**; runtime movement/presence remains in-memory for PoC.
 
 ---

@@ -20,6 +20,7 @@ export interface VoiceState {
   mode: VoiceMode
   activeZoneKey: string | null
   proximityRoomReady?: boolean
+  voiceEnabled: boolean
 }
 
 const VoiceContext = createContext<VoiceState | null>(null)

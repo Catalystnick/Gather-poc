@@ -118,6 +118,7 @@ export function useVoice(
   localPositionRef: React.MutableRefObject<{ x: number; y: number; z: number }>,
   remotePlayers: Map<string, RemotePlayer>,
   worldId: string | null,
+  worldKey: string | null,
   mic: MicTrack,
   accessToken: string,
   userId: string,
@@ -176,6 +177,15 @@ export function useVoice(
   accessTokenRef.current = accessToken
   const remotePlayersRef = useRef(remotePlayers)
   remotePlayersRef.current = remotePlayers
+  const isMicReady = mic.isReady
+  const micAudioCtxRef = mic.audioCtxRef
+  const micSendMicStreamRef = mic.sendMicStreamRef
+  const addPublishedClone = mic.addPublishedClone
+  const removePublishedClone = mic.removePublishedClone
+  const transitionToZoneRef = useRef(transitionToZone)
+  transitionToZoneRef.current = transitionToZone
+  // Main plaza intentionally has no voice. Keep this switch centralized for all voice effects.
+  const voiceEnabled = !!worldId && worldKey !== 'main_plaza'
 
   function buildZoneCacheKey(zoneKey: string) {
     return worldId ? `${worldId}:${zoneKey}` : zoneKey
@@ -241,11 +251,6 @@ export function useVoice(
     entry.audio.remove()
     proximityEntries.current.delete(identity)
     subscribedIds.current.delete(identity)
-  }
-
-  /** Tear down all proximity audio subscriptions. */
-  function cleanupAllProximity() {
-    ;[...proximityEntries.current.keys()].forEach(cleanupProximityEntry)
   }
 
   // ── Zone entry cleanup ─────────────────────────────────────────────────────
@@ -484,12 +489,25 @@ export function useVoice(
   // ── Effect: proximity room connection ──────────────────────────────────────
 
   useEffect(() => {
-    if (!socket?.id || !mic.isReady || !worldId) return
+    if (!voiceEnabled) return
+    if (!socket?.id || !isMicReady || !worldId) return
     const identity = userId
     const voiceWorldId = worldId
+    const subscribedIdsSnapshot = subscribedIds.current
     let room: Room | null = null
     /** Dev Strict Mode remounts immediately; finish async work only if still active. */
     let cancelled  = false
+    const cleanupProximityEntries = () => {
+      for (const participantIdentity of [...proximityEntries.current.keys()]) {
+        const entry = proximityEntries.current.get(participantIdentity)
+        if (!entry) continue
+        entry.gainNode?.disconnect()
+        entry.track.detach().forEach(audioElement => audioElement.remove())
+        entry.audio.remove()
+        proximityEntries.current.delete(participantIdentity)
+        subscribedIds.current.delete(participantIdentity)
+      }
+    }
 
     async function connect() {
       try {
@@ -497,7 +515,7 @@ export function useVoice(
         if (cancelled) return
         if (!token) throw new Error('proximity token fetch failed')
 
-        room = createRoom(mic.audioCtxRef.current)
+        room = createRoom(micAudioCtxRef.current)
         room.on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
           if (track.kind !== Track.Kind.Audio) return
           cleanupProximityEntry(participant.identity)
@@ -530,7 +548,7 @@ export function useVoice(
         room.on(RoomEvent.Disconnected, () => {
           setProximityRoomReady(false)
           proximityRoomRef.current = null
-          cleanupAllProximity()
+          cleanupProximityEntries()
           subscribedIds.current.clear()
           if (activeZoneKeyRef.current === null) setConnectedPeers(new Set())
           setPeerConnectionStates({})
@@ -557,12 +575,12 @@ export function useVoice(
         }
         proximityRoomRef.current = room
 
-        const ctx = mic.audioCtxRef.current
+        const ctx = micAudioCtxRef.current
         if (ctx?.state === 'running') void room.startAudio().catch(() => {})
         else if (ctx?.state === 'suspended') setAudioBlocked(true)
         setProximityRoomReady(true)
 
-        const sendTrack = mic.sendMicStreamRef.current?.getAudioTracks()[0]
+        const sendTrack = micSendMicStreamRef.current?.getAudioTracks()[0]
         if (sendTrack) {
           if (cancelled) {
             await room.disconnect(false).catch(() => {})
@@ -570,11 +588,11 @@ export function useVoice(
           }
           console.log('[voice][join] publish mic | proximity | trackId:', sendTrack.id)
           console.log('[voice][proximity] send (VAD) | id:', sendTrack.id, '| state:', sendTrack.readyState, '| enabled:', sendTrack.enabled)
-          mic.addPublishedClone(sendTrack)
+          addPublishedClone(sendTrack)
           proximityPublishedCloneRef.current = sendTrack
-          const localTrack = createLocalMicTrack(sendTrack, mic.audioCtxRef.current ?? undefined)
+          const localTrack = createLocalMicTrack(sendTrack, micAudioCtxRef.current ?? undefined)
           if (cancelled) {
-            mic.removePublishedClone(sendTrack)
+            removePublishedClone(sendTrack)
             proximityPublishedCloneRef.current = null
             try { await localTrack.stopProcessor() } catch { /* ignore */ }
             await room.disconnect(false).catch(() => {})
@@ -585,7 +603,7 @@ export function useVoice(
           await room.localParticipant.publishTrack(localTrack, AUDIO_PUBLISH_OPTS)
             .catch(err => console.warn('[voice] proximity publish failed:', err))
           if (cancelled) {
-            mic.removePublishedClone(sendTrack)
+            removePublishedClone(sendTrack)
             proximityPublishedCloneRef.current = null
             proximityLocalTrackRef.current = null
             try { await safeUnpublishUserMicTrack(room, localTrack) } catch { /* ignore */ }
@@ -623,11 +641,11 @@ export function useVoice(
       proximityLocalTrackRef.current = null
       const clone = proximityPublishedCloneRef.current
       proximityPublishedCloneRef.current = null
-      if (clone) mic.removePublishedClone(clone)
+      if (clone) removePublishedClone(clone)
       const roomToCleanup = room
       proximityRoomRef.current = null
-      cleanupAllProximity()
-      subscribedIds.current.clear()
+      cleanupProximityEntries()
+      subscribedIdsSnapshot.clear()
       void (async () => {
         try {
           if (roomToCleanup && localTrackCleanup) {
@@ -639,13 +657,35 @@ export function useVoice(
         } catch { /* ignore */ }
       })()
     }
-  }, [socket?.id, mic.isReady, worldId])
+  }, [
+    socket?.id,
+    isMicReady,
+    worldId,
+    voiceEnabled,
+    userId,
+    localPositionRef,
+    micAudioCtxRef,
+    micSendMicStreamRef,
+    addPublishedClone,
+    removePublishedClone,
+  ])
 
   // ── Effect: zone detection interval ───────────────────────────────────────
 
   useEffect(() => {
-    if (!socket?.id || !mic.isReady || !worldId) return
+    if (!voiceEnabled) return
+    if (!socket?.id || !isMicReady || !worldId) return
     const identity = userId
+    const subscribedIdsSnapshot = new Set(subscribedIds.current)
+    const cleanupZoneEntries = () => {
+      for (const participantIdentity of [...zoneEntries.current.keys()]) {
+        const entry = zoneEntries.current.get(participantIdentity)
+        if (!entry) continue
+        entry.track.detach().forEach(audioElement => audioElement.remove())
+        entry.audio.remove()
+        zoneEntries.current.delete(participantIdentity)
+      }
+    }
     console.log('[voice] zone detector started | identity:', identity)
 
     const id = setInterval(() => {
@@ -675,7 +715,7 @@ export function useVoice(
       if (detected === activeZoneKeyRef.current) return
       if (detected === targetZoneRef.current) return
       if (detected) {
-        const cooldownMs = getZoneTokenCooldownMs(buildZoneCacheKey(detected))
+        const cooldownMs = getZoneTokenCooldownMs(`${worldId}:${detected}`)
         if (cooldownMs > 0) {
           // Keep the user in proximity mode while token endpoint is cooling down.
           return
@@ -685,21 +725,22 @@ export function useVoice(
       console.log('[voice] zone debounce settled | triggering transition → zone:', detected,
         '| targetZone:', targetZoneRef.current, '→', detected)
       targetZoneRef.current = detected
-      void transitionToZone(identity, detected)
+      void transitionToZoneRef.current(identity, detected)
     }, 100)
 
     return () => {
+      const nextGeneration = generationRef.current + 1
       console.log('[voice] zone detector cleanup | activeZone:', activeZoneKeyRef.current, '| targetZone:', targetZoneRef.current)
       clearInterval(id)
-      generationRef.current++
+      generationRef.current = nextGeneration
       const room = zoneRoomRef.current
       zoneRoomRef.current = null
       const localTrack = zoneLocalTrackRef.current
       zoneLocalTrackRef.current = null
       const clone = zonePublishedCloneRef.current
       zonePublishedCloneRef.current = null
-      if (clone) { mic.removePublishedClone(clone); clone.stop() }
-      cleanupAllZone()
+      if (clone) { removePublishedClone(clone); clone.stop() }
+      cleanupZoneEntries()
       void (async () => {
         try {
           if (room && localTrack) await safeUnpublishUserMicTrack(room, localTrack)
@@ -707,14 +748,25 @@ export function useVoice(
           if (room) await room.disconnect(false).catch(() => {})
         } catch { /* ignore */ }
       })()
-      setConnectedPeers(new Set(subscribedIds.current))
+      setConnectedPeers(new Set(subscribedIdsSnapshot))
       syncZoneKey(null)
       syncMode('proximity')
       targetZoneRef.current  = undefined
       pendingZoneRef.current = undefined
       debounceTicksRef.current = 0
     }
-  }, [socket?.id, mic.isReady, worldId])
+  }, [socket?.id, isMicReady, worldId, voiceEnabled, userId, zones, localPositionRef, removePublishedClone])
+
+  useEffect(() => {
+    if (voiceEnabled) return
+    // Reset voice UI state immediately when entering a no-voice world (main plaza).
+    setProximityRoomReady(false)
+    setSpeakingPeers(new Set())
+    setConnectedPeers(new Set())
+    setPeerConnectionStates({})
+    syncZoneKey(null)
+    syncMode('proximity')
+  }, [voiceEnabled])
 
   // ── Effect: proximity gating interval ─────────────────────────────────────
 
@@ -726,7 +778,7 @@ export function useVoice(
     const id = setInterval(() => {
       const local  = localPositionRef.current
       const remote = remotePlayersRef.current
-      const ctx    = mic.audioCtxRef.current
+      const ctx    = micAudioCtxRef.current
 
       // Unsubscribe out-of-range or zoned peers
       for (const identity of subscribedIds.current) {
@@ -800,17 +852,17 @@ export function useVoice(
 
       const hasPeers      = proximityEntries.current.size > 0
       const livekitBlock  = hasPeers && !room.canPlaybackAudio
-      setAudioInterrupted((mic.audioCtxRef.current?.state === 'interrupted') && hasPeers)
-      setAudioBlocked((mic.audioCtxRef.current?.state === 'suspended' || livekitBlock) && hasPeers)
+      setAudioInterrupted((micAudioCtxRef.current?.state === 'interrupted') && hasPeers)
+      setAudioBlocked((micAudioCtxRef.current?.state === 'suspended' || livekitBlock) && hasPeers)
     }, 100)
 
     return () => clearInterval(id)
-  }, [proximityRoomReady, playbackBoost])
+  }, [proximityRoomReady, playbackBoost, localPositionRef, micAudioCtxRef])
 
   // ── Effect: AudioContext state monitoring ──────────────────────────────────
 
   useEffect(() => {
-    const ctx = mic.audioCtxRef.current
+    const ctx = micAudioCtxRef.current
     if (!ctx) return
     const handler = () => {
       const hasPeers = proximityEntries.current.size > 0
@@ -819,7 +871,7 @@ export function useVoice(
     }
     ctx.addEventListener('statechange', handler)
     return () => ctx.removeEventListener('statechange', handler)
-  }, [mic.isReady])
+  }, [isMicReady, micAudioCtxRef])
 
   // ── Effect: sync zone entry volumes when gain changes ─────────────────────
 
@@ -869,5 +921,6 @@ export function useVoice(
     mode,
     activeZoneKey,
     proximityRoomReady,
+    voiceEnabled,
   }
 }
