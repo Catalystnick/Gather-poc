@@ -1,10 +1,30 @@
 import { AccessToken } from 'livekit-server-sdk'
+import { canAccessWorld, getWorldById } from '../tenant/tenantService.js'
 
-const ZONE_KEYS = ['dev', 'design', 'game']
-const ALLOWED_ROOMS = new Set([
-  'gather-world',
-  ...ZONE_KEYS.map(zoneKey => `gather-world-zone-${zoneKey}`),
-])
+const ROOM_PREFIX = 'gather-tenant-interior-'
+const ZONE_SEGMENT = '-zone-'
+
+export function isValidZoneKey(zoneKey) {
+  if (zoneKey === undefined || zoneKey === null) return true
+  if (typeof zoneKey !== 'string') return false
+  const normalized = zoneKey.trim()
+  if (!normalized) return false
+  return /^[A-Za-z0-9_-]{1,64}$/.test(normalized)
+}
+
+function getProximityRoomName(worldId) {
+  return `${ROOM_PREFIX}${worldId}`
+}
+
+function getZoneRoomName(worldId, zoneKey) {
+  return `${ROOM_PREFIX}${worldId}${ZONE_SEGMENT}${zoneKey}`
+}
+
+export function deriveLivekitRoomName(worldId, zoneKey) {
+  const normalizedZoneKey = typeof zoneKey === 'string' ? zoneKey.trim() : ''
+  if (!normalizedZoneKey) return getProximityRoomName(worldId)
+  return getZoneRoomName(worldId, normalizedZoneKey)
+}
 
 function createLivekitToken({ apiKey, apiSecret, identity, name, roomName, tokenIntent }) {
   const accessToken = new AccessToken(apiKey, apiSecret, {
@@ -34,12 +54,18 @@ export function registerLivekitTokenRoute({ app, requireAuth, tokenLimiter }) {
   }
 
   app.post('/livekit/token', requireAuth, tokenLimiter, async (req, res) => {
-    const { roomName, identity, name, intent } = req.body || {}
+    const { identity, name, intent, worldId, zoneKey } = req.body || {}
     if (!identity || typeof identity !== 'string') {
       return res.status(400).json({ error: 'identity required' })
     }
-    if (!ALLOWED_ROOMS.has(roomName)) {
-      return res.status(400).json({ error: 'invalid room' })
+
+    const normalizedWorldId = typeof worldId === 'string' ? worldId.trim() : ''
+    if (!normalizedWorldId) {
+      return res.status(400).json({ error: 'worldId required' })
+    }
+
+    if (!isValidZoneKey(zoneKey)) {
+      return res.status(400).json({ error: 'invalid zoneKey' })
     }
 
     const authedUserId = req.user?.sub
@@ -53,6 +79,17 @@ export function registerLivekitTokenRoute({ app, requireAuth, tokenLimiter }) {
     }
 
     try {
+      const world = await getWorldById(normalizedWorldId)
+      if (!world || world.world_type !== 'tenant_interior') {
+        return res.status(403).json({ error: 'voice_world_denied' })
+      }
+
+      const canJoinWorldVoice = await canAccessWorld(authedUserId, normalizedWorldId)
+      if (!canJoinWorldVoice) {
+        return res.status(403).json({ error: 'voice_world_denied' })
+      }
+
+      const roomName = deriveLivekitRoomName(normalizedWorldId, zoneKey)
       const token = await createLivekitToken({
         apiKey: livekitApiKey,
         apiSecret: livekitApiSecret,

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Leva } from "leva";
+import { useNavigate, useParams } from "react-router-dom";
 import AvatarSelect from "../components/ui/AvatarSelect";
 import World from "../components/scene/World";
 import {
@@ -26,13 +27,23 @@ function loadSaved(): Player | null {
 
 /** Gate into avatar selection until a local player profile is chosen. */
 export default function GameRoute() {
+  const navigate = useNavigate();
+  const { worldKey } = useParams<{ worldKey?: string }>();
   const [player, setPlayer] = useState<Player | null>(null);
+  const [activeWorldKey, setActiveWorldKey] = useState<string | null>(null);
 
   // Install permission/audio priming hooks as soon as the game route loads so
   // the very first user gesture can unlock audio and trigger notification prompt.
   useEffect(() => {
     ensureNotificationPermissionOnUserGesture();
   }, []);
+
+  useEffect(() => {
+    const normalizedCurrent = typeof worldKey === "string" ? worldKey.trim() : "";
+    const normalizedActive = typeof activeWorldKey === "string" ? activeWorldKey.trim() : "";
+    if (!normalizedActive || normalizedActive === normalizedCurrent) return;
+    navigate(`/game/${normalizedActive}`, { replace: true });
+  }, [activeWorldKey, navigate, worldKey]);
 
   /** Persist selected player profile and enter the world scene. */
   function handleJoin(nextPlayer: Player) {
@@ -49,7 +60,11 @@ export default function GameRoute() {
   return (
     <>
       <Leva hidden={import.meta.env.PROD} />
-      <World player={player} />
+      <World
+        player={player}
+        initialWorldKey={worldKey?.trim() || null}
+        onWorldKeyChange={setActiveWorldKey}
+      />
     </>
   );
 }

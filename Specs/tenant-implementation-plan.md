@@ -2,6 +2,7 @@
 
 This document is the execution plan for [`tenant-architecture-plan.md`](./tenant-architecture-plan.md).
 It translates architecture intent into build phases, concrete code changes, migration steps, and rollout gates.
+In this plan, `tenant` means a tenant organization/workspace owner.
 
 ## 1. Scope and Boundaries
 
@@ -23,13 +24,23 @@ It translates architecture intent into build phases, concrete code changes, migr
 These decisions close ambiguities raised in architecture review issue 13.x.
 
 - `public` tenant interiors allow non-member visitors to enter.
+- `private` tenant interiors deny non-member visitors.
+- Guest/member interaction behavior inside interiors is config-driven via a backend-managed per-tenant access config table (not additional `access_policy` enum variants).
 - Visitors may appear in presence and receive/send interior text chat.
 - Visitors may be discoverable by mention and tag within the current instance.
+- When `guest_zone_enforced=true`, visitors are confined to a tenant-defined visitor zone (zone key TBD).
+- In v1 defaults, visitor chat/tag is enabled and visitor teleport remains disabled unless explicitly expanded later.
+- Visitor elevation/revocation is backend-managed; tenant members/admins (permission-gated server checks) can grant and revoke elevated access.
+- Visitor zone identifier is map-configured and remains TBD until zone schema is finalized.
 - Teleport is membership-restricted in v1:
   - sender and target must both be active members of the same tenant.
   - sender and target must both be in the same interior instance.
   - visitors cannot send/receive teleport until a future visitor policy expansion.
 - Main plaza has global text chat and no proximity/zone voice.
+- Main plaza can include a map-defined `town_hall`/common-room zone for social gathering; this is a plaza feature, not a tenant interior access policy.
+- Authorization model uses roles + permissions:
+  - seed roles in v1: `admin`, `member`
+  - enforce permissions server-side (not client-provided role labels)
 - `world_links` remains optional/deferred in v1 (do not block rollout).
 - If tenant context lookup is unavailable:
   - existing joined sessions continue until disconnect.
@@ -40,14 +51,14 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 
 ## 3. Delivery Phases
 
-### Implementation Status (as of 2026-04-07)
+### Implementation Status (as of 2026-04-08)
 
 - Phase A: implemented in code.
 - Phase B: implemented in code (world-scoped runtime + `world:join`/`world:change` + temporary portal mapping).
 - Phase C: implemented in code (tenant/world-scoped teleport store + teleport policy guards + instance-scoped cleanup).
-- Phase D: not implemented yet.
+- Phase D: implemented in code (world-scoped LiveKit room naming + token world access validation).
 - Phase E: not implemented yet.
-- Phase F: partially implemented (`POST /tenant/bootstrap` exists; remaining admin endpoints pending).
+- Phase F: partially implemented (`POST /tenant/bootstrap` and tenant settings update endpoint with permission middleware exist; invite/member admin endpoints and frontend admin settings UI still pending).
 - Phase G: not implemented yet.
 
 ## 3.1 Phase A - Foundations (Schema, RLS, Tenant Service)
@@ -62,9 +73,14 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 
 - Add DB migrations for:
   - `tenants`
+  - `roles`
+  - `permissions`
+  - `role_permissions`
   - `tenant_memberships`
+  - `tenant_access_configs`
   - `worlds`
   - `tenant_invites`
+- keep tenant `access_policy` coarse (`public|private`) and enforce fine-grained behavior through `tenant_access_configs`
 - Seed one `main_plaza` world row.
 - Add constraints/indexes from architecture section 4.
 - Enable RLS policies for tenant-owned tables.
@@ -73,7 +89,7 @@ These decisions close ambiguities raised in architecture review issue 13.x.
   - `resolveMainPlazaWorld()`
   - `resolveTenantInteriorWorld(tenantId)`
   - `canAccessWorld(userId, worldId)`
-  - `isTenantAdmin(userId, tenantId)`
+  - permission checks for admin endpoints (seeded via role-permission mappings)
 - Add short-lived in-memory cache for tenant context (`TTL`, e.g. 60s) to reduce DB pressure.
 
 ### Acceptance
@@ -82,12 +98,17 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - `GET /tenant/me` resolves tenant + world context.
 - Tenant service can be called from both REST and socket layers.
 
-### Status (2026-04-07)
+### Status (2026-04-08)
 
 - Implemented in code:
   - migration + seed + constraints + RLS: `supabase/migrations/20260407075655_phase_a_tenant_schema.sql`
+  - RBAC extension migration (roles/permissions/role_permissions + membership/invite role_id backfill): `supabase/migrations/20260408093000_phase_h_rbac_roles_permissions.sql`
+  - tenant access config migration (table + backfill + RLS + defaults): `supabase/migrations/20260408113000_phase_i_tenant_access_configs.sql`
   - tenant service methods + TTL cache: `server/tenant/tenantService.js`
+  - tenant repository/context now resolves role key + permission set + tenant access config: `server/tenant/tenantRepository.js`
   - `GET /tenant/me`: `server/routes/tenantRoutes.js`
+  - `PATCH /tenant/:tenantId/settings` (access policy + access config update, permission-gated): `server/routes/tenantRoutes.js`
+  - route-level permission guard middleware pattern added (`requireTenantPermission('tenant.settings.manage')`): `server/middleware/requireTenantPermission.js`
   - socket calls tenant service on join path: `server/socket/registerGameSocketHandlers.js`
   - staged feature flags: `ENABLE_TENANT_ROUTES`, `ENABLE_TENANT_SOCKET_CONTEXT`
   - RLS non-service-role integration test added: `server/tests/tenantRlsPolicies.test.js` (env-gated)
@@ -209,6 +230,23 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - Users in different interior instances never share voice rooms.
 - No voice token can be minted for unauthorized world access.
 
+### Status (2026-04-08)
+
+- Implemented in code:
+  - server token route now validates `worldId`, enforces `tenant_interior` world type, checks access via tenant service, and derives room names server-side:
+    - proximity: `gather-tenant-interior-{worldId}`
+    - zone: `gather-tenant-interior-{worldId}-zone-{zoneKey}`
+    - file: `server/routes/livekitTokenRoute.js`
+  - removed static allowed room dependency from token issuance path.
+  - client voice utilities now derive room names from `worldId` and send `worldId`/`zoneKey` to `/livekit/token`:
+    - file: `client/src/utils/voiceRoom.ts`
+  - `useVoice` now receives `worldId`, skips setup when unavailable, and scopes zone token cache/backoff by world+zone:
+    - file: `client/src/hooks/useVoice.ts`
+  - `World` now forwards active world id into voice hook:
+    - file: `client/src/components/scene/World.tsx`
+- Validation:
+  - added LiveKit route helper tests: `server/tests/livekitTokenRoute.test.js`
+
 ## 3.5 Phase E - Disconnect Teardown + Session Security
 
 ### Goals
@@ -238,6 +276,7 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 ### Goals
 
 - Finalize tenant bootstrap/admin flows in product UX.
+- Enable tenant admin-managed policy controls from the frontend.
 
 ### Work items
 
@@ -246,14 +285,31 @@ These decisions close ambiguities raised in architecture review issue 13.x.
   - `POST /tenants/:tenantId/invites`
   - `PATCH /tenants/:tenantId/members/:userId/role`
   - `DELETE /tenants/:tenantId/members/:userId`
-  - `PATCH /tenants/:tenantId/settings`
+  - `PATCH /tenants/:tenantId/settings` (includes `tenant_access_configs` updates)
 - Add client `TenantContext` bootstrap gate.
+- Add admin settings UI for policy toggles backed by `tenant_access_configs`.
 - Add world transition loading state tied to `world:change` ack.
 
 ### Acceptance
 
 - Admin/member permissions enforced server-side.
+- Permission enforcement is server-side and role-key changes do not require schema changes.
 - Client cannot enter gameplay route without resolved tenant context.
+- Tenant admins can update policy toggles from frontend, and runtime behavior reflects backend-saved config.
+
+### Status (2026-04-08)
+
+- Implemented in code:
+  - `PATCH /tenant/:tenantId/settings` endpoint: `server/routes/tenantRoutes.js`
+  - route-level permission middleware for settings update:
+    - `requireTenantPermission('tenant.settings.manage')`: `server/middleware/requireTenantPermission.js`
+  - service-level validation + permission checks + config persistence:
+    - `updateTenantSettings(...)`: `server/tenant/tenantService.js`
+- Pending:
+  - `POST /tenants/:tenantId/invites`
+  - `PATCH /tenants/:tenantId/members/:userId/role`
+  - `DELETE /tenants/:tenantId/members/:userId`
+  - frontend admin policy settings UI
 
 ## 3.7 Phase G - Hardening, Rollout, and Cleanup
 
@@ -280,10 +336,12 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 
 - `server/index.js`
 - `server/middleware/requireAuth.js`
+- `server/middleware/requireTenantPermission.js`
 - `server/chat/commandRouter.js`
 - `server/chat/teleportRequestsStore.js`
 - `server/tenant/tenantService.js`
 - `server/tenant/tenantRepository.js`
+- `server/tenant/accessConfigMapper.js`
 - `server/routes/tenantRoutes.js`
 - `server/routes/livekitTokenRoute.js`
 - `server/socket/registerGameSocketHandlers.js`
@@ -314,7 +372,7 @@ These decisions close ambiguities raised in architecture review issue 13.x.
   - disconnect teardown path
   - LiveKit token authorization by world access
 - Security:
-  - role enforcement on admin endpoints
+  - permission enforcement on admin endpoints
   - RLS policy checks for non-service roles
 
 ### Manual QA
@@ -324,10 +382,11 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - Portal trigger validation (pre-Tiled):
   - entering remapped `dev/design/game` trigger zones causes `world:change` and loading transition.
 - Public interior visitor behavior:
-  - chat + presence allowed
+  - config-driven behavior applied (zone confinement toggle + chat/tag toggles)
   - teleport denied for non-members
 - Main plaza behavior:
   - global text chat works
+  - `town_hall`/common-room zone behavior is plaza-scoped and independent from tenant interior access config
   - proximity/zone voice unavailable
 
 ## 6. Rollback Strategy
@@ -342,7 +401,7 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 
 ## 7. Exit Criteria for v1 Completion
 
-- Tenant bootstrap and admin APIs operational with role enforcement.
+- Tenant bootstrap and admin APIs operational with permission enforcement.
 - Runtime is world-scoped (`playersByWorld`) with no global snapshot/player leakage.
 - Teleport/chat/tag behavior matches tenant and instance policy.
 - Interior voice is fully world-namespaced and authorized.

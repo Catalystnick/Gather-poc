@@ -7,7 +7,7 @@ Design a multi-tenant system for the current Gather codebase where:
 - each user belongs to one home tenant,
 - all tenant building/workspace exteriors exist in one shared **main plaza** map,
 - each tenant has a dedicated **interior world instance** entered from its building exterior,
-- tenants support two roles: `admin` and `member`,
+- tenants use a role-based permission model (seeded with `admin` and `member` in v1),
 - users can walk around the main plaza and enter interiors with a loading transition between instances,
 - realtime presence/chat/tag/teleport/voice are isolated by the currently joined instance (`main_plaza` vs `tenant_interior`),
 - main plaza has global text chat and no proximity/zone voice,
@@ -51,14 +51,14 @@ Without tenant/world scoping, users from different tenants share presence and ev
 flowchart TB
   subgraph Client["Client (React + Phaser)"]
     Auth["Supabase Session"]
-    TenantCtx["Tenant Context\nhomeTenant, role, currentWorld, instanceType"]
+    TenantCtx["Tenant Context\nhomeTenant, roleKey, permissions, currentWorld, instanceType"]
     SocketClient["Socket.IO Client\nworld:join/world:change"]
     HUD["HUD\nchat/tag/teleport(interior-only)"]
   end
 
   subgraph Edge["API + Server"]
     AuthMW["JWT Verify Middleware"]
-    TenantSvc["Tenant Service\n(tenant membership, role, world access)"]
+    TenantSvc["Tenant Service\n(tenant membership, role+permissions, world access)"]
     TenantApi["Tenant REST API\nbootstrap + membership + admin"]
     Server["Socket Server\ninstance routing + in-memory player state"]
   end
@@ -71,6 +71,9 @@ flowchart TB
   subgraph Data["Supabase Postgres"]
     Org[(tenants)]
     Member[(tenant_memberships)]
+    Roles[(roles)]
+    Perms[(permissions)]
+    RolePerms[(role_permissions)]
     Worlds[(worlds)]
     Invite[(tenant_invites)]
   end
@@ -94,6 +97,9 @@ flowchart TB
 
   TenantSvc --> Org
   TenantSvc --> Member
+  TenantSvc --> Roles
+  TenantSvc --> Perms
+  TenantSvc --> RolePerms
   TenantSvc --> Worlds
   TenantSvc --> Invite
 
@@ -107,9 +113,10 @@ flowchart TB
 - **World session identity = current instance** (`main_plaza` or `tenant_interior`).
 - **Realtime isolation boundary = instance room** in Socket.IO.
 - **Main plaza chat = one global text channel** (existing chat behavior).
+- **Main plaza town hall/common room = plaza zone feature** (not tenant interior policy).
 - **Tenant interior chat/voice = instance-scoped only**.
 - **Zone/privacy voice = interior-designated zones only** (never in main plaza).
-- **Role enforcement boundary = tenant ownership/admin APIs**.
+- **Permission enforcement boundary = tenant ownership/admin APIs**.
 - **Durable tenant metadata = Postgres**; runtime movement/presence remains in-memory for PoC.
 
 ---
@@ -117,13 +124,30 @@ flowchart TB
 ## 4. Data Model
 
 ```mermaid
-%%{init: {'themeVariables': {'fontSize': '28px'}, 'er': {'fontSize': 30}}}%%
+%%{init: {'themeVariables': {'fontSize': '24px'}, 'er': {'fontSize': 24}}}%%
 erDiagram
-  TENANTS ||--o{ TENANT_MEMBERSHIPS : has
-  TENANTS ||--o| WORLDS : has_interior
-  TENANTS ||--o{ TENANT_INVITES : issues
+  %% Tenant organization ownership
+  TENANTS ||--o{ TENANT_MEMBERSHIPS : has_members
+  TENANTS ||--o{ WORLDS : owns_worlds
+  TENANTS ||--o{ TENANT_INVITES : issues_invites
+  TENANTS ||--|| TENANT_ACCESS_CONFIGS : has_access_config
+
+  %% Membership + RBAC
+  ROLES ||--o{ TENANT_MEMBERSHIPS : assigned_to_memberships
+  ROLES ||--o{ TENANT_INVITES : default_invite_role
+  ROLES ||--o{ ROLE_PERMISSIONS : has_permissions
+  PERMISSIONS ||--o{ ROLE_PERMISSIONS : included_in_roles
+
+  %% World navigation graph
   WORLDS ||--o{ WORLD_LINKS : links_from
   WORLDS ||--o{ WORLD_LINKS : links_to
+
+  %% External identity source (Supabase Auth)
+  AUTH_USERS ||--o{ TENANT_MEMBERSHIPS : user_id
+
+  AUTH_USERS {
+    uuid id PK
+  }
 
   TENANTS {
     uuid id PK
@@ -135,14 +159,49 @@ erDiagram
     timestamptz updated_at
   }
 
+  TENANT_ACCESS_CONFIGS {
+    uuid tenant_id PK
+    boolean guest_zone_enforced
+    boolean guest_can_chat
+    boolean guest_can_tag
+    boolean guest_can_teleport
+    boolean member_can_tag
+    boolean member_can_teleport
+    uuid updated_by
+    timestamptz updated_at
+  }
+
   TENANT_MEMBERSHIPS {
     uuid id PK
     uuid tenant_id FK
     uuid user_id "auth.users.id"
-    text role "admin|member"
+    uuid role_id FK
     text status "active|invited|disabled"
     timestamptz created_at
     timestamptz updated_at
+  }
+
+  ROLES {
+    uuid id PK
+    text key "admin|member|..."
+    text name
+    text description
+    boolean is_system
+    timestamptz created_at
+    timestamptz updated_at
+  }
+
+  PERMISSIONS {
+    uuid id PK
+    text key
+    text description
+    timestamptz created_at
+  }
+
+  ROLE_PERMISSIONS {
+    uuid role_id FK
+    uuid permission_id FK
+    timestamptz created_at
   }
 
   WORLDS {
@@ -161,7 +220,7 @@ erDiagram
     uuid id PK
     uuid tenant_id FK
     text token_hash
-    text role "admin|member"
+    uuid invited_role_id FK
     text email_optional
     timestamptz expires_at
     text status "pending|redeemed|expired|revoked"
@@ -185,25 +244,49 @@ erDiagram
 - One active membership per user in v1 (`UNIQUE(user_id)` where status=`active`).
 - Exactly one shared main plaza row in `worlds` (`world_type='main_plaza'`).
 - One interior world per tenant in v1 (`UNIQUE(tenant_id)` where `world_type='tenant_interior'`).
-- `admin` can manage members/invites/settings of own tenant only.
-- `member` can interact in worlds they can access but cannot administer tenant settings.
+- Seed roles in v1: `admin`, `member`.
+- Permissions are attached to roles via `role_permissions`; server checks permissions, not raw role strings.
 
 ## 4.2 Required Database Tables and Relationships
 
 ### v1 Table Checklist
 
+In this document, `tenant` means a tenant organization/workspace owner.
+
 | Table                    |    Required in v1 | Purpose                                                         |
 | ------------------------ | ----------------: | --------------------------------------------------------------- |
-| `tenants`                |               yes | Tenant root entity.                                             |
-| `tenant_memberships`     |               yes | User membership + role (`admin`/`member`) per tenant.           |
-| `worlds`                 |               yes | Stores one shared main plaza world and tenant interior worlds.  |
-| `tenant_invites`         |               yes | Invite workflow for joining tenants.                            |
+| `tenants`                |               yes | Tenant organization root entity.                                |
+| `roles`                  |               yes | Role catalog (`admin`/`member` seeded; extensible).             |
+| `permissions`            |               yes | Permission catalog (`tenant.invite`, `tenant.members.manage`).  |
+| `role_permissions`       |               yes | Role-to-permission mapping table.                               |
+| `tenant_memberships`     |               yes | User membership + assigned role (`role_id`) per tenant organization. |
+| `tenant_access_configs`  |               yes | Per-tenant behavior toggles for guest/member capabilities inside interiors. |
+| `worlds`                 |               yes | Stores one shared main plaza world and tenant-organization interior worlds. |
+| `tenant_invites`         |               yes | Invite workflow for joining a tenant organization.              |
 | `world_links`            |    optional in v1 | Optional curated world-to-world travel graph.                   |
 | `auth.users` (Supabase)  | external required | Identity source referenced by memberships/invites.              |
+
+### 4.2.1 Table Purpose Summary
+
+- `tenants`: Canonical tenant organization record and top-level access policy.
+- `tenant_memberships`: Links users to tenant organizations with role and membership status.
+- `roles`: Role catalog (for example `admin`, `member`).
+- `permissions`: Atomic capability catalog checked by backend authorization.
+- `role_permissions`: Join table that maps each role to its granted permissions.
+- `tenant_access_configs`: Per-tenant behavior toggles for guest/member interactions (movement/chat/tag/teleport).
+- `worlds`: Main plaza + tenant interior world registry and world metadata.
+- `tenant_invites`: Invite lifecycle records for onboarding users into tenant organizations.
+- `world_links`: Optional world-to-world transition graph for controlled navigation.
+- `auth.users`: External Supabase identity source referenced by memberships.
 
 ### Relationship Map (Implementation-Oriented)
 
 - `tenants.id` -> `tenant_memberships.tenant_id` (one-to-many).
+- `roles.id` -> `tenant_memberships.role_id` (one-to-many).
+- `tenants.id` -> `tenant_access_configs.tenant_id` (one-to-one).
+- `roles.id` -> `tenant_invites.invited_role_id` (one-to-many).
+- `roles.id` -> `role_permissions.role_id` (one-to-many).
+- `permissions.id` -> `role_permissions.permission_id` (one-to-many).
 - `tenants.id` -> `worlds.tenant_id` (one-to-one for `tenant_interior`; `NULL` for main plaza).
 - `tenants.id` -> `tenant_invites.tenant_id` (one-to-many).
 - `worlds.id` -> `world_links.from_world_id` (one-to-many).
@@ -216,11 +299,17 @@ erDiagram
 - exactly one `main_plaza` world row.
 - `worlds.tenant_id` unique where `world_type='tenant_interior'`.
 - `worlds.world_type` constrained to `main_plaza|tenant_interior`.
+- one `tenant_access_configs` row per tenant (`PRIMARY KEY(tenant_id)`).
 - `tenant_memberships` partial unique active membership per user in v1.
+- `roles.key` unique.
+- `permissions.key` unique.
+- `role_permissions(role_id, permission_id)` unique.
 - Foreign keys from all child tables to parent IDs with delete/update policies defined explicitly.
 - Indexes on high-frequency lookups:
   - `tenant_memberships(user_id, status)`
-  - `tenant_memberships(tenant_id, role, status)`
+  - `tenant_memberships(tenant_id, role_id, status)`
+  - `tenant_access_configs(tenant_id)`
+  - `role_permissions(role_id, permission_id)`
   - `worlds(world_type, tenant_id)`
   - `tenant_invites(tenant_id, status, expires_at)`
 
@@ -249,8 +338,12 @@ erDiagram
 - `main_plaza` access: any authenticated user can join.
 - `public` tenant interior (v1 default): any authenticated user can enter from main plaza.
 - `private` tenant interior: only tenant members (or explicitly authorized visitors in future) can enter.
+- fine-grained behavior for guests/members inside tenant interiors is enforced via `tenant_access_configs` (backend-managed toggles), not by adding more `access_policy` enum values.
+- plaza common-room/town-hall behavior is controlled by main-plaza map zones and chat rules, not by tenant `access_policy`.
 
 ### 5.2 Actions vs Roles
+
+`admin`/`member` in v1 are seeded roles mapped to permissions. Authorization checks are permission-based.
 
 | Action                                                       | member | admin |
 | ------------------------------------------------------------ | -----: | ----: |
@@ -265,12 +358,26 @@ erDiagram
 | Promote/demote roles in own tenant                           |     no |   yes |
 | Change tenant access policy                                  |     no |   yes |
 
+### 5.2.1 Guest/Member Capability Controls (Config-Driven)
+
+- Applies when `access_policy='public'` and non-members are allowed to enter.
+- `tenant_access_configs` controls runtime behavior with backend-enforced toggles, for example:
+  - `guest_zone_enforced` (visitor movement confined to a zone; zone key TBD)
+  - `guest_can_chat`
+  - `guest_can_tag`
+  - `guest_can_teleport` (expected false in v1)
+  - `member_can_tag`
+  - `member_can_teleport`
+- Grant/revoke decisions are server-authorized actions from tenant members/admins with appropriate permissions.
+
 ### 5.3 Server Enforcement Points
 
 - HTTP middleware: verify token, resolve tenant context.
-- REST admin endpoints: tenant ownership + role checks.
+- REST admin endpoints: tenant ownership + permission checks.
 - Socket `world:join(main_plaza)` for initial entry.
 - Socket `world:change(tenant_interior)`: interior access policy check.
+- Socket movement/chat/tag/teleport handlers: enforce `tenant_access_configs` toggles for guests/members in the active interior instance.
+- Backend-managed capability changes: only tenant members/admins with appropriate server-validated permission may update access config or grant/revoke visitor elevation.
 - Event handlers: enforce same-instance semantics for interactions.
 
 ---
@@ -317,7 +424,7 @@ sequenceDiagram
 
   C->>G: connect(auth.token)
   G->>T: resolve user tenant context
-  T-->>G: userId + homeTenant + role + mainPlazaWorldId
+  T-->>G: userId + homeTenant + roleKey + permissions + mainPlazaWorldId
 
   C->>G: world:join(mainPlazaWorldId)
   G->>T: authorize main plaza access
@@ -363,7 +470,7 @@ sequenceDiagram
   end
 ```
 
-## 6.4 Admin Invite + Role Management
+## 6.4 Admin Invite + Role Assignment
 
 ```mermaid
 sequenceDiagram
@@ -386,7 +493,7 @@ sequenceDiagram
   A->>API: PATCH /tenants/{tenantId}/members/{userId}/role
   API->>T: verify admin rights
   T-->>API: allowed
-  API->>DB: update role
+  API->>DB: update membership.role_id
   API-->>A: updated
 ```
 
@@ -510,7 +617,7 @@ This removes tenant/role logic from socket handlers and keeps handlers focused o
 - No proximity voice in `main_plaza`.
 - LiveKit voice is enabled only for tenant interiors:
   - interior proximity: `gather-tenant-interior-{worldId}`
-  - interior zone/privacy voice: `gather-world-{worldId}-zone-{zoneKey}`
+  - interior zone/privacy voice: `gather-tenant-interior-{worldId}-zone-{zoneKey}`
 - Zone/privacy voice is available only in designated interior zone spaces.
 - Users must be in the same interior instance and same zone channel to hear each other.
 
@@ -525,7 +632,8 @@ This removes tenant/role logic from socket handlers and keeps handlers focused o
 Add a `TenantContext` after auth:
 
 - `homeTenantId`
-- `role`
+- `roleKey`
+- `permissions`
 - `mainPlazaWorldId`
 - `homeInteriorWorldId`
 - `currentWorldId`
@@ -546,6 +654,7 @@ Route behavior:
   - main plaza: global text chat channel (current behavior).
   - tenant interior: instance-scoped text chat.
 - presence selectors use world-local remote players only.
+- optional plaza town hall can be represented as a designated main-plaza zone key for UI/UX grouping while remaining in plaza scope.
 
 ## 8.4 UX entry points
 
@@ -565,16 +674,28 @@ Route behavior:
 
 ## 9. API and Event Interfaces (v1)
 
+### 9.0 Admin Policy Management (Frontend + Backend)
+
+- Tenant admins manage org policy toggles from a frontend settings screen.
+- Frontend reads current values from tenant settings context (`GET /tenant/me` and/or tenant settings payload).
+- Frontend writes changes via `PATCH /tenants/:tenantId/settings`.
+- Backend is authoritative:
+  - verifies tenant ownership + admin permission,
+  - validates allowed config fields,
+  - persists `tenant_access_configs`,
+  - returns normalized updated settings.
+- Runtime/socket enforcement always uses backend-resolved config, never client-side claims.
+
 ## 9.1 REST
 
 - `GET /tenant/me`
-  - returns tenant, role, `mainPlazaWorldId`, `homeInteriorWorldId`, and current defaults.
+  - returns tenant, role key, permission set, `mainPlazaWorldId`, `homeInteriorWorldId`, and current defaults.
 - `POST /tenant/bootstrap`
   - `{ mode: "create_tenant", tenantName }` or `{ mode: "join_invite", inviteToken }`.
 - `POST /tenants/:tenantId/invites` (admin)
 - `PATCH /tenants/:tenantId/members/:userId/role` (admin)
 - `DELETE /tenants/:tenantId/members/:userId` (admin)
-- `PATCH /tenants/:tenantId/settings` (admin, includes `access_policy`).
+- `PATCH /tenants/:tenantId/settings` (admin, includes `access_policy` and `tenant_access_configs` fields; intended for frontend admin policy UI).
 
 ## 9.2 Socket
 
@@ -583,6 +704,7 @@ Route behavior:
 - existing movement/tag/teleport events continue, and server enforces active instance membership.
 - `chat:message` behavior:
   - in `main_plaza`: publish to global plaza text channel.
+  - main-plaza `town_hall`/common-room zones are map-defined social areas within plaza scope (not tenant interior policy gates).
   - in `tenant_interior`: publish only to that interior instance room.
 - `teleport:request` behavior:
   - allowed only in `tenant_interior` (disabled in `main_plaza`).
@@ -609,6 +731,16 @@ Detailed execution steps are documented in [`tenant-implementation-plan.md`](./t
 4. Admin tooling and hardening.
 5. Horizontal scaling rollout — see [performance-and-scaling.md](performance-and-scaling.md).
 
+## 10.3 Progress Snapshot (as of 2026-04-08)
+
+- Phase 1 (schema/bootstrap foundations): implemented in code.
+- Phase 2 (instance-scoped socket runtime): implemented in code.
+- Phase 3 (interaction scoping + voice namespacing): implemented in code.
+- Phase 4 (admin tooling/hardening): partially implemented.
+  - done: tenant settings update API (`PATCH /tenant/:tenantId/settings`) with route-level permission middleware and service-level validation.
+  - pending: invite/member admin APIs and frontend admin settings UI.
+- Phase 5 (horizontal scaling): not implemented in this repo scope; tracked in [performance-and-scaling.md](performance-and-scaling.md).
+
 ---
 
 ## 11. Testing and Acceptance Criteria
@@ -617,8 +749,11 @@ Detailed execution steps are documented in [`tenant-implementation-plan.md`](./t
 
 - All authenticated users can walk in the shared main plaza and see tenant house exteriors.
 - Main plaza text chat is global and visible to all users currently in main plaza.
+- Main plaza may include a map-defined `town_hall`/common-room zone where users naturally gather; this remains plaza-scoped behavior.
 - Users inside tenant interiors never leak presence/snapshots/messages to other interiors.
-- Public tenant interior entry succeeds; private tenant interior entry denies non-members.
+- Public tenant interior entry succeeds.
+- Private tenant interior entry denies non-members.
+- Config-driven guest/member behavior is enforced server-side (for example guest zone confinement, chat/tag toggles).
 - Admin can invite/promote/remove members in own tenant.
 - Member cannot call admin endpoints.
 
@@ -642,8 +777,8 @@ Detailed execution steps are documented in [`tenant-implementation-plan.md`](./t
 
 ### Security
 
-- All tenant-sensitive endpoints validate role and tenant ownership.
-- No trust in client-provided tenant/role without server resolution.
+- All tenant-sensitive endpoints validate permissions and tenant ownership.
+- No trust in client-provided tenant/role/permissions without server resolution.
 - Teleport authorization resolves sender/target tenant and instance server-side and blocks invalid requests.
 
 ### Scalability

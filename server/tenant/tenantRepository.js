@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { supabaseRestRequest } from "./supabaseRest.js";
+import { toClientTenantAccessConfig } from "./accessConfigMapper.js";
 
 function firstRow(rows) {
   return Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
@@ -67,7 +68,7 @@ export async function getActiveMembershipByUserId(userId) {
   const rows = await supabaseRestRequest({
     path: "tenant_memberships",
     query: {
-      select: "tenant_id,role",
+      select: "tenant_id,role_id",
       user_id: `eq.${userId}`,
       status: "eq.active",
       limit: 1,
@@ -88,12 +89,81 @@ export async function getTenantById(tenantId) {
   return firstRow(rows);
 }
 
+export async function updateTenantAccessPolicy({ tenantId, accessPolicy }) {
+  const rows = await supabaseRestRequest({
+    path: "tenants",
+    method: "PATCH",
+    query: {
+      id: `eq.${tenantId}`,
+    },
+    prefer: "return=representation",
+    body: {
+      access_policy: accessPolicy,
+    },
+  });
+  return firstRow(rows);
+}
+
+export async function getTenantAccessConfig(tenantId) {
+  const rows = await supabaseRestRequest({
+    path: "tenant_access_configs",
+    query: {
+      select: "tenant_id,guest_zone_enforced,guest_can_chat,guest_can_tag,guest_can_teleport,member_can_tag,member_can_teleport,updated_by,updated_at",
+      tenant_id: `eq.${tenantId}`,
+      limit: 1,
+    },
+  });
+  return firstRow(rows);
+}
+
+export async function createTenantAccessConfig({ tenantId, updatedBy, config }) {
+  const rows = await supabaseRestRequest({
+    path: "tenant_access_configs",
+    method: "POST",
+    prefer: "return=representation",
+    body: {
+      tenant_id: tenantId,
+      updated_by: updatedBy,
+      ...(config ?? {}),
+    },
+  });
+  return firstRow(rows);
+}
+
+export async function updateTenantAccessConfig({ tenantId, updatedBy, config }) {
+  const rows = await supabaseRestRequest({
+    path: "tenant_access_configs",
+    method: "PATCH",
+    query: {
+      tenant_id: `eq.${tenantId}`,
+    },
+    prefer: "return=representation",
+    body: {
+      updated_by: updatedBy,
+      ...config,
+    },
+  });
+  return firstRow(rows);
+}
+
 export async function getWorldById(worldId) {
   const rows = await supabaseRestRequest({
     path: "worlds",
     query: {
       select: "id,key,world_type,tenant_id,display_name,map_key,is_active",
       id: `eq.${worldId}`,
+      limit: 1,
+    },
+  });
+  return firstRow(rows);
+}
+
+export async function getWorldByKey(worldKey) {
+  const rows = await supabaseRestRequest({
+    path: "worlds",
+    query: {
+      select: "id,key,world_type,tenant_id,display_name,map_key,is_active",
+      key: `eq.${worldKey}`,
       limit: 1,
     },
   });
@@ -110,6 +180,57 @@ export async function getTenantBySlug(slug) {
     },
   });
   return firstRow(rows);
+}
+
+export async function getRoleById(roleId) {
+  const rows = await supabaseRestRequest({
+    path: "roles",
+    query: {
+      select: "id,key,name",
+      id: `eq.${roleId}`,
+      limit: 1,
+    },
+  });
+  return firstRow(rows);
+}
+
+export async function getRoleByKey(roleKey) {
+  const rows = await supabaseRestRequest({
+    path: "roles",
+    query: {
+      select: "id,key,name",
+      key: `eq.${roleKey}`,
+      limit: 1,
+    },
+  });
+  return firstRow(rows);
+}
+
+export async function listPermissionKeysByRoleId(roleId) {
+  const rolePermissionRows = await supabaseRestRequest({
+    path: "role_permissions",
+    query: {
+      select: "permission_id",
+      role_id: `eq.${roleId}`,
+    },
+  });
+
+  const permissionIds = (Array.isArray(rolePermissionRows) ? rolePermissionRows : [])
+    .map((row) => row.permission_id)
+    .filter(Boolean);
+  if (!permissionIds.length) return [];
+
+  const rows = await supabaseRestRequest({
+    path: "permissions",
+    query: {
+      select: "key",
+      id: `in.(${permissionIds.join(",")})`,
+    },
+  });
+
+  return (Array.isArray(rows) ? rows : [])
+    .map((row) => row.key)
+    .filter((key) => typeof key === "string");
 }
 
 export async function createTenant({ name, createdBy, accessPolicy = "public" }) {
@@ -138,7 +259,7 @@ export async function createTenant({ name, createdBy, accessPolicy = "public" })
   return firstRow(rows);
 }
 
-export async function createMembership({ tenantId, userId, role = "member", status = "active" }) {
+export async function createMembership({ tenantId, userId, roleId, status = "active" }) {
   const rows = await supabaseRestRequest({
     path: "tenant_memberships",
     method: "POST",
@@ -146,7 +267,7 @@ export async function createMembership({ tenantId, userId, role = "member", stat
     body: {
       tenant_id: tenantId,
       user_id: userId,
-      role,
+      role_id: roleId,
       status,
     },
   });
@@ -170,24 +291,9 @@ export async function getActiveMembershipForTenantUser({ tenantId, userId }) {
   const rows = await supabaseRestRequest({
     path: "tenant_memberships",
     query: {
-      select: "id",
+      select: "id,role_id",
       tenant_id: `eq.${tenantId}`,
       user_id: `eq.${userId}`,
-      status: "eq.active",
-      limit: 1,
-    },
-  });
-  return firstRow(rows);
-}
-
-export async function getActiveAdminMembershipForTenantUser({ tenantId, userId }) {
-  const rows = await supabaseRestRequest({
-    path: "tenant_memberships",
-    query: {
-      select: "id",
-      tenant_id: `eq.${tenantId}`,
-      user_id: `eq.${userId}`,
-      role: "eq.admin",
       status: "eq.active",
       limit: 1,
     },
@@ -220,7 +326,7 @@ export async function getPendingInviteByToken(rawToken) {
   const rows = await supabaseRestRequest({
     path: "tenant_invites",
     query: {
-      select: "id,tenant_id,role",
+      select: "id,tenant_id,invited_role_id",
       token_hash: `eq.${tokenHash}`,
       status: "eq.pending",
       expires_at: `gt.${nowIso}`,
@@ -257,18 +363,31 @@ export async function getContextByUserId(userId) {
       mainPlazaWorldId: mainPlazaWorld?.id ?? null,
       homeTenantId: null,
       role: null,
+      roleKey: null,
+      permissions: [],
       homeInteriorWorldId: null,
       hasMembership: false,
     };
   }
 
-  const [tenant, interiorWorld] = await Promise.all([getTenantById(membership.tenant_id), getInteriorWorldByTenantId(membership.tenant_id)]);
+  const [tenant, interiorWorld, role, accessConfig] = await Promise.all([
+    getTenantById(membership.tenant_id),
+    getInteriorWorldByTenantId(membership.tenant_id),
+    membership.role_id ? getRoleById(membership.role_id) : null,
+    getTenantAccessConfig(membership.tenant_id),
+  ]);
+  const permissions = role?.id
+    ? await listPermissionKeysByRoleId(role.id)
+    : [];
+  const roleKey = role?.key ?? null;
 
   return {
     userId,
     mainPlazaWorldId: mainPlazaWorld?.id ?? null,
     homeTenantId: membership.tenant_id,
-    role: membership.role,
+    role: roleKey,
+    roleKey,
+    permissions,
     homeInteriorWorldId: interiorWorld?.id ?? null,
     hasMembership: true,
     tenant: tenant
@@ -277,6 +396,7 @@ export async function getContextByUserId(userId) {
           name: tenant.name,
           slug: tenant.slug,
           accessPolicy: tenant.access_policy,
+          accessConfig: toClientTenantAccessConfig(accessConfig),
         }
       : null,
   };

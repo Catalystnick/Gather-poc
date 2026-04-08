@@ -42,6 +42,7 @@ type JoinAckPayload = {
   col?: unknown
   row?: unknown
   worldId?: unknown
+  worldKey?: unknown
   fromWorldId?: unknown
   instanceType?: unknown
   unchanged?: unknown
@@ -55,7 +56,7 @@ type SocketEventHandlers = {
   onRoomState: (players: SnapshotPlayerPayload[]) => void
   onPlayerJoined: (joinedPlayer: SnapshotPlayerPayload) => void
   onWorldSnapshot: (snapshot: WorldSnapshotPayload) => void
-  onWorldChanged: (event: { worldId?: unknown; instanceType?: unknown }) => void
+  onWorldChanged: (event: { worldId?: unknown; worldKey?: unknown; instanceType?: unknown }) => void
   onPlayerVoice: (event: { id: string; muted: boolean }) => void
   onPlayerLeft: (event: { id: string }) => void
 }
@@ -197,12 +198,13 @@ function bindSocketEventHandlers(
 }
 
 /** Connect socket.io and expose synchronized multiplayer state/events. */
-export function useSocket(player: Player, accessToken: string, userId: string) {
+export function useSocket(player: Player, accessToken: string, userId: string, initialWorldKey: string | null) {
   const [socket, setSocket] = useState<Socket | null>(null)
   const [remotePlayers, setRemotePlayers] = useState<Map<string, RemotePlayer>>(new Map())
   const [serverSpawn, setServerSpawn] = useState<{ col: number; row: number } | null>(null)
   const [localAuthoritativeState, setLocalAuthoritativeState] = useState<LocalAuthoritativeState | null>(null)
   const [activeWorldId, setActiveWorldId] = useState<string | null>(null)
+  const [activeWorldKey, setActiveWorldKey] = useState<string | null>(null)
   const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>('connecting')
   const [lastDisconnectReason, setLastDisconnectReason] = useState<string | null>(null)
   const [lastError, setLastError] = useState<string | null>(null)
@@ -216,6 +218,8 @@ export function useSocket(player: Player, accessToken: string, userId: string) {
   // socket.auth is patched in-place so any future reconnect (e.g. network drop)
   // uses the latest token automatically.
   const tokenRef = useRef(accessToken)
+  const initialWorldKeyRef = useRef(initialWorldKey)
+  const lastServerWorldKeyRef = useRef<string | null>(null)
   const socketRef = useRef<Socket | null>(null)
   const mainPlazaWorldIdRef = useRef<string | null>(null)
   const lastPortalTransitionKeyRef = useRef<string | null>(null)
@@ -227,19 +231,55 @@ export function useSocket(player: Player, accessToken: string, userId: string) {
     setRemotePlayers(new Map())
   }, [])
 
+  useEffect(() => {
+    initialWorldKeyRef.current = initialWorldKey
+  }, [initialWorldKey])
+
   const applyWorldAck = useCallback((ack?: JoinAckPayload) => {
     const worldId = typeof ack?.worldId === 'string' ? ack.worldId.trim() : ''
+    const worldKey = typeof ack?.worldKey === 'string' ? ack.worldKey.trim() : ''
     if (worldId) setActiveWorldId(worldId)
+    if (worldKey) {
+      setActiveWorldKey(worldKey)
+      lastServerWorldKeyRef.current = worldKey
+    }
     if (ack?.instanceType === 'main_plaza' && worldId) {
       mainPlazaWorldIdRef.current = worldId
     }
   }, [])
 
   const joinCurrentPlayer = useCallback((socketClient: Socket) => {
+    const requestedWorldKey = typeof initialWorldKeyRef.current === 'string'
+      ? initialWorldKeyRef.current.trim()
+      : ''
     socketClient.emit(
       'world:join',
-      { name: playerRef.current.name, avatar: playerRef.current.avatar },
+      {
+        name: playerRef.current.name,
+        avatar: playerRef.current.avatar,
+        ...(requestedWorldKey ? { worldKey: requestedWorldKey } : {}),
+      },
       (ack?: JoinAckPayload) => {
+        if (ack?.error && requestedWorldKey) {
+          socketClient.emit(
+            'world:join',
+            { name: playerRef.current.name, avatar: playerRef.current.avatar },
+            (retryAck?: JoinAckPayload) => {
+              if (retryAck?.error) {
+                setLastError(String(retryAck.error))
+                return
+              }
+              const retrySpawn = parseSpawnFromJoinAck(retryAck)
+              if (retrySpawn) setServerSpawn(retrySpawn)
+              applyWorldAck(retryAck)
+            },
+          )
+          return
+        }
+        if (ack?.error) {
+          setLastError(String(ack.error))
+          return
+        }
         const spawn = parseSpawnFromJoinAck(ack)
         if (spawn) setServerSpawn(spawn)
         applyWorldAck(ack)
@@ -257,6 +297,8 @@ export function useSocket(player: Player, accessToken: string, userId: string) {
     setStatus('disconnected')
     setLastDisconnectReason(String(reason))
     setActiveWorldId(null)
+    setActiveWorldKey(null)
+    lastServerWorldKeyRef.current = null
     clearWorldRuntimeState()
   }, [clearWorldRuntimeState])
 
@@ -285,10 +327,15 @@ export function useSocket(player: Player, accessToken: string, userId: string) {
     setRemotePlayers(nextState.remote)
   }, [userId])
 
-  const handleWorldChanged = useCallback((event: { worldId?: unknown; instanceType?: unknown }) => {
+  const handleWorldChanged = useCallback((event: { worldId?: unknown; worldKey?: unknown; instanceType?: unknown }) => {
     const worldId = typeof event?.worldId === 'string' ? event.worldId.trim() : ''
+    const worldKey = typeof event?.worldKey === 'string' ? event.worldKey.trim() : ''
     if (!worldId) return
     setActiveWorldId(worldId)
+    if (worldKey) {
+      setActiveWorldKey(worldKey)
+      lastServerWorldKeyRef.current = worldKey
+    }
     if (event?.instanceType === 'main_plaza') {
       mainPlazaWorldIdRef.current = worldId
     }
@@ -334,6 +381,8 @@ export function useSocket(player: Player, accessToken: string, userId: string) {
       setLastDisconnectReason(null)
       setLastError(null)
       setActiveWorldId(null)
+      setActiveWorldKey(null)
+      lastServerWorldKeyRef.current = null
       mainPlazaWorldIdRef.current = null
       lastPortalTransitionKeyRef.current = null
       clearWorldRuntimeState()
@@ -351,6 +400,8 @@ export function useSocket(player: Player, accessToken: string, userId: string) {
       setLastDisconnectReason(null)
       setLastError(null)
       setActiveWorldId(null)
+      setActiveWorldKey(null)
+      lastServerWorldKeyRef.current = null
       lastPortalTransitionKeyRef.current = null
       clearWorldRuntimeState()
       joinCurrentPlayer(socketClient)
@@ -421,6 +472,26 @@ export function useSocket(player: Player, accessToken: string, userId: string) {
     })
   }, [activeWorldId, applyWorldAck, clearWorldRuntimeState, localAuthoritativeState?.zoneKey])
 
+  useEffect(() => {
+    const socketClient = socketRef.current
+    if (!socketClient?.connected || !activeWorldId) return
+
+    const requestedWorldKey = typeof initialWorldKey === 'string' ? initialWorldKey.trim() : ''
+    if (!requestedWorldKey) return
+    if (requestedWorldKey === lastServerWorldKeyRef.current) return
+
+    socketClient.emit('world:change', { targetWorldKey: requestedWorldKey }, (ack?: JoinAckPayload) => {
+      if (ack?.error) {
+        setLastError(String(ack.error))
+        return
+      }
+      clearWorldRuntimeState()
+      const spawn = parseSpawnFromJoinAck(ack)
+      if (spawn) setServerSpawn(spawn)
+      applyWorldAck(ack)
+    })
+  }, [activeWorldId, applyWorldAck, clearWorldRuntimeState, initialWorldKey])
+
   /** Emit local movement input updates to the server at input cadence. */
   const emitInput = useCallback((state: PlayerInputState) => {
     socketRef.current?.emit('player:input', state)
@@ -439,6 +510,7 @@ export function useSocket(player: Player, accessToken: string, userId: string) {
     emitInput,
     emitVoiceState,
     activeWorldId,
+    activeWorldKey,
     status,
     lastDisconnectReason,
     lastError,

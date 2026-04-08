@@ -23,6 +23,8 @@ import type { Player } from "../../types";
 
 interface Props {
   player: Player;
+  initialWorldKey: string | null;
+  onWorldKeyChange?: (worldKey: string | null) => void;
 }
 
 function sanitizeTokenName(name: string) {
@@ -30,7 +32,7 @@ function sanitizeTokenName(name: string) {
 }
 
 /** Top-level game scene wrapper: bridges React hooks, Phaser runtime, and HUD panels. */
-export default function World({ player }: Props) {
+export default function World({ player, initialWorldKey, onWorldKeyChange }: Props) {
   const { session } = useAuth();
   const accessToken = session?.access_token ?? "";
   const userId = session?.user?.id ?? "";
@@ -43,6 +45,8 @@ export default function World({ player }: Props) {
   const {
     socket,
     remotePlayers,
+    activeWorldId,
+    activeWorldKey,
     serverSpawn,
     localAuthoritativeState,
     emitInput,
@@ -50,7 +54,7 @@ export default function World({ player }: Props) {
     status,
     lastDisconnectReason,
     lastError,
-  } = useSocket(player, accessToken, userId);
+  } = useSocket(player, accessToken, userId, initialWorldKey);
 
   const mic = useMicTrack();
 
@@ -58,6 +62,7 @@ export default function World({ player }: Props) {
     socket,
     positionRef,
     remotePlayers,
+    activeWorldId,
     mic,
     accessToken,
     userId,
@@ -91,6 +96,10 @@ export default function World({ player }: Props) {
   useEffect(() => {
     setTabBadge(tagPings.length > 0);
   }, [tagPings.length]);
+
+  useEffect(() => {
+    onWorldKeyChange?.(activeWorldKey ?? null);
+  }, [activeWorldKey, onWorldKeyChange]);
 
   // ── Wire GameBridge ─────────────────────────────────────────────────────────
 

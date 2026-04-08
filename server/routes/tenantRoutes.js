@@ -1,10 +1,12 @@
 import express from 'express'
 import { requireAuth } from '../middleware/requireAuth.js'
+import { requireTenantPermission } from '../middleware/requireTenantPermission.js'
 import { TenantServiceError } from '../tenant/errors.js'
 import {
   bootstrapCreateTenant,
   bootstrapJoinInvite,
   resolveTenantContext,
+  updateTenantSettings,
 } from '../tenant/tenantService.js'
 
 const tenantRouter = express.Router()
@@ -58,6 +60,24 @@ tenantRouter.post('/bootstrap', requireAuth, async (req, res) => {
       error: 'invalid_mode',
       message: 'mode must be create_tenant or join_invite',
     })
+  } catch (error) {
+    return sendTenantError(res, error)
+  }
+})
+
+tenantRouter.patch(
+  '/:tenantId/settings',
+  requireAuth,
+  requireTenantPermission('tenant.settings.manage'),
+  async (req, res) => {
+  try {
+    const settings = await updateTenantSettings({
+      actorUserId: req.user.sub,
+      tenantId: req.params.tenantId,
+      accessPolicy: req.body?.accessPolicy,
+      tenantAccessConfig: req.body?.tenantAccessConfig,
+    })
+    return res.json(settings)
   } catch (error) {
     return sendTenantError(res, error)
   }

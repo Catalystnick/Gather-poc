@@ -7,7 +7,7 @@ import { requireAuth, requireAuthSocket } from './middleware/requireAuth.js'
 import { TeleportRequestsStore } from './chat/teleportRequestsStore.js'
 import { createChatRateLimiter } from './chat/chatRateLimiter.js'
 import tenantRouter from './routes/tenantRoutes.js'
-import { canAccessWorld, resolveTenantContext } from './tenant/tenantService.js'
+import { canAccessWorld, getWorldById, getWorldByKey, resolveTenantContext } from './tenant/tenantService.js'
 import { registerLivekitTokenRoute } from './routes/livekitTokenRoute.js'
 import { registerGameSocketHandlers } from './socket/registerGameSocketHandlers.js'
 import { createWorldRuntime } from './world/runtime.js'
@@ -84,6 +84,8 @@ registerGameSocketHandlers({
   chatRateLimiter,
   resolveTenantContext,
   canAccessWorld,
+  getWorldById,
+  getWorldByKey,
   enableTenantSocketContext: ENABLE_TENANT_SOCKET_CONTEXT,
 })
 

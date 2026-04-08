@@ -1,5 +1,6 @@
-// Unified voice hook — manages both the permanent proximity room (gather-world)
-// and transient zone rooms (gather-world-zone-{key}).
+// Unified voice hook — manages both the permanent proximity room
+// (gather-tenant-interior-{worldId}) and transient zone rooms
+// (gather-tenant-interior-{worldId}-zone-{key}).
 //
 // Replaces useLiveKitVoice + useZoneVoice. Returns a complete VoiceState so
 // World.tsx no longer needs to manually merge state from two separate hooks.
@@ -26,7 +27,7 @@ import { getZoneKey } from '../utils/zoneDetection'
 import { tileToWorld } from '../utils/gridHelpers'
 import { TILE_PX } from '../game/engine/constants'
 import {
-  ROOM_NAME, ZONE_ROOM_PREFIX,
+  getZoneRoomName,
   type CachedToken, type TokenIntent,
   createRoom, fetchToken, fetchTokenDetailed, tokenIsValid, attachRemoteAudio,
   createLocalMicTrack,
@@ -116,6 +117,7 @@ export function useVoice(
   socket: Socket | null,
   localPositionRef: React.MutableRefObject<{ x: number; y: number; z: number }>,
   remotePlayers: Map<string, RemotePlayer>,
+  worldId: string | null,
   mic: MicTrack,
   accessToken: string,
   userId: string,
@@ -174,6 +176,10 @@ export function useVoice(
   accessTokenRef.current = accessToken
   const remotePlayersRef = useRef(remotePlayers)
   remotePlayersRef.current = remotePlayers
+
+  function buildZoneCacheKey(zoneKey: string) {
+    return worldId ? `${worldId}:${zoneKey}` : zoneKey
+  }
 
   // ── Sync helpers ───────────────────────────────────────────────────────────
 
@@ -261,51 +267,53 @@ export function useVoice(
   // ── Token cache helpers ────────────────────────────────────────────────────
 
   /** Read a still-valid cached token for the requested zone room intent. */
-  function getCachedToken(zoneKey: string, intent: TokenIntent): CachedToken | null {
-    const cachedToken = tokenCacheRef.current[zoneKey]
+  function getCachedToken(worldScopedZoneKey: string, intent: TokenIntent): CachedToken | null {
+    const cachedToken = tokenCacheRef.current[worldScopedZoneKey]
     if (!cachedToken || cachedToken.intent !== intent || !tokenIsValid(cachedToken)) {
-      if (cachedToken) delete tokenCacheRef.current[zoneKey]
+      if (cachedToken) delete tokenCacheRef.current[worldScopedZoneKey]
       return null
     }
     return cachedToken
   }
 
   /** Return remaining cooldown before we can retry zone token fetches. */
-  function getZoneTokenCooldownMs(zoneKey: string): number {
-    const blockedUntil = zoneTokenBlockedUntilRef.current[zoneKey] ?? 0
+  function getZoneTokenCooldownMs(worldScopedZoneKey: string): number {
+    const blockedUntil = zoneTokenBlockedUntilRef.current[worldScopedZoneKey] ?? 0
     return Math.max(0, blockedUntil - Date.now())
   }
 
   /** Fetch and cache a zone token with backoff handling for transient failures/rate limits. */
   async function fetchZoneToken(identity: string, zoneKey: string, intent: TokenIntent): Promise<CachedToken | null> {
-    const cooldownMs = getZoneTokenCooldownMs(zoneKey)
+    if (!worldId) return null
+    const worldScopedZoneKey = buildZoneCacheKey(zoneKey)
+    const cooldownMs = getZoneTokenCooldownMs(worldScopedZoneKey)
     if (cooldownMs > 0) {
       console.warn('[voice] zone token cooldown active | zone:', zoneKey, '| retry in ms:', cooldownMs)
       return null
     }
-    if (tokenInFlightRef.current.has(zoneKey)) return null
-    tokenInFlightRef.current.add(zoneKey)
-    const roomName = `${ZONE_ROOM_PREFIX}${zoneKey}`
-    console.log('[voice] fetching token | zone:', zoneKey, '| intent:', intent)
-    const result = await fetchTokenDetailed(identity, roomName, accessTokenRef.current, intent)
-      .finally(() => tokenInFlightRef.current.delete(zoneKey))
+    if (tokenInFlightRef.current.has(worldScopedZoneKey)) return null
+    tokenInFlightRef.current.add(worldScopedZoneKey)
+    const roomName = getZoneRoomName(worldId, zoneKey)
+    console.log('[voice] fetching token | zone:', zoneKey, '| room:', roomName, '| intent:', intent)
+    const result = await fetchTokenDetailed(identity, worldId, accessTokenRef.current, intent, zoneKey)
+      .finally(() => tokenInFlightRef.current.delete(worldScopedZoneKey))
     const cached = result.cached
     if (cached) {
-      tokenCacheRef.current[zoneKey] = cached
-      zoneTokenBackoffMsRef.current[zoneKey] = 0
-      zoneTokenBlockedUntilRef.current[zoneKey] = 0
+      tokenCacheRef.current[worldScopedZoneKey] = cached
+      zoneTokenBackoffMsRef.current[worldScopedZoneKey] = 0
+      zoneTokenBlockedUntilRef.current[worldScopedZoneKey] = 0
       console.log('[voice] token cached | zone:', zoneKey, '| age:', Math.round((Date.now() - cached.fetchedAt) / 1000), 's')
     } else {
       let next = 2_000
       if (result.status === 429) {
-        const prev = zoneTokenBackoffMsRef.current[zoneKey] || 0
+        const prev = zoneTokenBackoffMsRef.current[worldScopedZoneKey] || 0
         next = Math.min(60_000, prev > 0 ? prev * 2 : 5_000)
       } else if (result.status === 403) {
         // Likely zone membership propagation race. Retry soon.
         next = 500
       }
-      zoneTokenBackoffMsRef.current[zoneKey] = next
-      zoneTokenBlockedUntilRef.current[zoneKey] = Date.now() + next
+      zoneTokenBackoffMsRef.current[worldScopedZoneKey] = next
+      zoneTokenBlockedUntilRef.current[worldScopedZoneKey] = Date.now() + next
       console.warn('[voice] token fetch failed | zone:', zoneKey, '| status:', result.status, '| backoff ms:', next)
     }
     return cached
@@ -353,7 +361,7 @@ export function useVoice(
     }
 
     // Resolve token (cached first)
-    let token = getCachedToken(targetKey, 'join')
+    let token = getCachedToken(buildZoneCacheKey(targetKey), 'join')
     if (token) {
       console.log('[voice] using cached token | zone:', targetKey)
     } else {
@@ -476,15 +484,16 @@ export function useVoice(
   // ── Effect: proximity room connection ──────────────────────────────────────
 
   useEffect(() => {
-    if (!socket?.id || !mic.isReady) return
+    if (!socket?.id || !mic.isReady || !worldId) return
     const identity = userId
+    const voiceWorldId = worldId
     let room: Room | null = null
     /** Dev Strict Mode remounts immediately; finish async work only if still active. */
     let cancelled  = false
 
     async function connect() {
       try {
-        const token = await fetchToken(identity, ROOM_NAME, accessTokenRef.current)
+        const token = await fetchToken(identity, voiceWorldId, accessTokenRef.current)
         if (cancelled) return
         if (!token) throw new Error('proximity token fetch failed')
 
@@ -630,12 +639,12 @@ export function useVoice(
         } catch { /* ignore */ }
       })()
     }
-  }, [socket?.id, mic.isReady])
+  }, [socket?.id, mic.isReady, worldId])
 
   // ── Effect: zone detection interval ───────────────────────────────────────
 
   useEffect(() => {
-    if (!socket?.id || !mic.isReady) return
+    if (!socket?.id || !mic.isReady || !worldId) return
     const identity = userId
     console.log('[voice] zone detector started | identity:', identity)
 
@@ -666,7 +675,7 @@ export function useVoice(
       if (detected === activeZoneKeyRef.current) return
       if (detected === targetZoneRef.current) return
       if (detected) {
-        const cooldownMs = getZoneTokenCooldownMs(detected)
+        const cooldownMs = getZoneTokenCooldownMs(buildZoneCacheKey(detected))
         if (cooldownMs > 0) {
           // Keep the user in proximity mode while token endpoint is cooling down.
           return
@@ -705,7 +714,7 @@ export function useVoice(
       pendingZoneRef.current = undefined
       debounceTicksRef.current = 0
     }
-  }, [socket?.id, mic.isReady])
+  }, [socket?.id, mic.isReady, worldId])
 
   // ── Effect: proximity gating interval ─────────────────────────────────────
 

@@ -70,6 +70,20 @@ async function findMainPlazaWorldId() {
   return first.id
 }
 
+async function getRoleIdByKey(roleKey) {
+  const rows = await supabaseRestRequest({
+    path: 'roles',
+    query: {
+      select: 'id',
+      key: `eq.${roleKey}`,
+      limit: 1,
+    },
+  })
+  const first = Array.isArray(rows) ? rows[0] : null
+  if (!first?.id) throw new Error(`Role ${roleKey} is required for RLS test setup`)
+  return first.id
+}
+
 async function ensureActiveMembershipTenantId(userId) {
   const rows = await supabaseRestRequest({
     path: 'tenant_memberships',
@@ -105,7 +119,7 @@ async function ensureActiveMembershipTenantId(userId) {
     body: {
       tenant_id: tenant.id,
       user_id: userId,
-      role: 'member',
+      role_id: await getRoleIdByKey('member'),
       status: 'active',
     },
   })
@@ -187,7 +201,7 @@ async function seedForeignInvite({ foreignTenantId, userId }) {
     body: {
       tenant_id: foreignTenantId,
       token_hash: createHash('sha256').update(`rls-invite-${suffix}`).digest('hex'),
-      role: 'member',
+      invited_role_id: await getRoleIdByKey('member'),
       email_optional: null,
       expires_at: new Date(Date.now() + 86_400_000).toISOString(),
       status: 'pending',

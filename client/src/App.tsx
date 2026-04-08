@@ -33,7 +33,7 @@ export default function App() {
             <Route path="/verify-pending" element={<VerifyPendingPage />} />
             <Route path="/auth/callback"  element={<AuthCallbackPage />} />
             <Route element={<ProtectedRoute />}>
-              <Route path="/game"         element={<GameRoute />} />
+              <Route path="/game/:worldKey?" element={<GameRoute />} />
             </Route>
             <Route path="*"               element={<Navigate to="/game" replace />} />
           </Routes>

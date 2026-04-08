@@ -7,7 +7,6 @@ const TEMP_PORTAL_WORLD_BY_ZONE = {
   design: "interior_world_design",
   game: "interior_world_game",
 };
-const TEMP_PORTAL_WORLD_IDS = new Set(Object.values(TEMP_PORTAL_WORLD_BY_ZONE));
 
 function worldRoom(worldId) {
   return `world:${worldId}`;
@@ -34,14 +33,18 @@ function normalizeWorldId(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function mapPortalZoneToWorldId(rawZone) {
+function normalizeWorldKey(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function mapPortalZoneToWorldKey(rawZone) {
   const key = typeof rawZone === "string" ? rawZone.trim().toLowerCase() : "";
   if (!key) return "";
   return TEMP_PORTAL_WORLD_BY_ZONE[key] ?? "";
 }
 
-function inferInstanceType(worldId, tenantContext) {
-  if (worldId === tenantContext?.mainPlazaWorldId || worldId === "main_plaza") return "main_plaza";
+function inferInstanceType(world) {
+  if (world?.world_type === "main_plaza") return "main_plaza";
   return "tenant_interior";
 }
 
@@ -212,7 +215,6 @@ async function resolveSocketTenantContext({ socket, resolveTenantContext, enable
 }
 
 async function authorizeWorldAccess({ socket, worldId, canAccessWorld, enableTenantSocketContext }) {
-  if (TEMP_PORTAL_WORLD_IDS.has(worldId)) return true;
   if (!enableTenantSocketContext) return true;
   try {
     return await canAccessWorld(socket.userId, worldId);
@@ -272,24 +274,79 @@ async function filterTeleportTargets({
   return { allowedTargetIds, rejected };
 }
 
-function resolveJoinWorldId(payload, tenantContext) {
+async function findWorldByIdentifier({ worldId, worldKey, getWorldById, getWorldByKey }) {
+  if (worldId) return getWorldById(worldId);
+  if (worldKey) return getWorldByKey(worldKey);
+  return null;
+}
+
+async function resolveJoinWorld({ payload, tenantContext, getWorldById, getWorldByKey }) {
   const requestedWorldId = normalizeWorldId(payload?.worldId);
-  if (requestedWorldId) return requestedWorldId;
-  if (tenantContext?.mainPlazaWorldId) return tenantContext.mainPlazaWorldId;
-  return "main_plaza";
+  const requestedWorldKey = normalizeWorldKey(payload?.worldKey);
+
+  const explicitWorld = await findWorldByIdentifier({
+    worldId: requestedWorldId,
+    worldKey: requestedWorldKey,
+    getWorldById,
+    getWorldByKey,
+  });
+  if (explicitWorld) return explicitWorld;
+  if (requestedWorldId || requestedWorldKey) return null;
+
+  const fallbackMainPlazaId = normalizeWorldId(tenantContext?.mainPlazaWorldId);
+  const mainPlazaById = await findWorldByIdentifier({
+    worldId: fallbackMainPlazaId,
+    worldKey: "",
+    getWorldById,
+    getWorldByKey,
+  });
+  if (mainPlazaById) return mainPlazaById;
+
+  return findWorldByIdentifier({
+    worldId: "",
+    worldKey: "main_plaza",
+    getWorldById,
+    getWorldByKey,
+  });
 }
 
-function resolveChangeWorldId(payload) {
+async function resolveChangeWorld({ payload, getWorldById, getWorldByKey }) {
   const requestedWorldId = normalizeWorldId(payload?.targetWorldId);
-  if (requestedWorldId) return requestedWorldId;
-  const fromPortalKey = mapPortalZoneToWorldId(payload?.portalKey);
-  if (fromPortalKey) return fromPortalKey;
-  const fromZoneKey = mapPortalZoneToWorldId(payload?.zoneKey);
-  if (fromZoneKey) return fromZoneKey;
-  return "";
+  const requestedWorldKey = normalizeWorldKey(payload?.targetWorldKey);
+
+  const explicitWorld = await findWorldByIdentifier({
+    worldId: requestedWorldId,
+    worldKey: requestedWorldKey,
+    getWorldById,
+    getWorldByKey,
+  });
+  if (explicitWorld) return explicitWorld;
+  if (requestedWorldId || requestedWorldKey) return null;
+
+  const fromPortalKey = mapPortalZoneToWorldKey(payload?.portalKey);
+  const fromZoneKey = mapPortalZoneToWorldKey(payload?.zoneKey);
+  const derivedWorldKey = fromPortalKey || fromZoneKey;
+  if (!derivedWorldKey) return null;
+
+  return findWorldByIdentifier({
+    worldId: "",
+    worldKey: derivedWorldKey,
+    getWorldById,
+    getWorldByKey,
+  });
 }
 
-export function registerGameSocketHandlers({ io, runtime, teleportRequests, chatRateLimiter, resolveTenantContext, canAccessWorld, enableTenantSocketContext }) {
+export function registerGameSocketHandlers({
+  io,
+  runtime,
+  teleportRequests,
+  chatRateLimiter,
+  resolveTenantContext,
+  canAccessWorld,
+  getWorldById,
+  getWorldByKey,
+  enableTenantSocketContext,
+}) {
   const socketWorldIndex = new Map();
 
   async function joinWorld({ socket, payload, ack }) {
@@ -303,10 +360,20 @@ export function registerGameSocketHandlers({ io, runtime, teleportRequests, chat
       return;
     }
 
-    const targetWorldId = resolveJoinWorldId(payload, tenantContext);
+    const targetWorld = await resolveJoinWorld({
+      payload,
+      tenantContext,
+      getWorldById,
+      getWorldByKey,
+    });
+    if (!targetWorld?.id) {
+      if (typeof ack === "function") ack({ error: "world_not_found" });
+      return;
+    }
+
     const hasAccess = await authorizeWorldAccess({
       socket,
-      worldId: targetWorldId,
+      worldId: targetWorld.id,
       canAccessWorld,
       enableTenantSocketContext,
     });
@@ -339,7 +406,7 @@ export function registerGameSocketHandlers({ io, runtime, teleportRequests, chat
       socket,
       runtime,
       socketWorldIndex,
-      nextWorldId: targetWorldId,
+      nextWorldId: targetWorld.id,
       nextPlayerState: playerState,
     });
 
@@ -349,8 +416,9 @@ export function registerGameSocketHandlers({ io, runtime, teleportRequests, chat
         row: spawn.row,
         x: world.x,
         y: world.y,
-        worldId: targetWorldId,
-        instanceType: inferInstanceType(targetWorldId, tenantContext),
+        worldId: targetWorld.id,
+        worldKey: targetWorld.key ?? null,
+        instanceType: inferInstanceType(targetWorld),
         loading: { completed: true },
       });
     }
@@ -373,16 +441,27 @@ export function registerGameSocketHandlers({ io, runtime, teleportRequests, chat
       return;
     }
 
-    const targetWorldId = resolveChangeWorldId(payload);
-    if (!targetWorldId) {
-      if (typeof ack === "function") ack({ error: "target_world_required" });
+    const requestedTargetWorldId = normalizeWorldId(payload?.targetWorldId);
+    const requestedTargetWorldKey = normalizeWorldKey(payload?.targetWorldKey);
+    const targetWorld = await resolveChangeWorld({
+      payload,
+      getWorldById,
+      getWorldByKey,
+    });
+    if (!targetWorld?.id) {
+      const errorCode = requestedTargetWorldId || requestedTargetWorldKey
+        ? "world_not_found"
+        : "target_world_required";
+      if (typeof ack === "function") ack({ error: errorCode });
       return;
     }
 
-    if (targetWorldId === currentWorld) {
+    if (targetWorld.id === currentWorld) {
+      const currentWorldRow = await getWorldById(currentWorld);
       if (typeof ack === "function") {
         ack({
           worldId: currentWorld,
+          worldKey: currentWorldRow?.key ?? null,
           fromWorldId: currentWorld,
           unchanged: true,
           loading: { completed: true },
@@ -393,7 +472,7 @@ export function registerGameSocketHandlers({ io, runtime, teleportRequests, chat
 
     const hasAccess = await authorizeWorldAccess({
       socket,
-      worldId: targetWorldId,
+      worldId: targetWorld.id,
       canAccessWorld,
       enableTenantSocketContext,
     });
@@ -437,14 +516,15 @@ export function registerGameSocketHandlers({ io, runtime, teleportRequests, chat
       socket,
       runtime,
       socketWorldIndex,
-      nextWorldId: targetWorldId,
+      nextWorldId: targetWorld.id,
       nextPlayerState,
     });
 
     socket.emit("world:changed", {
-      worldId: targetWorldId,
+      worldId: targetWorld.id,
+      worldKey: targetWorld.key ?? null,
       fromWorldId: transition.previousWorldId,
-      instanceType: inferInstanceType(targetWorldId, tenantContext),
+      instanceType: inferInstanceType(targetWorld),
     });
 
     if (typeof ack === "function") {
@@ -453,9 +533,10 @@ export function registerGameSocketHandlers({ io, runtime, teleportRequests, chat
         row: spawn.row,
         x: world.x,
         y: world.y,
-        worldId: targetWorldId,
+        worldId: targetWorld.id,
+        worldKey: targetWorld.key ?? null,
         fromWorldId: transition.previousWorldId,
-        instanceType: inferInstanceType(targetWorldId, tenantContext),
+        instanceType: inferInstanceType(targetWorld),
         loading: { completed: true },
       });
     }

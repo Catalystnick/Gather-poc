@@ -5,8 +5,8 @@ import { Room, Track, AudioPresets, LocalAudioTrack, type RemoteAudioTrack } fro
 
 // ─── Shared constants ─────────────────────────────────────────────────────────
 
-export const ROOM_NAME        = 'gather-world'
-export const ZONE_ROOM_PREFIX = 'gather-world-zone-'
+const ROOM_PREFIX = 'gather-tenant-interior-'
+const ZONE_SEGMENT = '-zone-'
 // Server issues tokens with ttl: '2h' (see server/index.js).
 // Cache them client-side to avoid rate-limit / cold-start churn during zone transitions.
 export const TOKEN_TTL_MS     = 105 * 60_000
@@ -43,20 +43,30 @@ export function getTokenUrl(): string {
   return `${base || window.location.origin}/livekit/token`
 }
 
+export function getProximityRoomName(worldId: string): string {
+  return `${ROOM_PREFIX}${worldId}`
+}
+
+export function getZoneRoomName(worldId: string, zoneKey: string): string {
+  return `${ROOM_PREFIX}${worldId}${ZONE_SEGMENT}${zoneKey}`
+}
+
 // ─── Fetch token ──────────────────────────────────────────────────────────────
 
 /** Fetch token with HTTP status metadata to drive retry/backoff behavior. */
 export async function fetchTokenDetailed(
   identity: string,
-  roomName: string,
+  worldId: string,
   accessToken: string,
   intent: TokenIntent = 'join',
+  zoneKey?: string,
 ): Promise<TokenFetchResult> {
+  const roomName = zoneKey ? getZoneRoomName(worldId, zoneKey) : getProximityRoomName(worldId)
   try {
     const res = await fetch(getTokenUrl(), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
-      body: JSON.stringify({ roomName, identity, name: identity, intent }),
+      body: JSON.stringify({ worldId, zoneKey, identity, name: identity, intent }),
     })
     if (!res.ok) {
       console.warn('[voiceRoom] token HTTP error | room:', roomName, '| status:', res.status)
@@ -77,11 +87,12 @@ export async function fetchTokenDetailed(
 /** Fetch token and return only cache payload (simple call sites). */
 export async function fetchToken(
   identity: string,
-  roomName: string,
+  worldId: string,
   accessToken: string,
   intent: TokenIntent = 'join',
+  zoneKey?: string,
 ): Promise<CachedToken | null> {
-  const result = await fetchTokenDetailed(identity, roomName, accessToken, intent)
+  const result = await fetchTokenDetailed(identity, worldId, accessToken, intent, zoneKey)
   return result.cached
 }
 
