@@ -24,6 +24,12 @@ function inviteTokenHash(token) {
   return createHash("sha256").update(String(token)).digest("hex");
 }
 
+async function resolveRoleKey(roleId) {
+  if (!roleId) return null;
+  const role = await getRoleById(roleId);
+  return role?.key ?? null;
+}
+
 export async function getMainPlazaWorld() {
   // `main_plaza` is a singleton world row shared by all authenticated users.
   const rows = await supabaseRestRequest({
@@ -260,7 +266,7 @@ export async function createTenant({ name, createdBy, accessPolicy = "public" })
 }
 
 export async function createMembership({ tenantId, userId, roleId, status = "active" }) {
-  const role = roleId ? await getRoleById(roleId) : null;
+  const roleKey = await resolveRoleKey(roleId);
   const rows = await supabaseRestRequest({
     path: "tenant_memberships",
     method: "POST",
@@ -269,7 +275,7 @@ export async function createMembership({ tenantId, userId, roleId, status = "act
       tenant_id: tenantId,
       user_id: userId,
       role_id: roleId,
-      role: role?.key ?? null,
+      role: roleKey,
       status,
     },
   });
@@ -317,7 +323,7 @@ export async function countActiveMembershipsByRoleId({ tenantId, roleId }) {
 }
 
 export async function updateMembershipRole({ membershipId, roleId }) {
-  const role = roleId ? await getRoleById(roleId) : null;
+  const roleKey = await resolveRoleKey(roleId);
   const rows = await supabaseRestRequest({
     path: "tenant_memberships",
     method: "PATCH",
@@ -327,7 +333,7 @@ export async function updateMembershipRole({ membershipId, roleId }) {
     prefer: "return=representation",
     body: {
       role_id: roleId,
-      role: role?.key ?? null,
+      role: roleKey,
     },
   });
   return firstRow(rows);
@@ -356,7 +362,7 @@ export async function createInvite({
   invitedBy,
   rawToken,
 }) {
-  const invitedRole = invitedRoleId ? await getRoleById(invitedRoleId) : null;
+  const invitedRoleKey = await resolveRoleKey(invitedRoleId);
   const rows = await supabaseRestRequest({
     path: "tenant_invites",
     method: "POST",
@@ -364,7 +370,7 @@ export async function createInvite({
     body: {
       tenant_id: tenantId,
       token_hash: inviteTokenHash(rawToken),
-      role: invitedRole?.key ?? null,
+      role: invitedRoleKey,
       invited_role_id: invitedRoleId,
       email_optional: emailOptional ?? null,
       expires_at: expiresAt,

@@ -604,16 +604,7 @@ export function registerGameSocketHandlers({
     }
   }
 
-  io.on("connection", (socket) => {
-    console.log(`[connect] ${socket.userId}`);
-    socket.join(`user:${socket.userId}`);
-    const stopAuthCheckpoint = createSocketAuthCheckpoint({
-      socket,
-      verifySocketToken,
-      authCheckpointMs,
-      authCheckpointTimeoutMs,
-    });
-
+  function registerWorldHandlers(socket) {
     socket.on("world:join", async (payload, ack) => {
       await joinWorld({ socket, payload, ack });
     });
@@ -626,7 +617,9 @@ export function registerGameSocketHandlers({
     socket.on("world:change", async (payload, ack) => {
       await changeWorld({ socket, payload, ack });
     });
+  }
 
+  function registerAuthHandlers(socket) {
     socket.on("auth:refresh", async (payload, ack) => {
       const token = parseCheckpointToken(payload);
       const isValid = await verifySocketTokenForUser({ socket, token, verifySocketToken });
@@ -637,7 +630,9 @@ export function registerGameSocketHandlers({
       }
       if (typeof ack === "function") ack({ ok: true });
     });
+  }
 
+  function registerRuntimeHandlers(socket) {
     socket.on("player:input", (payload) => {
       const worldContext = getSocketWorldPlayers(runtime, socketWorldIndex, socket.id);
       if (!worldContext || !payload || typeof payload !== "object") return;
@@ -668,7 +663,9 @@ export function registerGameSocketHandlers({
         clientTimeMs,
       };
     });
+  }
 
+  function registerVoiceAndChatHandlers(socket) {
     socket.on("player:voice", ({ muted }) => {
       const worldContext = getSocketWorldPlayers(runtime, socketWorldIndex, socket.id);
       if (!worldContext || typeof muted !== "boolean") return;
@@ -709,7 +706,9 @@ export function registerGameSocketHandlers({
         timestamp: now,
       });
     });
+  }
 
+  function registerTagAndTeleportHandlers(socket) {
     socket.on("tag:send", (payload, ack) => {
       const worldContext = getSocketWorldPlayers(runtime, socketWorldIndex, socket.id);
       if (!worldContext) {
@@ -841,7 +840,9 @@ export function registerGameSocketHandlers({
       if (result.ok && result.status === "accepted") runtime.emitWorldSnapshotForWorld(io, worldContext.worldId);
       if (typeof ack === "function") ack(result);
     });
+  }
 
+  function registerDisconnectHandler(socket, stopAuthCheckpoint) {
     socket.on("disconnect", () => {
       stopAuthCheckpoint();
       const worldId = socketWorldIndex.get(socket.id) ?? null;
@@ -872,5 +873,23 @@ export function registerGameSocketHandlers({
         socketWorldIndex,
       });
     });
+  }
+
+  io.on("connection", (socket) => {
+    console.log(`[connect] ${socket.userId}`);
+    socket.join(`user:${socket.userId}`);
+    const stopAuthCheckpoint = createSocketAuthCheckpoint({
+      socket,
+      verifySocketToken,
+      authCheckpointMs,
+      authCheckpointTimeoutMs,
+    });
+
+    registerWorldHandlers(socket);
+    registerAuthHandlers(socket);
+    registerRuntimeHandlers(socket);
+    registerVoiceAndChatHandlers(socket);
+    registerTagAndTeleportHandlers(socket);
+    registerDisconnectHandler(socket, stopAuthCheckpoint);
   });
 }

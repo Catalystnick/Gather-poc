@@ -179,6 +179,35 @@ async function ensureTenantPermission({ actorUserId, tenantId, permissionKey, er
   })
 }
 
+async function ensureMemberManagementAccess({ actorUserId, tenantId }) {
+  await ensureTenantExists(tenantId)
+  await ensureTenantPermission({
+    actorUserId,
+    tenantId,
+    permissionKey: 'tenant.members.manage',
+    errorCode: 'tenant_members_forbidden',
+  })
+}
+
+async function getActiveMembershipOrThrow({ tenantId, targetUserId }) {
+  const membership = await getActiveMembershipForTenantUser({
+    tenantId,
+    userId: targetUserId,
+  })
+  if (membership?.id) return membership
+
+  throw new TenantServiceError('Active membership not found', {
+    status: 404,
+    code: 'membership_not_found',
+    details: { tenantId, userId: targetUserId },
+  })
+}
+
+function clearMembershipContexts(actorUserId, targetUserId) {
+  clearCachedContext(actorUserId)
+  clearCachedContext(targetUserId)
+}
+
 async function assertNotLastAdminDemotion({ tenantId, membership, nextRoleId }) {
   const adminRoleId = await requireRoleId('admin')
   const isAdminMembership = membership.role_id === adminRoleId
@@ -427,26 +456,16 @@ export async function updateTenantMemberRole({
 }) {
   const normalizedTenantId = requireTenantId(tenantId)
   const normalizedTargetUserId = requireUserId(targetUserId, 'target_user_id')
-  await ensureTenantExists(normalizedTenantId)
-  await ensureTenantPermission({
+  await ensureMemberManagementAccess({
     actorUserId,
     tenantId: normalizedTenantId,
-    permissionKey: 'tenant.members.manage',
-    errorCode: 'tenant_members_forbidden',
   })
 
   const nextRole = await requireRole(roleKey)
-  const membership = await getActiveMembershipForTenantUser({
+  const membership = await getActiveMembershipOrThrow({
     tenantId: normalizedTenantId,
-    userId: normalizedTargetUserId,
+    targetUserId: normalizedTargetUserId,
   })
-  if (!membership?.id) {
-    throw new TenantServiceError('Active membership not found', {
-      status: 404,
-      code: 'membership_not_found',
-      details: { tenantId: normalizedTenantId, userId: normalizedTargetUserId },
-    })
-  }
 
   if (membership.role_id !== nextRole.id) {
     await assertNotLastAdminDemotion({
@@ -460,8 +479,7 @@ export async function updateTenantMemberRole({
     })
   }
 
-  clearCachedContext(actorUserId)
-  clearCachedContext(normalizedTargetUserId)
+  clearMembershipContexts(actorUserId, normalizedTargetUserId)
 
   return {
     tenantId: normalizedTenantId,
@@ -477,25 +495,15 @@ export async function removeTenantMember({
 }) {
   const normalizedTenantId = requireTenantId(tenantId)
   const normalizedTargetUserId = requireUserId(targetUserId, 'target_user_id')
-  await ensureTenantExists(normalizedTenantId)
-  await ensureTenantPermission({
+  await ensureMemberManagementAccess({
     actorUserId,
     tenantId: normalizedTenantId,
-    permissionKey: 'tenant.members.manage',
-    errorCode: 'tenant_members_forbidden',
   })
 
-  const membership = await getActiveMembershipForTenantUser({
+  const membership = await getActiveMembershipOrThrow({
     tenantId: normalizedTenantId,
-    userId: normalizedTargetUserId,
+    targetUserId: normalizedTargetUserId,
   })
-  if (!membership?.id) {
-    throw new TenantServiceError('Active membership not found', {
-      status: 404,
-      code: 'membership_not_found',
-      details: { tenantId: normalizedTenantId, userId: normalizedTargetUserId },
-    })
-  }
 
   await assertNotLastAdminDemotion({
     tenantId: normalizedTenantId,
@@ -508,8 +516,7 @@ export async function removeTenantMember({
     status: 'disabled',
   })
 
-  clearCachedContext(actorUserId)
-  clearCachedContext(normalizedTargetUserId)
+  clearMembershipContexts(actorUserId, normalizedTargetUserId)
 
   return {
     tenantId: normalizedTenantId,
