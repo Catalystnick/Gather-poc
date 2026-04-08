@@ -57,6 +57,10 @@ type SocketEventHandlers = {
   onPlayerJoined: (joinedPlayer: SnapshotPlayerPayload) => void
   onWorldSnapshot: (snapshot: WorldSnapshotPayload) => void
   onWorldChanged: (event: { worldId?: unknown; worldKey?: unknown; instanceType?: unknown }) => void
+  onAuthCheckpoint: (
+    event: { requestedAt?: unknown },
+    ack?: (payload: { token: string }) => void,
+  ) => void
   onPlayerVoice: (event: { id: string; muted: boolean }) => void
   onPlayerLeft: (event: { id: string }) => void
 }
@@ -181,6 +185,7 @@ function bindSocketEventHandlers(
   socketClient.on('player:joined', handlers.onPlayerJoined)
   socketClient.on('world:snapshot', handlers.onWorldSnapshot)
   socketClient.on('world:changed', handlers.onWorldChanged)
+  socketClient.on('auth:checkpoint', handlers.onAuthCheckpoint)
   socketClient.on('player:voice', handlers.onPlayerVoice)
   socketClient.on('player:left', handlers.onPlayerLeft)
 
@@ -192,6 +197,7 @@ function bindSocketEventHandlers(
     socketClient.off('player:joined', handlers.onPlayerJoined)
     socketClient.off('world:snapshot', handlers.onWorldSnapshot)
     socketClient.off('world:changed', handlers.onWorldChanged)
+    socketClient.off('auth:checkpoint', handlers.onAuthCheckpoint)
     socketClient.off('player:voice', handlers.onPlayerVoice)
     socketClient.off('player:left', handlers.onPlayerLeft)
   }
@@ -350,6 +356,14 @@ export function useSocket(player: Player, accessToken: string, userId: string, i
     })
   }, [])
 
+  const handleAuthCheckpoint = useCallback((
+    _event: { requestedAt?: unknown },
+    ack?: (payload: { token: string }) => void,
+  ) => {
+    if (typeof ack !== 'function') return
+    ack({ token: tokenRef.current })
+  }, [])
+
   const handlePlayerLeft = useCallback(({ id }: { id: string }) => {
     setRemotePlayers((prev) => {
       const next = new Map(prev)
@@ -361,12 +375,16 @@ export function useSocket(player: Player, accessToken: string, userId: string, i
   useEffect(() => {
     // Keep token hot-swapped for future reconnect attempts.
     tokenRef.current = accessToken
-    if (socketRef.current) {
-      socketRef.current.auth = { token: accessToken }
+    const socketClient = socketRef.current
+    if (socketClient) {
+      socketClient.auth = { token: accessToken }
       // Socket.IO auth middleware rejections do not always recover automatically.
       // If we were previously denied due to missing/stale token, retry with the fresh token.
-      if (!socketRef.current.connected && accessToken.trim().length > 0) {
-        socketRef.current.connect()
+      if (!socketClient.connected && accessToken.trim().length > 0) {
+        socketClient.connect()
+      }
+      if (socketClient.connected) {
+        socketClient.emit('auth:refresh', { token: accessToken })
       }
     }
   }, [accessToken])
@@ -415,6 +433,7 @@ export function useSocket(player: Player, accessToken: string, userId: string, i
       onPlayerJoined: handlePlayerJoined,
       onWorldSnapshot: handleWorldSnapshot,
       onWorldChanged: handleWorldChanged,
+      onAuthCheckpoint: handleAuthCheckpoint,
       onPlayerVoice: handlePlayerVoice,
       onPlayerLeft: handlePlayerLeft,
     })
@@ -435,6 +454,7 @@ export function useSocket(player: Player, accessToken: string, userId: string, i
     handleRoomState,
     handleWorldChanged,
     handleWorldSnapshot,
+    handleAuthCheckpoint,
     joinCurrentPlayer,
   ]) // connect only when authenticated identity + token are ready
 

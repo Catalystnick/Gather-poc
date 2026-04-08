@@ -57,7 +57,7 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - Phase B: implemented in code (world-scoped runtime + `world:join`/`world:change` + temporary portal mapping).
 - Phase C: implemented in code (tenant/world-scoped teleport store + teleport policy guards + instance-scoped cleanup).
 - Phase D: implemented in code (world-scoped LiveKit room naming + token world access validation).
-- Phase E: not implemented yet.
+- Phase E: implemented in code (world-scoped disconnect teardown + optional socket auth checkpoints + token refresh re-validation).
 - Phase F: partially implemented (`POST /tenant/bootstrap` and tenant settings update endpoint with permission middleware exist; invite/member admin endpoints and frontend admin settings UI still pending).
 - Phase G: not implemented yet.
 
@@ -271,6 +271,23 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - No global `player:left` leaks.
 - Long sessions remain secure without silent indefinite trust.
 
+### Status (2026-04-08)
+
+- Implemented in code:
+  - world-scoped disconnect teardown already active in socket handlers:
+    - resolves world from socket index, removes world player state, clears world-scoped teleport requests, emits `player:left` only to `world:{worldId}`, emits world snapshot only for that world.
+    - file: `server/socket/registerGameSocketHandlers.js`
+  - server now supports optional periodic auth checkpoints for connected sockets:
+    - verifies checkpoint token against Supabase JWKS and rejects subject mismatch/invalid token.
+    - controlled by env vars:
+      - `SOCKET_AUTH_CHECKPOINT_MS` (set `>0` to enable, default `0` disabled)
+      - `SOCKET_AUTH_CHECKPOINT_TIMEOUT_MS` (ack timeout, default `10000`)
+    - files: `server/index.js`, `server/socket/registerGameSocketHandlers.js`, `server/middleware/requireAuth.js`
+  - client now handles server checkpoint requests and emits refresh validation:
+    - responds to `auth:checkpoint` with the latest token.
+    - sends `auth:refresh` when access token updates while connected.
+    - file: `client/src/hooks/useSocket.ts`
+
 ## 3.6 Phase F - Admin APIs + UX Integration
 
 ### Goals
@@ -289,6 +306,7 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - Add client `TenantContext` bootstrap gate.
 - Add admin settings UI for policy toggles backed by `tenant_access_configs`.
 - Add world transition loading state tied to `world:change` ack.
+- Add in-game logout action in the authenticated gameplay shell.
 
 ### Acceptance
 
@@ -310,6 +328,9 @@ These decisions close ambiguities raised in architecture review issue 13.x.
   - `PATCH /tenants/:tenantId/members/:userId/role`
   - `DELETE /tenants/:tenantId/members/:userId`
   - frontend admin policy settings UI
+- Implemented in client UX:
+  - in-game `Log out` button wired to `AuthContext.signOut()` in gameplay route shell:
+    - file: `client/src/pages/GameRoute.tsx`
 
 ## 3.7 Phase G - Hardening, Rollout, and Cleanup
 

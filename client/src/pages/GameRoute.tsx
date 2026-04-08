@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Leva } from "leva";
 import { useNavigate, useParams } from "react-router-dom";
+import { useAuth } from "../contexts/AuthContext";
 import AvatarSelect from "../components/ui/AvatarSelect";
 import World from "../components/scene/World";
 import {
@@ -27,10 +28,12 @@ function loadSaved(): Player | null {
 
 /** Gate into avatar selection until a local player profile is chosen. */
 export default function GameRoute() {
+  const { signOut } = useAuth();
   const navigate = useNavigate();
   const { worldKey } = useParams<{ worldKey?: string }>();
   const [player, setPlayer] = useState<Player | null>(null);
   const [activeWorldKey, setActiveWorldKey] = useState<string | null>(null);
+  const [isSigningOut, setIsSigningOut] = useState(false);
 
   // Install permission/audio priming hooks as soon as the game route loads so
   // the very first user gesture can unlock audio and trigger notification prompt.
@@ -53,6 +56,17 @@ export default function GameRoute() {
     setPlayer(nextPlayer);
   }
 
+  async function handleSignOut() {
+    if (isSigningOut) return;
+    setIsSigningOut(true);
+    try {
+      await signOut();
+      navigate("/login", { replace: true });
+    } finally {
+      setIsSigningOut(false);
+    }
+  }
+
   if (!player) {
     return <AvatarSelect initial={loadSaved()} onJoin={handleJoin} />;
   }
@@ -60,6 +74,14 @@ export default function GameRoute() {
   return (
     <>
       <Leva hidden={import.meta.env.PROD} />
+      <button
+        type="button"
+        onClick={handleSignOut}
+        disabled={isSigningOut}
+        style={logoutButtonStyle}
+      >
+        {isSigningOut ? "Signing out..." : "Log out"}
+      </button>
       <World
         player={player}
         initialWorldKey={worldKey?.trim() || null}
@@ -68,3 +90,17 @@ export default function GameRoute() {
     </>
   );
 }
+
+const logoutButtonStyle: React.CSSProperties = {
+  position: "fixed",
+  top: 16,
+  right: 16,
+  zIndex: 1000,
+  padding: "8px 12px",
+  borderRadius: 8,
+  border: "1px solid #5d6775",
+  background: "#1d2430",
+  color: "#ffffff",
+  fontSize: 14,
+  cursor: "pointer",
+};

@@ -8,7 +8,7 @@ if (!SUPABASE_URL) throw new Error("[auth] SUPABASE_URL is not set");
 const JWKS = createRemoteJWKSet(new URL(`${SUPABASE_URL}/auth/v1/.well-known/jwks.json`));
 
 /** Verify Supabase JWT and enforce authenticated role claims. */
-async function verifyToken(token) {
+export async function verifySupabaseToken(token) {
   const { payload } = await jwtVerify(token, JWKS, {
     issuer: `${SUPABASE_URL}/auth/v1`,
   });
@@ -25,7 +25,7 @@ export async function requireAuth(req, res, next) {
   const token = req.headers.authorization?.split("Bearer ")[1];
   if (!token) return res.status(401).json({ error: "Unauthorized" });
   try {
-    req.user = await verifyToken(token);
+    req.user = await verifySupabaseToken(token);
     next();
   } catch (err) {
     return res.status(401).json({ error: err.message || "Invalid or expired token" });
@@ -42,7 +42,7 @@ export async function requireAuthSocket(socket, next) {
     return next(new Error("Unauthorized"));
   }
   try {
-    const payload = await verifyToken(token);
+    const payload = await verifySupabaseToken(token);
     socket.userId = payload.sub;
     console.log("[auth:socket] accepted | userId:", socket.userId);
     next();

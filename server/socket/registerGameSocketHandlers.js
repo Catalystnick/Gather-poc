@@ -202,6 +202,65 @@ function removeSocketFromWorld({ io, socket, runtime, socketWorldIndex }) {
   return { worldId };
 }
 
+function normalizePositiveInteger(value, fallback) {
+  if (!Number.isFinite(value)) return fallback;
+  const rounded = Math.floor(Number(value));
+  if (rounded <= 0) return fallback;
+  return rounded;
+}
+
+function parseCheckpointToken(payload) {
+  if (!payload || typeof payload !== "object") return "";
+  if (typeof payload.token !== "string") return "";
+  return payload.token.trim();
+}
+
+async function verifySocketTokenForUser({ socket, token, verifySocketToken }) {
+  if (!token) return false;
+  if (typeof verifySocketToken !== "function") return false;
+  try {
+    const payload = await verifySocketToken(token);
+    return payload?.sub === socket.userId;
+  } catch (error) {
+    return false;
+  }
+}
+
+function createSocketAuthCheckpoint({
+  socket,
+  verifySocketToken,
+  authCheckpointMs,
+  authCheckpointTimeoutMs,
+}) {
+  if (typeof verifySocketToken !== "function") return () => {};
+
+  const intervalMs = normalizePositiveInteger(authCheckpointMs, 0);
+  if (!intervalMs) return () => {};
+
+  const timeoutMs = normalizePositiveInteger(authCheckpointTimeoutMs, 10_000);
+  let authCheckInFlight = false;
+
+  const timerId = setInterval(() => {
+    if (authCheckInFlight || !socket.connected) return;
+    authCheckInFlight = true;
+    socket.timeout(timeoutMs).emit("auth:checkpoint", { requestedAt: Date.now() }, async (err, payload) => {
+      authCheckInFlight = false;
+      if (err) {
+        socket.disconnect(true);
+        return;
+      }
+
+      const token = parseCheckpointToken(payload);
+      const isValid = await verifySocketTokenForUser({ socket, token, verifySocketToken });
+      if (!isValid) socket.disconnect(true);
+    });
+  }, intervalMs);
+
+  return () => {
+    clearInterval(timerId);
+  };
+}
+
 async function resolveSocketTenantContext({ socket, resolveTenantContext, enableTenantSocketContext }) {
   if (!enableTenantSocketContext) return null;
   try {
@@ -346,6 +405,9 @@ export function registerGameSocketHandlers({
   getWorldById,
   getWorldByKey,
   enableTenantSocketContext,
+  verifySocketToken,
+  authCheckpointMs,
+  authCheckpointTimeoutMs,
 }) {
   const socketWorldIndex = new Map();
 
@@ -545,6 +607,12 @@ export function registerGameSocketHandlers({
   io.on("connection", (socket) => {
     console.log(`[connect] ${socket.userId}`);
     socket.join(`user:${socket.userId}`);
+    const stopAuthCheckpoint = createSocketAuthCheckpoint({
+      socket,
+      verifySocketToken,
+      authCheckpointMs,
+      authCheckpointTimeoutMs,
+    });
 
     socket.on("world:join", async (payload, ack) => {
       await joinWorld({ socket, payload, ack });
@@ -557,6 +625,17 @@ export function registerGameSocketHandlers({
 
     socket.on("world:change", async (payload, ack) => {
       await changeWorld({ socket, payload, ack });
+    });
+
+    socket.on("auth:refresh", async (payload, ack) => {
+      const token = parseCheckpointToken(payload);
+      const isValid = await verifySocketTokenForUser({ socket, token, verifySocketToken });
+      if (!isValid) {
+        if (typeof ack === "function") ack({ ok: false, error: "invalid_token" });
+        socket.disconnect(true);
+        return;
+      }
+      if (typeof ack === "function") ack({ ok: true });
     });
 
     socket.on("player:input", (payload) => {
@@ -764,6 +843,7 @@ export function registerGameSocketHandlers({
     });
 
     socket.on("disconnect", () => {
+      stopAuthCheckpoint();
       const worldId = socketWorldIndex.get(socket.id) ?? null;
       const clearedTeleportRequests = worldId
         ? teleportRequests.clearForUserInWorld({ worldId, userId: socket.userId })
