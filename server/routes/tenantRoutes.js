@@ -5,7 +5,10 @@ import { TenantServiceError } from '../tenant/errors.js'
 import {
   bootstrapCreateTenant,
   bootstrapJoinInvite,
+  createTenantInvite,
+  removeTenantMember,
   resolveTenantContext,
+  updateTenantMemberRole,
   updateTenantSettings,
 } from '../tenant/tenantService.js'
 
@@ -82,5 +85,62 @@ tenantRouter.patch(
     return sendTenantError(res, error)
   }
 })
+
+tenantRouter.post(
+  '/:tenantId/invites',
+  requireAuth,
+  requireTenantPermission('tenant.invite.create'),
+  async (req, res) => {
+    try {
+      const invite = await createTenantInvite({
+        actorUserId: req.user.sub,
+        tenantId: req.params.tenantId,
+        roleKey: req.body?.roleKey,
+        emailOptional: req.body?.emailOptional,
+        expiresInHours: req.body?.expiresInHours,
+      })
+      return res.status(201).json(invite)
+    } catch (error) {
+      return sendTenantError(res, error)
+    }
+  }
+)
+
+tenantRouter.patch(
+  '/:tenantId/members/:userId/role',
+  requireAuth,
+  requireTenantPermission('tenant.members.manage'),
+  async (req, res) => {
+    try {
+      const membership = await updateTenantMemberRole({
+        actorUserId: req.user.sub,
+        tenantId: req.params.tenantId,
+        targetUserId: req.params.userId,
+        roleKey: req.body?.roleKey,
+      })
+      return res.json(membership)
+    } catch (error) {
+      return sendTenantError(res, error)
+    }
+  }
+)
+
+tenantRouter.delete(
+  '/:tenantId/members/:userId',
+  requireAuth,
+  requireTenantPermission('tenant.members.manage'),
+  async (req, res) => {
+    try {
+      const membership = await removeTenantMember({
+        actorUserId: req.user.sub,
+        tenantId: req.params.tenantId,
+        targetUserId: req.params.userId,
+      })
+      return res.json(membership)
+    } catch (error) {
+      return sendTenantError(res, error)
+    }
+  }
+)
 
 export default tenantRouter

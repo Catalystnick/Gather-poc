@@ -260,6 +260,7 @@ export async function createTenant({ name, createdBy, accessPolicy = "public" })
 }
 
 export async function createMembership({ tenantId, userId, roleId, status = "active" }) {
+  const role = roleId ? await getRoleById(roleId) : null;
   const rows = await supabaseRestRequest({
     path: "tenant_memberships",
     method: "POST",
@@ -268,6 +269,7 @@ export async function createMembership({ tenantId, userId, roleId, status = "act
       tenant_id: tenantId,
       user_id: userId,
       role_id: roleId,
+      role: role?.key ?? null,
       status,
     },
   });
@@ -291,11 +293,83 @@ export async function getActiveMembershipForTenantUser({ tenantId, userId }) {
   const rows = await supabaseRestRequest({
     path: "tenant_memberships",
     query: {
-      select: "id,role_id",
+      select: "id,tenant_id,user_id,role,role_id,status",
       tenant_id: `eq.${tenantId}`,
       user_id: `eq.${userId}`,
       status: "eq.active",
       limit: 1,
+    },
+  });
+  return firstRow(rows);
+}
+
+export async function countActiveMembershipsByRoleId({ tenantId, roleId }) {
+  const rows = await supabaseRestRequest({
+    path: "tenant_memberships",
+    query: {
+      select: "id",
+      tenant_id: `eq.${tenantId}`,
+      role_id: `eq.${roleId}`,
+      status: "eq.active",
+    },
+  });
+  return Array.isArray(rows) ? rows.length : 0;
+}
+
+export async function updateMembershipRole({ membershipId, roleId }) {
+  const role = roleId ? await getRoleById(roleId) : null;
+  const rows = await supabaseRestRequest({
+    path: "tenant_memberships",
+    method: "PATCH",
+    query: {
+      id: `eq.${membershipId}`,
+    },
+    prefer: "return=representation",
+    body: {
+      role_id: roleId,
+      role: role?.key ?? null,
+    },
+  });
+  return firstRow(rows);
+}
+
+export async function updateMembershipStatus({ membershipId, status }) {
+  const rows = await supabaseRestRequest({
+    path: "tenant_memberships",
+    method: "PATCH",
+    query: {
+      id: `eq.${membershipId}`,
+    },
+    prefer: "return=representation",
+    body: {
+      status,
+    },
+  });
+  return firstRow(rows);
+}
+
+export async function createInvite({
+  tenantId,
+  invitedRoleId,
+  emailOptional,
+  expiresAt,
+  invitedBy,
+  rawToken,
+}) {
+  const invitedRole = invitedRoleId ? await getRoleById(invitedRoleId) : null;
+  const rows = await supabaseRestRequest({
+    path: "tenant_invites",
+    method: "POST",
+    prefer: "return=representation",
+    body: {
+      tenant_id: tenantId,
+      token_hash: inviteTokenHash(rawToken),
+      role: invitedRole?.key ?? null,
+      invited_role_id: invitedRoleId,
+      email_optional: emailOptional ?? null,
+      expires_at: expiresAt,
+      invited_by: invitedBy,
+      status: "pending",
     },
   });
   return firstRow(rows);

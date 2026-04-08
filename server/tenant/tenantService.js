@@ -1,6 +1,9 @@
 import { TenantServiceError } from './errors.js'
+import { randomBytes } from 'node:crypto'
 import { toClientTenantAccessConfig } from './accessConfigMapper.js'
 import {
+  countActiveMembershipsByRoleId,
+  createInvite,
   createTenantAccessConfig,
   createInteriorWorld,
   createMembership,
@@ -19,6 +22,8 @@ import {
   getWorldById as getWorldByIdFromRepository,
   listPermissionKeysByRoleId,
   redeemInvite,
+  updateMembershipRole,
+  updateMembershipStatus,
   updateTenantAccessConfig,
   updateTenantAccessPolicy,
 } from './tenantRepository.js'
@@ -63,6 +68,10 @@ function clearCachedContext(userId) {
 
 function requireTenantId(value) {
   return requireNonEmptyText(value, 'tenant_id', 120)
+}
+
+function requireUserId(value, fieldName = 'user_id') {
+  return requireNonEmptyText(value, fieldName, 120)
 }
 
 function normalizeAccessPolicy(value) {
@@ -136,6 +145,56 @@ async function requireRoleId(roleKey) {
     status: 500,
     code: 'role_seed_missing',
     details: { roleKey },
+  })
+}
+
+async function requireRole(roleKey) {
+  const normalizedRoleKey = requireNonEmptyText(roleKey, 'role_key', 64).toLowerCase()
+  const role = await getRoleByKey(normalizedRoleKey)
+  if (role?.id) return role
+  throw new TenantServiceError('Role not found', {
+    status: 400,
+    code: 'role_not_found',
+    details: { roleKey: normalizedRoleKey },
+  })
+}
+
+async function ensureTenantExists(tenantId) {
+  const tenant = await getTenantById(tenantId)
+  if (tenant) return tenant
+  throw new TenantServiceError('Tenant not found', {
+    status: 404,
+    code: 'tenant_not_found',
+    details: { tenantId },
+  })
+}
+
+async function ensureTenantPermission({ actorUserId, tenantId, permissionKey, errorCode }) {
+  const allowed = await hasTenantPermission(actorUserId, tenantId, permissionKey)
+  if (allowed) return
+  throw new TenantServiceError('Forbidden', {
+    status: 403,
+    code: errorCode,
+    details: { tenantId, permissionKey },
+  })
+}
+
+async function assertNotLastAdminDemotion({ tenantId, membership, nextRoleId }) {
+  const adminRoleId = await requireRoleId('admin')
+  const isAdminMembership = membership.role_id === adminRoleId
+  const remainsAdmin = nextRoleId === adminRoleId
+  if (!isAdminMembership || remainsAdmin) return
+
+  const activeAdminCount = await countActiveMembershipsByRoleId({
+    tenantId,
+    roleId: adminRoleId,
+  })
+  if (activeAdminCount > 1) return
+
+  throw new TenantServiceError('Cannot remove the last tenant admin', {
+    status: 409,
+    code: 'last_admin_required',
+    details: { tenantId },
   })
 }
 
@@ -256,27 +315,13 @@ export async function updateTenantSettings({ actorUserId, tenantId, accessPolicy
     })
   }
 
-  const tenant = await getTenantById(normalizedTenantId)
-  if (!tenant) {
-    throw new TenantServiceError('Tenant not found', {
-      status: 404,
-      code: 'tenant_not_found',
-      details: { tenantId: normalizedTenantId },
-    })
-  }
-
-  const allowed = await hasTenantPermission(
+  const tenant = await ensureTenantExists(normalizedTenantId)
+  await ensureTenantPermission({
     actorUserId,
-    normalizedTenantId,
-    'tenant.settings.manage',
-  )
-  if (!allowed) {
-    throw new TenantServiceError('Forbidden', {
-      status: 403,
-      code: 'tenant_settings_forbidden',
-      details: { tenantId: normalizedTenantId },
-    })
-  }
+    tenantId: normalizedTenantId,
+    permissionKey: 'tenant.settings.manage',
+    errorCode: 'tenant_settings_forbidden',
+  })
 
   if (nextAccessPolicy) {
     await updateTenantAccessPolicy({
@@ -302,6 +347,174 @@ export async function updateTenantSettings({ actorUserId, tenantId, accessPolicy
     tenantId: normalizedTenantId,
     accessPolicy: nextAccessPolicy ?? tenant.access_policy,
     accessConfig: toClientTenantAccessConfig(currentAccessConfig),
+  }
+}
+
+function normalizeInviteEmail(value) {
+  if (value === undefined || value === null || value === '') return null
+  const email = requireNonEmptyText(value, 'email', 320).toLowerCase()
+  if (!email.includes('@')) {
+    throw new TenantServiceError('email is invalid', {
+      status: 400,
+      code: 'email_invalid',
+    })
+  }
+  return email
+}
+
+function normalizeInviteExpiryHours(value) {
+  if (value === undefined || value === null || value === '') return 168
+  if (!Number.isInteger(value)) {
+    throw new TenantServiceError('expires_in_hours must be an integer', {
+      status: 400,
+      code: 'expires_in_hours_invalid',
+    })
+  }
+  if (value < 1 || value > 24 * 30) {
+    throw new TenantServiceError('expires_in_hours must be between 1 and 720', {
+      status: 400,
+      code: 'expires_in_hours_out_of_range',
+    })
+  }
+  return value
+}
+
+export async function createTenantInvite({
+  actorUserId,
+  tenantId,
+  roleKey,
+  emailOptional,
+  expiresInHours,
+}) {
+  const normalizedTenantId = requireTenantId(tenantId)
+  await ensureTenantExists(normalizedTenantId)
+  await ensureTenantPermission({
+    actorUserId,
+    tenantId: normalizedTenantId,
+    permissionKey: 'tenant.invite.create',
+    errorCode: 'tenant_invite_forbidden',
+  })
+
+  const role = await requireRole(roleKey ?? 'member')
+  const inviteEmail = normalizeInviteEmail(emailOptional)
+  const validForHours = normalizeInviteExpiryHours(expiresInHours)
+  const inviteToken = randomBytes(24).toString('base64url')
+  const expiresAt = new Date(Date.now() + validForHours * 60 * 60 * 1000).toISOString()
+
+  await createInvite({
+    tenantId: normalizedTenantId,
+    invitedRoleId: role.id,
+    emailOptional: inviteEmail,
+    expiresAt,
+    invitedBy: actorUserId,
+    rawToken: inviteToken,
+  })
+
+  return {
+    tenantId: normalizedTenantId,
+    inviteToken,
+    roleKey: role.key,
+    emailOptional: inviteEmail,
+    expiresAt,
+  }
+}
+
+export async function updateTenantMemberRole({
+  actorUserId,
+  tenantId,
+  targetUserId,
+  roleKey,
+}) {
+  const normalizedTenantId = requireTenantId(tenantId)
+  const normalizedTargetUserId = requireUserId(targetUserId, 'target_user_id')
+  await ensureTenantExists(normalizedTenantId)
+  await ensureTenantPermission({
+    actorUserId,
+    tenantId: normalizedTenantId,
+    permissionKey: 'tenant.members.manage',
+    errorCode: 'tenant_members_forbidden',
+  })
+
+  const nextRole = await requireRole(roleKey)
+  const membership = await getActiveMembershipForTenantUser({
+    tenantId: normalizedTenantId,
+    userId: normalizedTargetUserId,
+  })
+  if (!membership?.id) {
+    throw new TenantServiceError('Active membership not found', {
+      status: 404,
+      code: 'membership_not_found',
+      details: { tenantId: normalizedTenantId, userId: normalizedTargetUserId },
+    })
+  }
+
+  if (membership.role_id !== nextRole.id) {
+    await assertNotLastAdminDemotion({
+      tenantId: normalizedTenantId,
+      membership,
+      nextRoleId: nextRole.id,
+    })
+    await updateMembershipRole({
+      membershipId: membership.id,
+      roleId: nextRole.id,
+    })
+  }
+
+  clearCachedContext(actorUserId)
+  clearCachedContext(normalizedTargetUserId)
+
+  return {
+    tenantId: normalizedTenantId,
+    userId: normalizedTargetUserId,
+    roleKey: nextRole.key,
+  }
+}
+
+export async function removeTenantMember({
+  actorUserId,
+  tenantId,
+  targetUserId,
+}) {
+  const normalizedTenantId = requireTenantId(tenantId)
+  const normalizedTargetUserId = requireUserId(targetUserId, 'target_user_id')
+  await ensureTenantExists(normalizedTenantId)
+  await ensureTenantPermission({
+    actorUserId,
+    tenantId: normalizedTenantId,
+    permissionKey: 'tenant.members.manage',
+    errorCode: 'tenant_members_forbidden',
+  })
+
+  const membership = await getActiveMembershipForTenantUser({
+    tenantId: normalizedTenantId,
+    userId: normalizedTargetUserId,
+  })
+  if (!membership?.id) {
+    throw new TenantServiceError('Active membership not found', {
+      status: 404,
+      code: 'membership_not_found',
+      details: { tenantId: normalizedTenantId, userId: normalizedTargetUserId },
+    })
+  }
+
+  await assertNotLastAdminDemotion({
+    tenantId: normalizedTenantId,
+    membership,
+    nextRoleId: null,
+  })
+
+  await updateMembershipStatus({
+    membershipId: membership.id,
+    status: 'disabled',
+  })
+
+  clearCachedContext(actorUserId)
+  clearCachedContext(normalizedTargetUserId)
+
+  return {
+    tenantId: normalizedTenantId,
+    userId: normalizedTargetUserId,
+    status: 'disabled',
   }
 }
 

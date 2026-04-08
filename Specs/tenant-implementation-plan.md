@@ -58,7 +58,7 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - Phase C: implemented in code (tenant/world-scoped teleport store + teleport policy guards + instance-scoped cleanup).
 - Phase D: implemented in code (world-scoped LiveKit room naming + token world access validation).
 - Phase E: implemented in code (world-scoped disconnect teardown + optional socket auth checkpoints + token refresh re-validation).
-- Phase F: partially implemented (`POST /tenant/bootstrap` and tenant settings update endpoint with permission middleware exist; invite/member admin endpoints and frontend admin settings UI still pending).
+- Phase F: partially implemented (bootstrap + tenant settings + invite/member admin endpoints + in-game logout implemented; frontend admin policy settings UI and tenant bootstrap gate still pending).
 - Phase G: not implemented yet.
 
 ## 3.1 Phase A - Foundations (Schema, RLS, Tenant Service)
@@ -299,10 +299,10 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 
 - Implement/finish:
   - `POST /tenant/bootstrap`
-  - `POST /tenants/:tenantId/invites`
-  - `PATCH /tenants/:tenantId/members/:userId/role`
-  - `DELETE /tenants/:tenantId/members/:userId`
-  - `PATCH /tenants/:tenantId/settings` (includes `tenant_access_configs` updates)
+  - `POST /tenant/:tenantId/invites`
+  - `PATCH /tenant/:tenantId/members/:userId/role`
+  - `DELETE /tenant/:tenantId/members/:userId`
+  - `PATCH /tenant/:tenantId/settings` (includes `tenant_access_configs` updates)
 - Add client `TenantContext` bootstrap gate.
 - Add admin settings UI for policy toggles backed by `tenant_access_configs`.
 - Add world transition loading state tied to `world:change` ack.
@@ -323,14 +323,22 @@ These decisions close ambiguities raised in architecture review issue 13.x.
     - `requireTenantPermission('tenant.settings.manage')`: `server/middleware/requireTenantPermission.js`
   - service-level validation + permission checks + config persistence:
     - `updateTenantSettings(...)`: `server/tenant/tenantService.js`
-- Pending:
-  - `POST /tenants/:tenantId/invites`
-  - `PATCH /tenants/:tenantId/members/:userId/role`
-  - `DELETE /tenants/:tenantId/members/:userId`
-  - frontend admin policy settings UI
 - Implemented in client UX:
   - in-game `Log out` button wired to `AuthContext.signOut()` in gameplay route shell:
     - file: `client/src/pages/GameRoute.tsx`
+- Implemented in code:
+  - `POST /tenant/:tenantId/invites` with server-side permission checks and role-based invite creation:
+    - route: `server/routes/tenantRoutes.js`
+    - service: `createTenantInvite(...)` in `server/tenant/tenantService.js`
+  - `PATCH /tenant/:tenantId/members/:userId/role` with server-side permission checks and last-admin safety:
+    - route: `server/routes/tenantRoutes.js`
+    - service: `updateTenantMemberRole(...)` in `server/tenant/tenantService.js`
+  - `DELETE /tenant/:tenantId/members/:userId` using membership disable flow with last-admin safety:
+    - route: `server/routes/tenantRoutes.js`
+    - service: `removeTenantMember(...)` in `server/tenant/tenantService.js`
+- Pending:
+  - client `TenantContext` bootstrap gate
+  - frontend admin policy settings UI
 
 ## 3.7 Phase G - Hardening, Rollout, and Cleanup
 
