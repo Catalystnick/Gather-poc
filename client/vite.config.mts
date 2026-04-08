@@ -85,6 +85,10 @@ export default defineConfig({
         target: "http://localhost:3001",
         changeOrigin: true,
       },
+      "/tenant": {
+        target: "http://localhost:3001",
+        changeOrigin: true,
+      },
     },
     // AudioWorklet scripts loaded via audioContext.audioWorklet.addModule()
     // require Cross-Origin isolation headers on some browsers. These are safe

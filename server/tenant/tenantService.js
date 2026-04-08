@@ -208,6 +208,17 @@ function clearMembershipContexts(actorUserId, targetUserId) {
   clearCachedContext(targetUserId)
 }
 
+function isDevAdminToolEnabled() {
+  const env = String(process.env.NODE_ENV ?? 'development').trim().toLowerCase()
+  if (env === 'production') return false
+
+  const raw = process.env.ENABLE_DEV_TENANT_ADMIN_TOOL
+  if (raw === undefined) return true
+
+  const normalized = String(raw).trim().toLowerCase()
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on'
+}
+
 async function assertNotLastAdminDemotion({ tenantId, membership, nextRoleId }) {
   const adminRoleId = await requireRoleId('admin')
   const isAdminMembership = membership.role_id === adminRoleId
@@ -523,6 +534,50 @@ export async function removeTenantMember({
     userId: normalizedTargetUserId,
     status: 'disabled',
   }
+}
+
+export async function grantSelfAdminForDev({ userId, tenantName }) {
+  if (!isDevAdminToolEnabled()) {
+    throw new TenantServiceError('Dev admin tool is disabled', {
+      status: 404,
+      code: 'dev_tool_disabled',
+    })
+  }
+
+  const adminRoleId = await requireRoleId('admin')
+  const memberRoleId = await requireRoleId('member')
+  const existingMembership = await getActiveMembershipByUserId(userId)
+
+  if (!existingMembership) {
+    const defaultTenantName = `Dev Tenant ${String(userId).slice(0, 8)}`
+    return bootstrapCreateTenant({
+      userId,
+      tenantName: typeof tenantName === 'string' && tenantName.trim() ? tenantName.trim() : defaultTenantName,
+    })
+  }
+
+  const membership = await getActiveMembershipForTenantUser({
+    tenantId: existingMembership.tenant_id,
+    userId,
+  })
+  if (!membership?.id) {
+    throw new TenantServiceError('Active membership not found', {
+      status: 404,
+      code: 'membership_not_found',
+      details: { userId, tenantId: existingMembership.tenant_id },
+    })
+  }
+
+  const nextRoleId = membership.role_id === adminRoleId
+    ? memberRoleId
+    : adminRoleId
+
+  await updateMembershipRole({
+    membershipId: membership.id,
+    roleId: nextRoleId,
+  })
+  clearCachedContext(userId)
+  return resolveTenantContext(userId)
 }
 
 export async function bootstrapCreateTenant({ userId, tenantName }) {

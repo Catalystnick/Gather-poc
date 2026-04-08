@@ -6,6 +6,7 @@ import {
   bootstrapCreateTenant,
   bootstrapJoinInvite,
   createTenantInvite,
+  grantSelfAdminForDev,
   removeTenantMember,
   resolveTenantContext,
   updateTenantMemberRole,
@@ -63,6 +64,18 @@ tenantRouter.post('/bootstrap', requireAuth, async (req, res) => {
       error: 'invalid_mode',
       message: 'mode must be create_tenant or join_invite',
     })
+  } catch (error) {
+    return sendTenantError(res, error)
+  }
+})
+
+tenantRouter.post('/dev/grant-admin-self', requireAuth, async (req, res) => {
+  try {
+    const context = await grantSelfAdminForDev({
+      userId: req.user.sub,
+      tenantName: req.body?.tenantName,
+    })
+    return res.json(context)
   } catch (error) {
     return sendTenantError(res, error)
   }

@@ -55,6 +55,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // other Supabase methods inside can cause a dead-lock.
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       console.log('[auth] event:', event, '| user:', session?.user?.email ?? null, '| provider:', session?.user?.app_metadata?.provider ?? null)
+      console.log('[auth] access_token:', session?.access_token ?? null)
       if (event === 'TOKEN_REFRESHED') console.log('[auth] token refreshed, expires_at:', session?.expires_at)
       if (event === 'SIGNED_OUT') console.log('[auth] session cleared from storage')
       setSession(session)

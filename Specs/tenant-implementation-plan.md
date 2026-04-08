@@ -58,7 +58,7 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - Phase C: implemented in code (tenant/world-scoped teleport store + teleport policy guards + instance-scoped cleanup).
 - Phase D: implemented in code (world-scoped LiveKit room naming + token world access validation).
 - Phase E: implemented in code (world-scoped disconnect teardown + optional socket auth checkpoints + token refresh re-validation).
-- Phase F: partially implemented (bootstrap + tenant settings + invite/member admin endpoints + in-game logout implemented; frontend admin policy settings UI and tenant bootstrap gate still pending).
+- Phase F: partially implemented (bootstrap + tenant settings + invite/member admin endpoints + in-game logout + tenant bootstrap gate + frontend policy settings UI implemented; invite/member admin frontend UI still pending).
 - Phase G: not implemented yet.
 
 ## 3.1 Phase A - Foundations (Schema, RLS, Tenant Service)
@@ -326,6 +326,11 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - Implemented in client UX:
   - in-game `Log out` button wired to `AuthContext.signOut()` in gameplay route shell:
     - file: `client/src/pages/GameRoute.tsx`
+  - tenant bootstrap gate now blocks gameplay route until tenant context resolves:
+    - users without membership are shown create-tenant / join-invite flow in-game shell.
+    - files: `client/src/pages/GameRoute.tsx`, `client/src/hooks/useTenantContext.ts`
+  - tenant admin settings panel now allows updating access policy + `tenant_access_configs` toggles from frontend:
+    - file: `client/src/pages/GameRoute.tsx`
 - Implemented in code:
   - `POST /tenant/:tenantId/invites` with server-side permission checks and role-based invite creation:
     - route: `server/routes/tenantRoutes.js`
@@ -337,8 +342,7 @@ These decisions close ambiguities raised in architecture review issue 13.x.
     - route: `server/routes/tenantRoutes.js`
     - service: `removeTenantMember(...)` in `server/tenant/tenantService.js`
 - Pending:
-  - client `TenantContext` bootstrap gate
-  - frontend admin policy settings UI
+  - frontend invite/member management UI
 
 ## 3.7 Phase G - Hardening, Rollout, and Cleanup
 
