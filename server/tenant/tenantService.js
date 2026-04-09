@@ -20,6 +20,8 @@ import {
   getTenantById,
   getWorldByKey as getWorldByKeyFromRepository,
   getWorldById as getWorldByIdFromRepository,
+  listActiveMembershipsByUserId,
+  listActiveMembershipsForTenant,
   listPermissionKeysByRoleId,
   redeemInvite,
   updateMembershipRole,
@@ -316,6 +318,45 @@ export async function getWorldById(worldId) {
 
 export async function getWorldByKey(worldKey) {
   return getWorldByKeyFromRepository(worldKey)
+}
+
+export async function listJoinedTenants(userId) {
+  const normalizedUserId = requireUserId(userId)
+  const rows = await listActiveMembershipsByUserId(normalizedUserId)
+  return rows
+    .filter((row) => row?.tenant?.id)
+    .map((row) => ({
+      tenantId: row.tenant.id,
+      tenantName: row.tenant.name,
+      tenantSlug: row.tenant.slug,
+      accessPolicy: row.tenant.access_policy,
+      roleKey: row.role?.key ?? null,
+      roleName: row.role?.name ?? null,
+      joinedAt: row.created_at ?? null,
+      updatedAt: row.updated_at ?? null,
+    }))
+}
+
+export async function listTenantMembers({ actorUserId, tenantId }) {
+  const normalizedActorUserId = requireUserId(actorUserId, 'actor_user_id')
+  const normalizedTenantId = requireTenantId(tenantId)
+  await ensureTenantPermission({
+    actorUserId: normalizedActorUserId,
+    tenantId: normalizedTenantId,
+    permissionKey: 'tenant.members.manage',
+    errorCode: 'tenant_members_forbidden',
+  })
+
+  const memberships = await listActiveMembershipsForTenant(normalizedTenantId)
+  return memberships.map((membership) => ({
+    membershipId: membership.id,
+    userId: membership.user_id,
+    roleKey: membership.role_key ?? null,
+    roleName: membership.role_name ?? null,
+    status: membership.status,
+    createdAt: membership.created_at ?? null,
+    updatedAt: membership.updated_at ?? null,
+  }))
 }
 
 export async function isTenantAdmin(userId, tenantId) {

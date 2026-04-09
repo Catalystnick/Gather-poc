@@ -83,6 +83,62 @@ export async function getActiveMembershipByUserId(userId) {
   return firstRow(rows);
 }
 
+export async function listActiveMembershipsByUserId(userId) {
+  const membershipRows = await supabaseRestRequest({
+    path: "tenant_memberships",
+    query: {
+      select: "tenant_id,role_id,status,created_at,updated_at",
+      user_id: `eq.${userId}`,
+      status: "eq.active",
+      order: "updated_at.desc",
+    },
+  });
+
+  if (!Array.isArray(membershipRows) || !membershipRows.length) return [];
+
+  const tenantIds = [...new Set(membershipRows.map((row) => row.tenant_id).filter(Boolean))];
+  const roleIds = [...new Set(membershipRows.map((row) => row.role_id).filter(Boolean))];
+
+  const tenantRows = tenantIds.length
+    ? await supabaseRestRequest({
+      path: "tenants",
+      query: {
+        select: "id,name,slug,access_policy",
+        id: `in.(${tenantIds.join(",")})`,
+      },
+    })
+    : [];
+
+  const roleRows = roleIds.length
+    ? await supabaseRestRequest({
+      path: "roles",
+      query: {
+        select: "id,key,name",
+        id: `in.(${roleIds.join(",")})`,
+      },
+    })
+    : [];
+
+  const tenantById = new Map(
+    (Array.isArray(tenantRows) ? tenantRows : [])
+      .map((tenant) => [tenant.id, tenant]),
+  );
+  const roleById = new Map(
+    (Array.isArray(roleRows) ? roleRows : [])
+      .map((role) => [role.id, role]),
+  );
+
+  return membershipRows.map((membership) => ({
+    tenant_id: membership.tenant_id,
+    role_id: membership.role_id,
+    status: membership.status,
+    created_at: membership.created_at,
+    updated_at: membership.updated_at,
+    tenant: tenantById.get(membership.tenant_id) ?? null,
+    role: roleById.get(membership.role_id) ?? null,
+  }));
+}
+
 export async function getTenantById(tenantId) {
   const rows = await supabaseRestRequest({
     path: "tenants",
@@ -307,6 +363,44 @@ export async function getActiveMembershipForTenantUser({ tenantId, userId }) {
     },
   });
   return firstRow(rows);
+}
+
+export async function listActiveMembershipsForTenant(tenantId) {
+  const membershipRows = await supabaseRestRequest({
+    path: "tenant_memberships",
+    query: {
+      select: "id,tenant_id,user_id,role,role_id,status,created_at,updated_at",
+      tenant_id: `eq.${tenantId}`,
+      status: "eq.active",
+      order: "created_at.asc",
+    },
+  });
+
+  if (!Array.isArray(membershipRows) || !membershipRows.length) return [];
+
+  const roleIds = [...new Set(membershipRows.map((membership) => membership.role_id).filter(Boolean))];
+  const roleRows = roleIds.length
+    ? await supabaseRestRequest({
+      path: "roles",
+      query: {
+        select: "id,key,name",
+        id: `in.(${roleIds.join(",")})`,
+      },
+    })
+    : [];
+  const roleById = new Map(
+    (Array.isArray(roleRows) ? roleRows : [])
+      .map((role) => [role.id, role]),
+  );
+
+  return membershipRows.map((membership) => {
+    const role = roleById.get(membership.role_id) ?? null;
+    return {
+      ...membership,
+      role_key: role?.key ?? membership.role ?? null,
+      role_name: role?.name ?? null,
+    };
+  });
 }
 
 export async function countActiveMembershipsByRoleId({ tenantId, roleId }) {

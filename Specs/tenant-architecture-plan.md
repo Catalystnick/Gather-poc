@@ -123,6 +123,9 @@ flowchart TB
 - **UX boundary = gameplay vs administration**:
   - gameplay (`/game`) keeps only in-game policy toggles for authorized admins.
   - organization onboarding, invite issuance, member/role management are dashboard concerns (`/dashboard`).
+- **Commercial onboarding model (recommended for production)**:
+  - auth first, then workspace creation gated by successful billing/provisioning.
+  - current implementation follows the same flow shape but does not yet enforce a billing gate before tenant creation.
 - **Durable tenant metadata = Postgres**; runtime movement/presence remains in-memory for PoC.
 
 ---
@@ -409,7 +412,7 @@ sequenceDiagram
     API->>DB: lookup membership + tenant + mainPlazaWorld + homeInteriorWorld
     API-->>C: tenant context (mainPlazaWorldId, homeInteriorWorldId)
   else no membership
-    C->>API: POST /tenant/bootstrap
+    C->>API: POST /tenant/onboarding
     Note over C,API: mode=create_tenant OR join_invite
     API->>DB: create/redeem membership + ensure tenant interior world + main plaza exists
     API-->>C: tenant context (mainPlazaWorldId, homeInteriorWorldId)
@@ -486,17 +489,17 @@ sequenceDiagram
   participant DB as Postgres
   participant U as Invited User
 
-  A->>API: POST /tenants/{tenantId}/invites
+  A->>API: POST /tenant/{tenantId}/invites
   API->>T: verify admin rights
   T-->>API: allowed
   API->>DB: create invite token
   API-->>A: invite link/token
 
-  U->>API: POST /tenant/bootstrap (invite token)
+  U->>API: POST /tenant/onboarding (invite token)
   API->>DB: validate + redeem invite
   API-->>U: membership active + home interior world
 
-  A->>API: PATCH /tenants/{tenantId}/members/{userId}/role
+  A->>API: PATCH /tenant/{tenantId}/members/{userId}/role
   API->>T: verify admin rights
   T-->>API: allowed
   API->>DB: update membership.role_id
@@ -650,7 +653,7 @@ Add a `TenantContext` after auth:
 
 Route behavior:
 
-- authenticated but no membership -> show tenant bootstrap screen.
+- authenticated but no membership -> show tenant onboarding on `/dashboard`.
 - authenticated + membership -> allow `/game` entry.
 
 ## 8.3 Socket + hooks
@@ -684,7 +687,7 @@ Route behavior:
 
 - Tenant admins manage org policy toggles from a frontend settings screen.
 - Frontend reads current values from tenant settings context (`GET /tenant/me` and/or tenant settings payload).
-- Frontend writes changes via `PATCH /tenants/:tenantId/settings`.
+- Frontend writes changes via `PATCH /tenant/:tenantId/settings`.
 - Backend is authoritative:
   - verifies tenant ownership + admin permission,
   - validates allowed config fields,
@@ -696,12 +699,15 @@ Route behavior:
 
 - `GET /tenant/me`
   - returns tenant, role key, permission set, `mainPlazaWorldId`, `homeInteriorWorldId`, and current defaults.
-- `POST /tenant/bootstrap`
+- `POST /tenant/onboarding` (preferred)
   - `{ mode: "create_tenant", tenantName }` or `{ mode: "join_invite", inviteToken }`.
-- `POST /tenants/:tenantId/invites` (admin)
-- `PATCH /tenants/:tenantId/members/:userId/role` (admin)
-- `DELETE /tenants/:tenantId/members/:userId` (admin)
-- `PATCH /tenants/:tenantId/settings` (admin, includes `access_policy` and `tenant_access_configs` fields; intended for frontend admin policy UI).
+- `POST /tenant/bootstrap` (backward-compatible alias)
+- `GET /tenant/memberships` (dashboard: list organizations joined by current user)
+- `POST /tenant/:tenantId/invites` (admin)
+- `PATCH /tenant/:tenantId/members/:userId/role` (admin)
+- `DELETE /tenant/:tenantId/members/:userId` (admin)
+- `GET /tenant/:tenantId/members` (admin/member manager dashboard list)
+- `PATCH /tenant/:tenantId/settings` (admin, includes `access_policy` and `tenant_access_configs` fields; intended for frontend admin policy UI).
 
 ## 9.2 Socket
 

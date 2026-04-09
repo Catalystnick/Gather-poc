@@ -7,6 +7,8 @@ import {
   createTenantInvite,
   grantSelfAdminForDev,
   joinTenantFromInvite,
+  listJoinedTenants,
+  listTenantMembers,
   removeTenantMember,
   resolveTenantContext,
   updateTenantMemberRole,
@@ -35,6 +37,15 @@ tenantRouter.get('/me', requireAuth, async (req, res) => {
   try {
     const context = await resolveTenantContext(req.user.sub)
     return res.json(context)
+  } catch (error) {
+    return sendTenantError(res, error)
+  }
+})
+
+tenantRouter.get('/memberships', requireAuth, async (req, res) => {
+  try {
+    const memberships = await listJoinedTenants(req.user.sub)
+    return res.json({ memberships })
   } catch (error) {
     return sendTenantError(res, error)
   }
@@ -155,6 +166,23 @@ tenantRouter.delete(
         targetUserId: req.params.userId,
       })
       return res.json(membership)
+    } catch (error) {
+      return sendTenantError(res, error)
+    }
+  }
+)
+
+tenantRouter.get(
+  '/:tenantId/members',
+  requireAuth,
+  requireTenantPermission('tenant.members.manage'),
+  async (req, res) => {
+    try {
+      const members = await listTenantMembers({
+        actorUserId: req.user.sub,
+        tenantId: req.params.tenantId,
+      })
+      return res.json({ members })
     } catch (error) {
       return sendTenantError(res, error)
     }

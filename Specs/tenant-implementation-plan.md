@@ -13,11 +13,13 @@ In this plan, `tenant` means a tenant organization/workspace owner.
 - Instance-scoped snapshot/chat/tag/teleport behavior.
 - Interior-only voice room namespacing + token authorization.
 - RLS enablement and rollout hardening.
+- Dashboard-first tenant onboarding without billing enforcement.
 
 ### Out of scope for this plan
 
 - Map format migration concerns (LDtk/Tiled pipeline) are intentionally excluded for now.
 - Redis multi-node ownership and plaza sharding (covered in [`performance-and-scaling.md`](./performance-and-scaling.md)).
+- Billing integration and payment-gated workspace/org creation.
 
 ## 2. v1 Behavioral Decisions (Locked)
 
@@ -58,7 +60,8 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - Phase C: implemented in code (tenant/world-scoped teleport store + teleport policy guards + instance-scoped cleanup).
 - Phase D: implemented in code (world-scoped LiveKit room naming + token world access validation).
 - Phase E: implemented in code (world-scoped disconnect teardown + optional socket auth checkpoints + token refresh re-validation).
-- Phase F: partially implemented (bootstrap + tenant settings + invite/member admin endpoints + in-game logout + tenant bootstrap gate + frontend policy settings UI implemented; invite/member admin frontend UI still pending).
+- Phase F: partially implemented (bootstrap + tenant settings + invite/member admin endpoints + in-game logout + tenant bootstrap gate + dashboard route + dashboard org/user list UI implemented; invite/member mutation frontend UI still pending).
+- Note: production-style billing gate is not implemented yet; tenant creation currently does not require completed payment.
 - Phase G: not implemented yet.
 
 ## 3.1 Phase A - Foundations (Schema, RLS, Tenant Service)
@@ -298,8 +301,10 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 ### Work items
 
 - Implement/finish:
-  - `POST /tenant/bootstrap`
+  - `POST /tenant/onboarding` (`/tenant/bootstrap` remains alias)
+  - `GET /tenant/memberships`
   - `POST /tenant/:tenantId/invites`
+  - `GET /tenant/:tenantId/members`
   - `PATCH /tenant/:tenantId/members/:userId/role`
   - `DELETE /tenant/:tenantId/members/:userId`
   - `PATCH /tenant/:tenantId/settings` (includes `tenant_access_configs` updates)
@@ -332,12 +337,22 @@ These decisions close ambiguities raised in architecture review issue 13.x.
     - file: `client/src/pages/GameRoute.tsx`
   - new protected dashboard route now hosts onboarding and non-game tenant admin flows:
     - file: `client/src/pages/DashboardRoute.tsx`
+  - dashboard now shows organizations joined and current-tenant users list (permission-gated):
+    - file: `client/src/pages/DashboardRoute.tsx`
   - tenant admin settings panel now allows updating access policy + `tenant_access_configs` toggles from frontend:
     - file: `client/src/pages/GameRoute.tsx`
 - Implemented in code:
+  - `GET /tenant/memberships` for current user's joined organizations:
+    - route: `server/routes/tenantRoutes.js`
+    - service: `listJoinedTenants(...)` in `server/tenant/tenantService.js`
+    - repository: `listActiveMembershipsByUserId(...)` in `server/tenant/tenantRepository.js`
   - `POST /tenant/:tenantId/invites` with server-side permission checks and role-based invite creation:
     - route: `server/routes/tenantRoutes.js`
     - service: `createTenantInvite(...)` in `server/tenant/tenantService.js`
+  - `GET /tenant/:tenantId/members` with server-side permission checks:
+    - route: `server/routes/tenantRoutes.js`
+    - service: `listTenantMembers(...)` in `server/tenant/tenantService.js`
+    - repository: `listActiveMembershipsForTenant(...)` in `server/tenant/tenantRepository.js`
   - `PATCH /tenant/:tenantId/members/:userId/role` with server-side permission checks and last-admin safety:
     - route: `server/routes/tenantRoutes.js`
     - service: `updateTenantMemberRole(...)` in `server/tenant/tenantService.js`
@@ -345,7 +360,7 @@ These decisions close ambiguities raised in architecture review issue 13.x.
     - route: `server/routes/tenantRoutes.js`
     - service: `removeTenantMember(...)` in `server/tenant/tenantService.js`
 - Pending:
-  - frontend invite/member management UI
+  - frontend invite/member mutation UI (create invite, change role, remove member actions)
 
 ## 3.7 Phase G - Hardening, Rollout, and Cleanup
 

@@ -1,7 +1,7 @@
 import { normalizeInput } from "../world/movementMath.js";
 import { handleTagSend, handleTeleportRequest, handleTeleportRespond } from "../chat/commandRouter.js";
 
-//Temp for testing, zone values will come from Tiled map data
+//TODO: Temp for testing, zone values will come from Tiled map data
 const TEMP_PORTAL_WORLD_BY_ZONE = {
   dev: "interior_world_dev",
   design: "interior_world_design",
@@ -67,19 +67,16 @@ function normalizeTargetUserIds(rawTargetUserIds) {
 }
 
 function isActiveInteriorMemberForWorld(tenantContext, worldId) {
-  if (!tenantContext?.hasMembership) return false;
-  if (!tenantContext.homeTenantId) return false;
-  if (!tenantContext.homeInteriorWorldId) return false;
+  if (!tenantContext?.hasMembership || !tenantContext.homeTenantId || !tenantContext.homeInteriorWorldId) {
+    return false;
+  }
+
   return tenantContext.homeInteriorWorldId === worldId;
 }
 
-function resolveTeleportScope({ worldId, tenantContext, enableTenantSocketContext }) {
+function resolveTeleportScope({ worldId, tenantContext }) {
   if (isMainPlazaWorld(worldId, tenantContext)) {
     return { ok: false, error: "teleport:not_allowed_in_plaza" };
-  }
-
-  if (!enableTenantSocketContext) {
-    return { ok: true, tenantId: "legacy" };
   }
 
   if (!isActiveInteriorMemberForWorld(tenantContext, worldId)) {
@@ -226,12 +223,7 @@ async function verifySocketTokenForUser({ socket, token, verifySocketToken }) {
   }
 }
 
-function createSocketAuthCheckpoint({
-  socket,
-  verifySocketToken,
-  authCheckpointMs,
-  authCheckpointTimeoutMs,
-}) {
+function createSocketAuthCheckpoint({ socket, verifySocketToken, authCheckpointMs, authCheckpointTimeoutMs }) {
   if (typeof verifySocketToken !== "function") return () => {};
 
   const intervalMs = normalizePositiveInteger(authCheckpointMs, 0);
@@ -261,8 +253,7 @@ function createSocketAuthCheckpoint({
   };
 }
 
-async function resolveSocketTenantContext({ socket, resolveTenantContext, enableTenantSocketContext }) {
-  if (!enableTenantSocketContext) return null;
+async function resolveSocketTenantContext({ socket, resolveTenantContext }) {
   try {
     const context = await resolveTenantContext(socket.userId);
     socket.data.tenantContext = context;
@@ -273,8 +264,7 @@ async function resolveSocketTenantContext({ socket, resolveTenantContext, enable
   }
 }
 
-async function authorizeWorldAccess({ socket, worldId, canAccessWorld, enableTenantSocketContext }) {
-  if (!enableTenantSocketContext) return true;
+async function authorizeWorldAccess({ socket, worldId, canAccessWorld }) {
   try {
     return await canAccessWorld(socket.userId, worldId);
   } catch (error) {
@@ -292,26 +282,11 @@ async function resolveTargetTenantContext({ targetId, resolveTenantContext }) {
   }
 }
 
-async function filterTeleportTargets({
-  worldId,
-  senderUserId,
-  senderTenantContext,
-  targetUserIds,
-  worldPlayers,
-  resolveTenantContext,
-  enableTenantSocketContext,
-}) {
+async function filterTeleportTargets({ worldId, senderUserId, senderTenantContext, targetUserIds, worldPlayers, resolveTenantContext }) {
   const requestedTargetIds = normalizeTargetUserIds(targetUserIds);
-  if (!enableTenantSocketContext) {
-    return { allowedTargetIds: requestedTargetIds, rejected: [] };
-  }
 
-  const onlineTargetIds = requestedTargetIds.filter(
-    (targetId) => targetId !== senderUserId && worldPlayers.has(targetId),
-  );
-  const targetContexts = await Promise.all(
-    onlineTargetIds.map((targetId) => resolveTargetTenantContext({ targetId, resolveTenantContext })),
-  );
+  const onlineTargetIds = requestedTargetIds.filter((targetId) => targetId !== senderUserId && worldPlayers.has(targetId));
+  const targetContexts = await Promise.all(onlineTargetIds.map((targetId) => resolveTargetTenantContext({ targetId, resolveTenantContext })));
 
   const blockedTargetIds = new Set();
   const rejected = [];
@@ -404,7 +379,6 @@ export function registerGameSocketHandlers({
   canAccessWorld,
   getWorldById,
   getWorldByKey,
-  enableTenantSocketContext,
   verifySocketToken,
   authCheckpointMs,
   authCheckpointTimeoutMs,
@@ -415,9 +389,8 @@ export function registerGameSocketHandlers({
     const tenantContext = await resolveSocketTenantContext({
       socket,
       resolveTenantContext,
-      enableTenantSocketContext,
     });
-    if (enableTenantSocketContext && !tenantContext) {
+    if (!tenantContext) {
       if (typeof ack === "function") ack({ error: "tenant_context_unavailable" });
       return;
     }
@@ -437,7 +410,6 @@ export function registerGameSocketHandlers({
       socket,
       worldId: targetWorld.id,
       canAccessWorld,
-      enableTenantSocketContext,
     });
     if (!hasAccess) {
       if (typeof ack === "function") ack({ error: "world_access_denied" });
@@ -490,9 +462,8 @@ export function registerGameSocketHandlers({
     const tenantContext = await resolveSocketTenantContext({
       socket,
       resolveTenantContext,
-      enableTenantSocketContext,
     });
-    if (enableTenantSocketContext && !tenantContext) {
+    if (!tenantContext) {
       if (typeof ack === "function") ack({ error: "tenant_context_unavailable" });
       return;
     }
@@ -511,9 +482,7 @@ export function registerGameSocketHandlers({
       getWorldByKey,
     });
     if (!targetWorld?.id) {
-      const errorCode = requestedTargetWorldId || requestedTargetWorldKey
-        ? "world_not_found"
-        : "target_world_required";
+      const errorCode = requestedTargetWorldId || requestedTargetWorldKey ? "world_not_found" : "target_world_required";
       if (typeof ack === "function") ack({ error: errorCode });
       return;
     }
@@ -536,7 +505,6 @@ export function registerGameSocketHandlers({
       socket,
       worldId: targetWorld.id,
       canAccessWorld,
-      enableTenantSocketContext,
     });
     if (!hasAccess) {
       if (typeof ack === "function") ack({ error: "world_access_denied" });
@@ -734,9 +702,8 @@ export function registerGameSocketHandlers({
       const senderTenantContext = await resolveSocketTenantContext({
         socket,
         resolveTenantContext,
-        enableTenantSocketContext,
       });
-      if (enableTenantSocketContext && !senderTenantContext) {
+      if (!senderTenantContext) {
         if (typeof ack === "function") ack({ ok: false, error: "tenant_context_unavailable" });
         return;
       }
@@ -744,7 +711,6 @@ export function registerGameSocketHandlers({
       const teleportScope = resolveTeleportScope({
         worldId: worldContext.worldId,
         tenantContext: senderTenantContext,
-        enableTenantSocketContext,
       });
       if (!teleportScope.ok) {
         if (typeof ack === "function") ack({ ok: false, error: teleportScope.error });
@@ -758,7 +724,6 @@ export function registerGameSocketHandlers({
         targetUserIds: payload?.targetUserIds,
         worldPlayers: worldContext.players,
         resolveTenantContext,
-        enableTenantSocketContext,
       });
 
       if (!targetFilter.allowedTargetIds.length && targetFilter.rejected.length) {
@@ -806,9 +771,8 @@ export function registerGameSocketHandlers({
       const responderTenantContext = await resolveSocketTenantContext({
         socket,
         resolveTenantContext,
-        enableTenantSocketContext,
       });
-      if (enableTenantSocketContext && !responderTenantContext) {
+      if (!responderTenantContext) {
         if (typeof ack === "function") ack({ ok: false, error: "tenant_context_unavailable" });
         return;
       }
@@ -816,7 +780,6 @@ export function registerGameSocketHandlers({
       const teleportScope = resolveTeleportScope({
         worldId: worldContext.worldId,
         tenantContext: responderTenantContext,
-        enableTenantSocketContext,
       });
       if (!teleportScope.ok) {
         if (typeof ack === "function") ack({ ok: false, error: teleportScope.error });
@@ -846,9 +809,7 @@ export function registerGameSocketHandlers({
     socket.on("disconnect", () => {
       stopAuthCheckpoint();
       const worldId = socketWorldIndex.get(socket.id) ?? null;
-      const clearedTeleportRequests = worldId
-        ? teleportRequests.clearForUserInWorld({ worldId, userId: socket.userId })
-        : [];
+      const clearedTeleportRequests = worldId ? teleportRequests.clearForUserInWorld({ worldId, userId: socket.userId }) : [];
       for (const request of clearedTeleportRequests) {
         if (request.senderId === socket.userId) {
           io.to(`user:${request.targetId}`).emit("teleport:request_cleared", {

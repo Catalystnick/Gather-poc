@@ -24,7 +24,6 @@ function readBooleanEnv(name, defaultValue) {
 }
 
 const ENABLE_TENANT_ROUTES = readBooleanEnv('ENABLE_TENANT_ROUTES', true)
-const ENABLE_TENANT_SOCKET_CONTEXT = readBooleanEnv('ENABLE_TENANT_SOCKET_CONTEXT', true)
 const SOCKET_AUTH_CHECKPOINT_MS = Number(process.env.SOCKET_AUTH_CHECKPOINT_MS ?? 0)
 const SOCKET_AUTH_CHECKPOINT_TIMEOUT_MS = Number(process.env.SOCKET_AUTH_CHECKPOINT_TIMEOUT_MS ?? 10_000)
 
@@ -88,7 +87,6 @@ registerGameSocketHandlers({
   canAccessWorld,
   getWorldById,
   getWorldByKey,
-  enableTenantSocketContext: ENABLE_TENANT_SOCKET_CONTEXT,
   verifySocketToken: verifySupabaseToken,
   authCheckpointMs: Number.isFinite(SOCKET_AUTH_CHECKPOINT_MS) ? SOCKET_AUTH_CHECKPOINT_MS : 0,
   authCheckpointTimeoutMs: Number.isFinite(SOCKET_AUTH_CHECKPOINT_TIMEOUT_MS) ? SOCKET_AUTH_CHECKPOINT_TIMEOUT_MS : 10_000,
