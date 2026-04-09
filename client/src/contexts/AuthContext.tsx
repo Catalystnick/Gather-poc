@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { AuthError, Session, User } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
+import { clearPendingNextPath, savePendingNextPath } from '../utils/nextPath'
 
 interface AuthContextValue {
   user: User | null
@@ -8,8 +9,8 @@ interface AuthContextValue {
   isLoading: boolean
   isAuthenticated: boolean
   signInWithPassword: (email: string, password: string) => Promise<AuthError | null>
-  signUpWithEmail: (email: string, password: string) => Promise<AuthError | null>
-  signInWithGoogle: () => Promise<void>
+  signUpWithEmail: (email: string, password: string, nextPath?: string) => Promise<AuthError | null>
+  signInWithGoogle: (nextPath?: string) => Promise<void>
   signOut: () => Promise<void>
   resendVerification: (email: string) => Promise<AuthError | null>
 }
@@ -22,7 +23,9 @@ function getAuthRedirectUrl(): string {
   const envBase = (import.meta.env.VITE_APP_URL as string | undefined)?.trim()
   const normalizedRuntimeBase = runtimeBase.replace(/\/$/, '')
 
-  if (!envBase) return `${normalizedRuntimeBase}/auth/callback`
+  if (!envBase) {
+    return new URL('/auth/callback', normalizedRuntimeBase).toString()
+  }
 
   try {
     const normalizedEnvBase = new URL(envBase).toString().replace(/\/$/, '')
@@ -31,13 +34,13 @@ function getAuthRedirectUrl(): string {
 
     if (envOrigin !== runtimeOrigin) {
       console.warn('[auth] ignoring VITE_APP_URL due to origin mismatch:', normalizedEnvBase, '!=', runtimeOrigin)
-      return `${normalizedRuntimeBase}/auth/callback`
+      return new URL('/auth/callback', normalizedRuntimeBase).toString()
     }
 
-    return `${normalizedEnvBase}/auth/callback`
+    return new URL('/auth/callback', normalizedEnvBase).toString()
   } catch {
     console.warn('[auth] ignoring invalid VITE_APP_URL:', envBase)
-    return `${normalizedRuntimeBase}/auth/callback`
+    return new URL('/auth/callback', normalizedRuntimeBase).toString()
   }
 }
 
@@ -87,15 +90,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   /** Register a new account and trigger verification email flow. */
-  const signUpWithEmail = useCallback(async (email: string, password: string) => {
+  const signUpWithEmail = useCallback(async (email: string, password: string, nextPath?: string) => {
     console.log('[auth] signUpWithEmail →', email)
-    const { error } = await supabase.auth.signUp({ email, password, options: { emailRedirectTo: getAuthRedirectUrl() } })
+    savePendingNextPath(nextPath)
+    // Embed nextPath in the redirect URL so email verification links work even when
+    // opened in a different browser where localStorage is unavailable.
+    const safeNext = typeof nextPath === 'string' && nextPath.startsWith('/') && !nextPath.startsWith('//') ? nextPath : ''
+    const emailRedirectTo = safeNext
+      ? `${getAuthRedirectUrl()}?next=${encodeURIComponent(safeNext)}`
+      : getAuthRedirectUrl()
+    const { error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: { emailRedirectTo },
+    })
     if (error) console.warn('[auth] signUpWithEmail error:', error.message)
     return error
   }, [])
 
   /** Start Google OAuth login via Supabase redirect flow. */
-  const signInWithGoogle = useCallback(async () => {
+  const signInWithGoogle = useCallback(async (nextPath?: string) => {
+    savePendingNextPath(nextPath)
     const redirectTo = getAuthRedirectUrl()
     console.log('[auth] signInWithGoogle → redirectTo:', redirectTo)
     await supabase.auth.signInWithOAuth({
@@ -107,6 +122,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   /** Sign out the current user session. */
   const signOut = useCallback(async () => {
     console.log('[auth] signOut')
+    clearPendingNextPath()
     await supabase.auth.signOut()
   }, [])
 

@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
+import { buildPathWithNext, clearPendingNextPath, readNextPathFromSearch, readPendingNextPath } from '../utils/nextPath'
 
 /** Account creation page with email verification handoff. */
 export default function SignupPage() {
-  const { signUpWithEmail, signInWithGoogle, isAuthenticated } = useAuth()
+  const { signUpWithEmail, signInWithGoogle, isAuthenticated, isLoading: authLoading } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
+  const nextPath = readNextPathFromSearch(location.search, readPendingNextPath('/game'))
 
   const [email, setEmail]             = useState('')
   const [password, setPassword]       = useState('')
@@ -14,8 +17,10 @@ export default function SignupPage() {
   const [isSubmitting, setSubmitting] = useState(false)
 
   useEffect(() => {
-    if (isAuthenticated) navigate('/game', { replace: true })
-  }, [isAuthenticated, navigate])
+    if (!isAuthenticated) return
+    clearPendingNextPath()
+    navigate(nextPath, { replace: true })
+  }, [isAuthenticated, navigate, nextPath])
 
   const handleEmailSignup = useCallback(async (event: React.FormEvent) => {
     event.preventDefault()
@@ -32,22 +37,30 @@ export default function SignupPage() {
     }
 
     setSubmitting(true)
-    const signUpError = await signUpWithEmail(email, password)
+    const signUpError = await signUpWithEmail(email, password, nextPath)
     setSubmitting(false)
 
     if (signUpError) {
       setError(signUpError.message)
     } else {
       // session is null until email is verified — go to holding page
-      navigate('/verify-pending', { state: { email } })
+      navigate(buildPathWithNext('/verify-pending', nextPath), { state: { email } })
     }
-  }, [email, password, confirm, signUpWithEmail, navigate])
+  }, [confirm, email, navigate, nextPath, password, signUpWithEmail])
 
   const handleGoogle = useCallback(async () => {
     setError(null)
     setSubmitting(true)
-    await signInWithGoogle()
-  }, [signInWithGoogle])
+    await signInWithGoogle(nextPath)
+  }, [nextPath, signInWithGoogle])
+
+  if (authLoading) {
+    return (
+      <div style={styles.page}>
+        <div style={styles.card}><p style={{ margin: 0, color: '#aaa', fontFamily: 'sans-serif', fontSize: '0.9rem' }}>Loading…</p></div>
+      </div>
+    )
+  }
 
   return (
     <div style={styles.page}>
@@ -95,7 +108,7 @@ export default function SignupPage() {
         </form>
 
         <p style={styles.footer}>
-          Already have an account? <Link to="/login" style={styles.link}>Sign in</Link>
+          Already have an account? <Link to={buildPathWithNext('/login', nextPath)} style={styles.link}>Sign in</Link>
         </p>
       </div>
     </div>

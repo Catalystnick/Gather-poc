@@ -14,6 +14,13 @@ const state = {
     rejected: 0,
     rejectionReasons: {},
   },
+  invites: {
+    created: 0,
+    emailAttempted: 0,
+    emailSent: 0,
+    emailFailed: 0,
+    emailFailureReasons: {},
+  },
   snapshots: {
     total: 0,
     totalPayloadBytes: 0,
@@ -56,6 +63,23 @@ export function observeLivekitTokenRejected(reason) {
   incrementReasonCounter(state.livekitToken.rejectionReasons, reason)
 }
 
+export function observeInviteCreated() {
+  state.invites.created += 1
+}
+
+export function observeInviteEmailAttempted() {
+  state.invites.emailAttempted += 1
+}
+
+export function observeInviteEmailSent() {
+  state.invites.emailSent += 1
+}
+
+export function observeInviteEmailFailed(reason) {
+  state.invites.emailFailed += 1
+  incrementReasonCounter(state.invites.emailFailureReasons, reason)
+}
+
 export function observeSnapshotStat({ worldId, playerCount, payloadBytes, tickLagMs }) {
   const safePayloadBytes = Number.isFinite(payloadBytes) ? Math.max(0, Math.floor(payloadBytes)) : 0
   const safeTickLagMs = Number.isFinite(tickLagMs) ? Math.max(0, Math.floor(tickLagMs)) : 0
@@ -86,6 +110,10 @@ export function collectObservabilitySnapshot() {
     },
     livekitToken: {
       ...state.livekitToken,
+    },
+    invites: {
+      ...state.invites,
+      emailFailureReasons: { ...state.invites.emailFailureReasons },
     },
     snapshots: {
       ...state.snapshots,

@@ -510,6 +510,22 @@ export async function getPendingInviteByToken(rawToken) {
   return firstRow(rows);
 }
 
+export async function getPendingInviteForPreview(rawToken) {
+  const tokenHash = inviteTokenHash(rawToken);
+  const nowIso = new Date().toISOString();
+  const rows = await supabaseRestRequest({
+    path: "tenant_invites",
+    query: {
+      select: "id,tenant_id,invited_role_id,role,expires_at",
+      token_hash: `eq.${tokenHash}`,
+      status: "eq.pending",
+      expires_at: `gt.${nowIso}`,
+      limit: 1,
+    },
+  });
+  return firstRow(rows);
+}
+
 export async function redeemInvite({ inviteId, userId }) {
   const rows = await supabaseRestRequest({
     path: "tenant_invites",

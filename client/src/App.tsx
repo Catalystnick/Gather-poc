@@ -7,6 +7,7 @@ const LoginPage         = lazy(() => import('./pages/LoginPage'))
 const SignupPage        = lazy(() => import('./pages/SignupPage'))
 const VerifyPendingPage = lazy(() => import('./pages/VerifyPendingPage'))
 const AuthCallbackPage  = lazy(() => import('./pages/AuthCallbackPage'))
+const InviteAcceptPage  = lazy(() => import('./pages/InviteAcceptPage'))
 const GameRoute         = lazy(() => import('./pages/GameRoute'))
 const DashboardRoute    = lazy(() => import('./pages/DashboardRoute'))
 
@@ -33,6 +34,7 @@ export default function App() {
             <Route path="/signup"         element={<SignupPage />} />
             <Route path="/verify-pending" element={<VerifyPendingPage />} />
             <Route path="/auth/callback"  element={<AuthCallbackPage />} />
+            <Route path="/invite/accept"  element={<InviteAcceptPage />} />
             <Route element={<ProtectedRoute />}>
               <Route path="/dashboard"      element={<DashboardRoute />} />
               <Route path="/game/:worldKey?" element={<GameRoute />} />

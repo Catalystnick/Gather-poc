@@ -1,6 +1,13 @@
 import { TenantServiceError } from './errors.js'
 import { randomBytes } from 'node:crypto'
 import { toClientTenantAccessConfig } from './accessConfigMapper.js'
+import { buildTenantInviteLink, sendTenantInviteEmail } from './inviteEmailService.js'
+import {
+  observeInviteCreated,
+  observeInviteEmailAttempted,
+  observeInviteEmailFailed,
+  observeInviteEmailSent,
+} from '../observability/tenantObservability.js'
 import {
   countActiveMembershipsByRoleId,
   createInvite,
@@ -14,6 +21,7 @@ import {
   getContextByUserId,
   getInteriorWorldByTenantId,
   getPendingInviteByToken,
+  getPendingInviteForPreview,
   getRoleById,
   getRoleByKey,
   getTenantAccessConfig,
@@ -460,6 +468,21 @@ function normalizeInviteExpiryHours(value) {
   return value
 }
 
+export async function previewInvite(rawToken) {
+  const token = requireNonEmptyText(rawToken, 'invite_token', 512)
+  const invite = await getPendingInviteForPreview(token)
+  if (!invite) return null
+  const [tenant, role] = await Promise.all([
+    invite.tenant_id ? getTenantById(invite.tenant_id) : null,
+    invite.invited_role_id ? getRoleById(invite.invited_role_id) : null,
+  ])
+  return {
+    tenantName: tenant?.name ?? null,
+    roleKey: role?.key ?? invite.role ?? 'member',
+    expiresAt: invite.expires_at ?? null,
+  }
+}
+
 export async function createTenantInvite({
   actorUserId,
   tenantId,
@@ -468,7 +491,7 @@ export async function createTenantInvite({
   expiresInHours,
 }) {
   const normalizedTenantId = requireTenantId(tenantId)
-  await ensureTenantExists(normalizedTenantId)
+  const tenant = await ensureTenantExists(normalizedTenantId)
   await ensureTenantPermission({
     actorUserId,
     tenantId: normalizedTenantId,
@@ -490,13 +513,32 @@ export async function createTenantInvite({
     invitedBy: actorUserId,
     rawToken: inviteToken,
   })
+  observeInviteCreated()
+
+  const inviteUrl = buildTenantInviteLink(inviteToken)
+  const delivery = await sendTenantInviteEmail({
+    email: inviteEmail,
+    tenantName: tenant.name,
+    roleKey: role.key,
+    inviteUrl,
+    inviteToken,
+    expiresAt,
+  })
+
+  if (delivery.attempted) observeInviteEmailAttempted()
+  if (delivery.sent) observeInviteEmailSent()
+  if (inviteEmail && !delivery.sent) {
+    observeInviteEmailFailed(delivery.errorCode ?? 'unknown')
+  }
 
   return {
     tenantId: normalizedTenantId,
     inviteToken,
+    inviteUrl,
     roleKey: role.key,
     emailOptional: inviteEmail,
     expiresAt,
+    delivery,
   }
 }
 

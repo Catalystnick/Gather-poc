@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
+import { buildPathWithNext, clearPendingNextPath, readNextPathFromSearch, readPendingNextPath } from '../utils/nextPath'
 
 /** Email/password + Google sign-in entry page. */
 export default function LoginPage() {
-  const { signInWithPassword, signInWithGoogle, isAuthenticated } = useAuth()
+  const { signInWithPassword, signInWithGoogle, isAuthenticated, isLoading: authLoading } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
+  const nextPath = readNextPathFromSearch(location.search, readPendingNextPath('/game'))
 
   const [email, setEmail]           = useState('')
   const [password, setPassword]     = useState('')
@@ -15,8 +18,10 @@ export default function LoginPage() {
 
   // Redirect if already authenticated (e.g. returning with an active session)
   useEffect(() => {
-    if (isAuthenticated) navigate('/game', { replace: true })
-  }, [isAuthenticated, navigate])
+    if (!isAuthenticated) return
+    clearPendingNextPath()
+    navigate(nextPath, { replace: true })
+  }, [isAuthenticated, navigate, nextPath])
 
   const handleEmailLogin = useCallback(async (event: React.FormEvent) => {
     event.preventDefault()
@@ -37,9 +42,17 @@ export default function LoginPage() {
   const handleGoogle = useCallback(async () => {
     setError(null)
     setSubmitting(true)
-    await signInWithGoogle()
+    await signInWithGoogle(nextPath)
     // Page will redirect — no need to setSubmitting(false)
-  }, [signInWithGoogle])
+  }, [nextPath, signInWithGoogle])
+
+  if (authLoading) {
+    return (
+      <div style={styles.page}>
+        <div style={styles.card}><p style={{ margin: 0, color: '#aaa', fontFamily: 'sans-serif', fontSize: '0.9rem' }}>Loading…</p></div>
+      </div>
+    )
+  }
 
   return (
     <div style={styles.page}>
@@ -75,7 +88,7 @@ export default function LoginPage() {
           {unverified && (
             <p style={styles.warning}>
               Email not verified.{' '}
-              <Link to="/verify-pending" style={styles.link}>Resend verification</Link>
+              <Link to={buildPathWithNext('/verify-pending', nextPath)} style={styles.link}>Resend verification</Link>
             </p>
           )}
           <button type="submit" disabled={isSubmitting} style={styles.submitBtn}>
@@ -84,7 +97,7 @@ export default function LoginPage() {
         </form>
 
         <p style={styles.footer}>
-          No account? <Link to="/signup" style={styles.link}>Sign up</Link>
+          No account? <Link to={buildPathWithNext('/signup', nextPath)} style={styles.link}>Sign up</Link>
         </p>
       </div>
     </div>

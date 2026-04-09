@@ -1,4 +1,5 @@
 import express from 'express'
+import rateLimit from 'express-rate-limit'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { requireTenantPermission } from '../middleware/requireTenantPermission.js'
 import { TenantServiceError } from '../tenant/errors.js'
@@ -9,11 +10,21 @@ import {
   joinTenantFromInvite,
   listJoinedTenants,
   listTenantMembers,
+  previewInvite,
   removeTenantMember,
   resolveTenantContext,
   updateTenantMemberRole,
   updateTenantSettings,
 } from '../tenant/tenantService.js'
+
+// Separate limiter for the unauthenticated preview endpoint — stricter than authenticated routes.
+const invitePreviewLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'too_many_requests', message: 'Too many requests, please try again later.' },
+})
 
 const tenantRouter = express.Router()
 
@@ -46,6 +57,24 @@ tenantRouter.get('/memberships', requireAuth, async (req, res) => {
   try {
     const memberships = await listJoinedTenants(req.user.sub)
     return res.json({ memberships })
+  } catch (error) {
+    return sendTenantError(res, error)
+  }
+})
+
+// Public — no auth required. Returns just enough for the invite acceptance UI.
+// Must be defined before /:tenantId routes to avoid param capture.
+tenantRouter.get('/invites/preview', invitePreviewLimiter, async (req, res) => {
+  const inviteToken = typeof req.query.inviteToken === 'string' ? req.query.inviteToken.trim() : ''
+  if (!inviteToken) {
+    return res.status(400).json({ error: 'invite_token_required', message: 'inviteToken query param is required' })
+  }
+  try {
+    const preview = await previewInvite(inviteToken)
+    if (!preview) {
+      return res.status(404).json({ error: 'invite_not_found', message: 'Invite is invalid or expired' })
+    }
+    return res.json(preview)
   } catch (error) {
     return sendTenantError(res, error)
   }

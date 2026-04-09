@@ -11,6 +11,7 @@ const JWKS = createRemoteJWKSet(new URL(`${SUPABASE_URL}/auth/v1/.well-known/jwk
 export async function verifySupabaseToken(token) {
   const { payload } = await jwtVerify(token, JWKS, {
     issuer: `${SUPABASE_URL}/auth/v1`,
+    audience: 'authenticated',
   });
   // `role: "authenticated"` is the canonical Supabase signal for a verified user.
   // email_confirmed_at is not included in newer JWTs (esp. OAuth providers).

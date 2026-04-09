@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
 import { useTenantContext } from "../hooks/useTenantContext";
+import { clearPendingNextPath, readPendingNextPath } from "../utils/nextPath";
 
 type JoinedTenant = {
   tenantId: string;
@@ -22,6 +23,23 @@ type TenantMember = {
   status: string;
   createdAt: string | null;
   updatedAt: string | null;
+};
+
+type InviteDelivery = {
+  attempted: boolean;
+  sent: boolean;
+  provider: string;
+  errorCode?: string | null;
+};
+
+type TenantInvite = {
+  tenantId: string;
+  inviteToken: string;
+  inviteUrl: string | null;
+  roleKey: string;
+  emailOptional: string | null;
+  expiresAt: string;
+  delivery: InviteDelivery;
 };
 
 function authHeaders(accessToken: string) {
@@ -61,10 +79,39 @@ async function fetchTenantMembers(accessToken: string, tenantId: string): Promis
   return Array.isArray(payload?.members) ? payload.members : [];
 }
 
+async function createTenantInvite(
+  accessToken: string,
+  tenantId: string,
+  input: { roleKey: string; emailOptional?: string | null },
+): Promise<TenantInvite> {
+  const response = await fetch(`/tenant/${tenantId}/invites`, {
+    method: "POST",
+    headers: authHeaders(accessToken),
+    body: JSON.stringify(input),
+  });
+  const payload = await readJson(response);
+  if (!response.ok) {
+    const message = typeof payload?.message === "string" ? payload.message : "Failed to create invite";
+    throw new Error(message);
+  }
+  return payload as TenantInvite;
+}
+
+function readInviteTokenFromPendingNextPath() {
+  const pendingPath = readPendingNextPath("");
+  if (!pendingPath) return "";
+  if (!pendingPath.startsWith("/dashboard")) return "";
+  const queryStart = pendingPath.indexOf("?");
+  if (queryStart < 0) return "";
+  const params = new URLSearchParams(pendingPath.slice(queryStart + 1));
+  return params.get("inviteToken")?.trim() ?? "";
+}
+
 /** Tenant dashboard handles onboarding and non-game tenant administration flows. */
 export default function DashboardRoute() {
   const { signOut, session } = useAuth();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const accessToken = session?.access_token ?? "";
   const tenantContextState = useTenantContext(accessToken);
   const [onboardingMode, setOnboardingMode] = useState<"create" | "invite">("create");
@@ -79,14 +126,33 @@ export default function DashboardRoute() {
   const [tenantMembers, setTenantMembers] = useState<TenantMember[]>([]);
   const [isDashboardLoading, setIsDashboardLoading] = useState(false);
   const [dashboardError, setDashboardError] = useState<string | null>(null);
+  const [inviteEmailInput, setInviteEmailInput] = useState("");
+  const [inviteRoleKey, setInviteRoleKey] = useState<"member" | "admin">("member");
+  const [isCreatingInvite, setIsCreatingInvite] = useState(false);
+  const [inviteError, setInviteError] = useState<string | null>(null);
+  const [inviteStatus, setInviteStatus] = useState<string | null>(null);
+  const [createdInvite, setCreatedInvite] = useState<TenantInvite | null>(null);
+  const autoJoinAttemptedTokenRef = useRef<string | null>(null);
+  const tenantContext = tenantContextState.context;
+  const joinTenantFromInvite = tenantContextState.joinTenantFromInvite;
 
-  const currentRoleKey = tenantContextState.context?.roleKey ?? null;
+  const currentRoleKey = tenantContext?.roleKey ?? null;
   const isCurrentUserAdmin = currentRoleKey === "admin";
-  const canManageMembers = !!tenantContextState.context?.permissions?.includes("tenant.members.manage");
-  const activeTenantId = tenantContextState.context?.tenant?.id ?? null;
+  const canManageMembers = !!tenantContext?.permissions?.includes("tenant.members.manage");
+  const canCreateInvites = !!tenantContext?.permissions?.includes("tenant.invite.create");
+  const activeTenantId = tenantContext?.tenant?.id ?? null;
+  const inviteTokenFromUrl = searchParams.get("inviteToken")?.trim() ?? "";
+  const inviteTokenFromPendingPath = inviteTokenFromUrl ? "" : readInviteTokenFromPendingNextPath();
+  const effectiveInviteToken = inviteTokenFromUrl || inviteTokenFromPendingPath;
+
+  useEffect(() => {
+    if (!effectiveInviteToken) return;
+    setOnboardingMode("invite");
+    setInviteTokenInput((current) => (current ? current : effectiveInviteToken));
+  }, [effectiveInviteToken]);
 
   const loadDashboardData = useCallback(async () => {
-    if (!accessToken || !tenantContextState.context?.hasMembership) return;
+    if (!accessToken || !tenantContext?.hasMembership) return;
     setIsDashboardLoading(true);
     setDashboardError(null);
     try {
@@ -104,11 +170,51 @@ export default function DashboardRoute() {
     } finally {
       setIsDashboardLoading(false);
     }
-  }, [accessToken, activeTenantId, canManageMembers, tenantContextState.context?.hasMembership]);
+  }, [accessToken, activeTenantId, canManageMembers, tenantContext?.hasMembership]);
 
   useEffect(() => {
     void loadDashboardData();
   }, [loadDashboardData]);
+
+  useEffect(() => {
+    if (!effectiveInviteToken) {
+      autoJoinAttemptedTokenRef.current = null;
+      return;
+    }
+    if (!tenantContext || tenantContext.hasMembership) return;
+    if (autoJoinAttemptedTokenRef.current === effectiveInviteToken) return;
+
+    autoJoinAttemptedTokenRef.current = effectiveInviteToken;
+
+    async function autoJoin() {
+      setIsSubmittingOnboarding(true);
+      setOnboardingError(null);
+      try {
+        await joinTenantFromInvite(effectiveInviteToken);
+        await loadDashboardData();
+        const nextSearchParams = new URLSearchParams(searchParams);
+        nextSearchParams.delete("inviteToken");
+        setSearchParams(nextSearchParams, { replace: true });
+        clearPendingNextPath();
+        setInviteTokenInput("");
+        autoJoinAttemptedTokenRef.current = null;
+      } catch (error) {
+        setOnboardingError(error instanceof Error ? error.message : "Failed to complete tenant setup");
+        autoJoinAttemptedTokenRef.current = null;
+      } finally {
+        setIsSubmittingOnboarding(false);
+      }
+    }
+
+    void autoJoin();
+  }, [
+    effectiveInviteToken,
+    joinTenantFromInvite,
+    loadDashboardData,
+    searchParams,
+    setSearchParams,
+    tenantContext,
+  ]);
 
   async function handleSignOut() {
     if (isSigningOut) return;
@@ -130,6 +236,9 @@ export default function DashboardRoute() {
         await tenantContextState.createTenantDuringOnboarding(tenantNameInput);
       } else {
         await tenantContextState.joinTenantFromInvite(inviteTokenInput);
+        const nextSearchParams = new URLSearchParams(searchParams);
+        nextSearchParams.delete("inviteToken");
+        setSearchParams(nextSearchParams, { replace: true });
       }
       await loadDashboardData();
       setTenantNameInput("");
@@ -138,6 +247,45 @@ export default function DashboardRoute() {
       setOnboardingError(error instanceof Error ? error.message : "Failed to complete tenant setup");
     } finally {
       setIsSubmittingOnboarding(false);
+    }
+  }
+
+  async function handleCopyInviteValue(value: string, label: string) {
+    if (!value) return;
+    try {
+      if (!navigator.clipboard) throw new Error("clipboard unavailable");
+      await navigator.clipboard.writeText(value);
+      setInviteStatus(`${label} copied.`);
+    } catch {
+      setInviteStatus(`Failed to copy ${label.toLowerCase()}.`);
+    }
+  }
+
+  async function handleCreateInvite() {
+    if (!accessToken || !activeTenantId || isCreatingInvite) return;
+    setIsCreatingInvite(true);
+    setInviteError(null);
+    setInviteStatus(null);
+    try {
+      const email = inviteEmailInput.trim();
+      const invite = await createTenantInvite(accessToken, activeTenantId, {
+        roleKey: inviteRoleKey,
+        emailOptional: email || null,
+      });
+      setCreatedInvite(invite);
+      if (invite.delivery.sent) {
+        setInviteStatus("Invite created and email sent.");
+      } else if (email) {
+        setInviteStatus("Invite created. Email was not sent, share token or link manually.");
+      } else {
+        setInviteStatus("Invite created. Share token or link manually.");
+      }
+      setInviteEmailInput("");
+    } catch (error) {
+      setInviteError(error instanceof Error ? error.message : "Failed to create invite");
+      setCreatedInvite(null);
+    } finally {
+      setIsCreatingInvite(false);
     }
   }
 
@@ -279,6 +427,72 @@ export default function DashboardRoute() {
           )}
         </div>
 
+        <div style={sectionStyle}>
+          <h3 style={sectionTitleStyle}>Invite Users</h3>
+          {!canCreateInvites ? (
+            <p style={textStyle}>You do not have permission to create invites.</p>
+          ) : (
+            <>
+              <p style={textStyle}>Send by email, or create an invite token/link for manual sharing.</p>
+              <input
+                style={inputStyle}
+                type="email"
+                placeholder="employee@company.com (optional)"
+                value={inviteEmailInput}
+                onChange={(event) => setInviteEmailInput(event.target.value)}
+              />
+              <select
+                style={inputStyle}
+                value={inviteRoleKey}
+                onChange={(event) => setInviteRoleKey(event.target.value === "admin" ? "admin" : "member")}
+              >
+                <option value="member">Member</option>
+                <option value="admin">Admin</option>
+              </select>
+              <div style={actionsStyle}>
+                <button
+                  type="button"
+                  style={primaryButtonStyle}
+                  disabled={isCreatingInvite}
+                  onClick={() => void handleCreateInvite()}
+                >
+                  {isCreatingInvite ? "Creating..." : "Create Invite"}
+                </button>
+              </div>
+              {inviteError && <p style={errorTextStyle}>{inviteError}</p>}
+              {inviteStatus && <p style={textStyle}>{inviteStatus}</p>}
+              {createdInvite && (
+                <div style={inviteResultStyle}>
+                  <p style={textStyle}>Role: {createdInvite.roleKey} | Expires: {new Date(createdInvite.expiresAt).toLocaleString()}</p>
+                  {!createdInvite.delivery.sent && createdInvite.delivery.errorCode && (
+                    <p style={textStyle}>Delivery: {createdInvite.delivery.errorCode}</p>
+                  )}
+                  <p style={tokenTextStyle}>Token: {createdInvite.inviteToken}</p>
+                  {createdInvite.inviteUrl && <p style={tokenTextStyle}>Link: {createdInvite.inviteUrl}</p>}
+                  <div style={actionsStyle}>
+                    <button
+                      type="button"
+                      style={secondaryButtonStyle}
+                      onClick={() => void handleCopyInviteValue(createdInvite.inviteToken, "Token")}
+                    >
+                      Copy Token
+                    </button>
+                    {createdInvite.inviteUrl && (
+                      <button
+                        type="button"
+                        style={secondaryButtonStyle}
+                        onClick={() => void handleCopyInviteValue(createdInvite.inviteUrl ?? "", "Link")}
+                      >
+                        Copy Link
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
         {import.meta.env.DEV && (
           <div style={sectionStyle}>
             <h3 style={sectionTitleStyle}>Dev Tool</h3>
@@ -403,4 +617,20 @@ const listStyle: React.CSSProperties = {
 const listItemStyle: React.CSSProperties = {
   color: "#d3deed",
   fontSize: 13,
+};
+
+const inviteResultStyle: React.CSSProperties = {
+  border: "1px solid #2e3a4f",
+  borderRadius: 8,
+  padding: 10,
+  display: "flex",
+  flexDirection: "column",
+  gap: 8,
+};
+
+const tokenTextStyle: React.CSSProperties = {
+  margin: 0,
+  color: "#d3deed",
+  fontSize: 12,
+  overflowWrap: "anywhere",
 };

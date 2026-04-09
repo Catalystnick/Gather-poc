@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
+import { buildPathWithNext, clearPendingNextPath, readNextPathFromSearch, readPendingNextPath } from '../utils/nextPath'
 
 const RESEND_COOLDOWN = 60 // seconds
 
@@ -9,6 +10,7 @@ export default function VerifyPendingPage() {
   const { isAuthenticated, resendVerification, user } = useAuth()
   const navigate  = useNavigate()
   const location  = useLocation()
+  const nextPath = readNextPathFromSearch(location.search, readPendingNextPath('/game'))
 
   // Email from signup navigation state, or from the user object if session exists
   const email = (location.state as { email?: string } | null)?.email ?? user?.email ?? ''
@@ -19,8 +21,10 @@ export default function VerifyPendingPage() {
 
   // Redirect as soon as auth state flips (user clicked link in another tab or same window)
   useEffect(() => {
-    if (isAuthenticated) navigate('/game', { replace: true })
-  }, [isAuthenticated, navigate])
+    if (!isAuthenticated) return
+    clearPendingNextPath()
+    navigate(nextPath, { replace: true })
+  }, [isAuthenticated, navigate, nextPath])
 
   // Count down the resend cooldown
   useEffect(() => {
@@ -68,7 +72,7 @@ export default function VerifyPendingPage() {
 
         <p style={styles.footer}>
           Wrong email?{' '}
-          <a href="/signup" style={styles.link}>Start over</a>
+          <Link to={buildPathWithNext('/signup', nextPath)} style={styles.link}>Start over</Link>
         </p>
       </div>
     </div>

@@ -1,0 +1,129 @@
+{ "compressionlevel":-1,
+ "height":20,
+ "infinite":true,
+ "layers":[
+        {
+         "chunks":[
+                {
+                 "data":[2349, 2349, 2349, 2349, 2349, 2349, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    2349, 2349, 2349, 2349, 2349, 2349, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    2349, 2349, 2349, 2349, 2349, 2349, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    2349, 2349, 2349, 2349, 2349, 2349, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    2349, 2349, 2349, 2349, 2349, 2349, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    2349, 2349, 2349, 2349, 2349, 2349, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    2349, 2349, 2349, 2349, 2349, 2349, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    2349, 2349, 2349, 2349, 2349, 2349, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    2349, 2349, 2349, 2349, 2349, 2349, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                 "height":16,
+                 "width":16,
+                 "x":0,
+                 "y":0
+                }],
+         "height":32,
+         "id":1,
+         "name":"Tile Layer 1",
+         "opacity":1,
+         "startx":-16,
+         "starty":-16,
+         "type":"tilelayer",
+         "visible":true,
+         "width":32,
+         "x":0,
+         "y":0
+        }],
+ "nextlayerid":2,
+ "nextobjectid":1,
+ "orientation":"orthogonal",
+ "renderorder":"right-down",
+ "tiledversion":"1.12.1",
+ "tileheight":16,
+ "tilesets":[
+        {
+         "columns":64,
+         "firstgid":1,
+         "image":"Sunnyside_World_ASSET_PACK_V2.1\/Sunnyside_World_ASSET_PACK_V2.1\/Sunnyside_World_Assets\/Tileset\/spr_tileset_sunnysideworld_16px.png",
+         "imageheight":1024,
+         "imagewidth":1024,
+         "margin":0,
+         "name":"spr_tileset_sunnysideworld_16px",
+         "spacing":0,
+         "tilecount":4096,
+         "tileheight":16,
+         "tilewidth":16,
+         "wangsets":[
+                {
+                 "colors":[
+                        {
+                         "color":"#00aa00",
+                         "name":"Grass",
+                         "probability":1,
+                         "tile":-1
+                        }, 
+                        {
+                         "color":"#00aaff",
+                         "name":"Water",
+                         "probability":1,
+                         "tile":-1
+                        }],
+                 "name":"Unnamed Set",
+                 "tile":-1,
+                 "type":"corner",
+                 "wangtiles":[
+                        {
+                         "tileid":470,
+                         "wangid":[0, 2, 0, 2, 0, 2, 0, 2]
+                        }, 
+                        {
+                         "tileid":471,
+                         "wangid":[0, 1, 0, 2, 0, 1, 0, 1]
+                        }, 
+                        {
+                         "tileid":472,
+                         "wangid":[0, 1, 0, 2, 0, 2, 0, 2]
+                        }, 
+                        {
+                         "tileid":473,
+                         "wangid":[0, 1, 0, 2, 0, 2, 0, 1]
+                        }, 
+                        {
+                         "tileid":474,
+                         "wangid":[0, 2, 0, 1, 0, 1, 0, 1]
+                        }, 
+                        {
+                         "tileid":475,
+                         "wangid":[0, 2, 0, 2, 0, 1, 0, 1]
+                        }, 
+                        {
+                         "tileid":534,
+                         "wangid":[0, 1, 0, 1, 0, 1, 0, 2]
+                        }, 
+                        {
+                         "tileid":536,
+                         "wangid":[0, 1, 0, 1, 0, 2, 0, 2]
+                        }, 
+                        {
+                         "tileid":538,
+                         "wangid":[0, 2, 0, 1, 0, 1, 0, 2]
+                        }, 
+                        {
+                         "tileid":539,
+                         "wangid":[1, 0, 1, 0, 1, 0, 1, 0]
+                        }, 
+                        {
+                         "tileid":540,
+                         "wangid":[0, 1, 0, 1, 0, 1, 0, 1]
+                        }]
+                }]
+        }],
+ "tilewidth":16,
+ "type":"map",
+ "version":"1.10",
+ "width":30
+}

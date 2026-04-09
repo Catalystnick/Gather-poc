@@ -1,9 +1,11 @@
-import { Navigate, Outlet } from 'react-router-dom'
+import { Navigate, Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from '../../contexts/AuthContext'
+import { buildPathWithNext } from '../../utils/nextPath'
 
 /** Guard routes that require an authenticated session. */
 export default function ProtectedRoute() {
   const { isAuthenticated, isLoading } = useAuth()
+  const location = useLocation()
 
   if (isLoading) {
     return (
@@ -15,7 +17,8 @@ export default function ProtectedRoute() {
 
   if (!isAuthenticated) {
     // replace: avoids pushing a protected route onto history — back button won't return here
-    return <Navigate to="/login" replace />
+    const nextPath = `${location.pathname}${location.search}`
+    return <Navigate to={buildPathWithNext('/login', nextPath)} replace />
   }
 
   return <Outlet />

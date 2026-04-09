@@ -60,7 +60,7 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - Phase C: implemented in code (tenant/world-scoped teleport store + teleport policy guards + instance-scoped cleanup).
 - Phase D: implemented in code (world-scoped LiveKit room naming + token world access validation).
 - Phase E: implemented in code (world-scoped disconnect teardown + optional socket auth checkpoints + token refresh re-validation).
-- Phase F: partially implemented (bootstrap + tenant settings + invite/member admin endpoints + in-game logout + tenant bootstrap gate + dashboard route + dashboard org/user list UI implemented; invite/member mutation frontend UI still pending).
+- Phase F: partially implemented (bootstrap + tenant settings + invite/member admin endpoints + in-game logout + tenant bootstrap gate + dashboard route + dashboard org/user list UI + invite creation UI/email dispatch implemented; member role/remove mutation frontend UI still pending).
 - Note: production-style billing gate is not implemented yet; tenant creation currently does not require completed payment.
 - Phase G: partially implemented (observability counters + internal observability endpoint + canary-oriented env flags implemented; 7-day SLO validation still pending).
 
@@ -360,7 +360,7 @@ These decisions close ambiguities raised in architecture review issue 13.x.
     - route: `server/routes/tenantRoutes.js`
     - service: `removeTenantMember(...)` in `server/tenant/tenantService.js`
 - Pending:
-  - frontend invite/member mutation UI (create invite, change role, remove member actions)
+  - frontend member mutation UI (change role, remove member actions)
 
 ## 3.7 Phase G - Hardening, Rollout, and Cleanup
 

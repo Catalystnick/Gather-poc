@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
+import { buildPathWithNext, clearPendingNextPath, readNextPathFromSearch, readPendingNextPath } from '../utils/nextPath'
 
 // Landing page for OAuth redirects.
 // Supabase returns here with #access_token= in the hash (implicit flow).
@@ -10,13 +11,15 @@ import { useAuth } from '../contexts/AuthContext'
 export default function AuthCallbackPage() {
   const { isAuthenticated, isLoading } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
+  const nextPath = readNextPathFromSearch(location.search, readPendingNextPath('/game'))
   const [timedOut, setTimedOut] = useState(false)
 
   useEffect(() => {
-    if (isAuthenticated) {
-      navigate('/game', { replace: true })
-    }
-  }, [isAuthenticated, navigate])
+    if (!isAuthenticated) return
+    clearPendingNextPath()
+    navigate(nextPath, { replace: true })
+  }, [isAuthenticated, navigate, nextPath])
 
   // Bail out if something went wrong and session never arrives
   useEffect(() => {
@@ -30,7 +33,7 @@ export default function AuthCallbackPage() {
     return (
       <div style={styles.page}>
         <div style={styles.card}>
-          <p style={styles.error}>Sign-in failed. <a href="/login" style={styles.link}>Try again</a></p>
+          <p style={styles.error}>Sign-in failed. <a href={buildPathWithNext('/login', nextPath)} style={styles.link}>Try again</a></p>
         </div>
       </div>
     )
