@@ -11,6 +11,7 @@ import { canAccessWorld, getWorldById, getWorldByKey, resolveTenantContext } fro
 import { registerLivekitTokenRoute } from './routes/livekitTokenRoute.js'
 import { registerGameSocketHandlers } from './socket/registerGameSocketHandlers.js'
 import { createWorldRuntime } from './world/runtime.js'
+import { collectObservabilitySnapshot, observeSnapshotStat } from './observability/tenantObservability.js'
 
 const app = express()
 
@@ -24,8 +25,11 @@ function readBooleanEnv(name, defaultValue) {
 }
 
 const ENABLE_TENANT_ROUTES = readBooleanEnv('ENABLE_TENANT_ROUTES', true)
+const ENABLE_INTERNAL_OBSERVABILITY_ROUTES = readBooleanEnv('ENABLE_INTERNAL_OBSERVABILITY_ROUTES', true)
 const SOCKET_AUTH_CHECKPOINT_MS = Number(process.env.SOCKET_AUTH_CHECKPOINT_MS ?? 0)
 const SOCKET_AUTH_CHECKPOINT_TIMEOUT_MS = Number(process.env.SOCKET_AUTH_CHECKPOINT_TIMEOUT_MS ?? 10_000)
+const OBSERVABILITY_LOG_INTERVAL_MS = Number(process.env.OBSERVABILITY_LOG_INTERVAL_MS ?? 0)
+const OBSERVABILITY_INTERNAL_KEY = process.env.OBSERVABILITY_INTERNAL_KEY ?? ''
 
 const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim())
@@ -62,7 +66,9 @@ const io = new Server(httpServer, {
   cors: { origin: allowedOrigins ?? '*' },
 })
 
-const runtime = createWorldRuntime()
+const runtime = createWorldRuntime({
+  onSnapshotStat: observeSnapshotStat,
+})
 const teleportRequests = new TeleportRequestsStore({ cooldownMs: 30_000 })
 const chatRateLimiter = createChatRateLimiter({
   burstTokens: 1,
@@ -91,6 +97,27 @@ registerGameSocketHandlers({
   authCheckpointMs: Number.isFinite(SOCKET_AUTH_CHECKPOINT_MS) ? SOCKET_AUTH_CHECKPOINT_MS : 0,
   authCheckpointTimeoutMs: Number.isFinite(SOCKET_AUTH_CHECKPOINT_TIMEOUT_MS) ? SOCKET_AUTH_CHECKPOINT_TIMEOUT_MS : 10_000,
 })
+
+if (ENABLE_INTERNAL_OBSERVABILITY_ROUTES) {
+  app.get('/internal/observability', (req, res) => {
+    if (OBSERVABILITY_INTERNAL_KEY) {
+      const providedKey = typeof req.headers['x-observability-key'] === 'string'
+        ? req.headers['x-observability-key'].trim()
+        : ''
+      if (!providedKey || providedKey !== OBSERVABILITY_INTERNAL_KEY) {
+        return res.status(401).json({ error: 'unauthorized' })
+      }
+    }
+    return res.json(collectObservabilitySnapshot())
+  })
+}
+
+if (Number.isFinite(OBSERVABILITY_LOG_INTERVAL_MS) && OBSERVABILITY_LOG_INTERVAL_MS > 0) {
+  setInterval(() => {
+    const snapshot = collectObservabilitySnapshot()
+    console.log('[observability]', JSON.stringify(snapshot))
+  }, OBSERVABILITY_LOG_INTERVAL_MS)
+}
 
 const PORT = process.env.PORT || 3001
 httpServer.listen(PORT, '0.0.0.0', () => {

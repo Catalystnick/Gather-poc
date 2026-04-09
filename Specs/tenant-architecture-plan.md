@@ -127,6 +127,7 @@ flowchart TB
   - auth first, then workspace creation gated by successful billing/provisioning.
   - current implementation follows the same flow shape but does not yet enforce a billing gate before tenant creation.
 - **Durable tenant metadata = Postgres**; runtime movement/presence remains in-memory for PoC.
+- **Operational observability = internal server metrics snapshot** for rollout/canary checks (join/change outcomes, snapshot payload/tick lag, LiveKit token rejection reasons).
 
 ---
 
@@ -708,6 +709,7 @@ Route behavior:
 - `DELETE /tenant/:tenantId/members/:userId` (admin)
 - `GET /tenant/:tenantId/members` (admin/member manager dashboard list)
 - `PATCH /tenant/:tenantId/settings` (admin, includes `access_policy` and `tenant_access_configs` fields; intended for frontend admin policy UI).
+- `GET /internal/observability` (internal rollout/canary endpoint; optionally guarded by `x-observability-key`)
 
 ## 9.2 Socket
 

@@ -74,10 +74,14 @@ function isValidAvatar(avatar) {
     && /^#[0-9A-Fa-f]{6}$/.test(avatar.shirt)
 }
 
-export function createWorldRuntime() {
+export function createWorldRuntime(options = {}) {
+  const onSnapshotStat = typeof options.onSnapshotStat === 'function'
+    ? options.onSnapshotStat
+    : null
   const worldData = loadWorldData()
   const playersByWorld = new Map()
   let worldTick = 0
+  const runtimeStartedAtMs = Date.now()
 
   function isValidTile(col, row) {
     return Number.isInteger(col) && Number.isInteger(row)
@@ -187,12 +191,26 @@ export function createWorldRuntime() {
     const worldPlayers = getWorldPlayers(worldId)
     if (!worldPlayers) return
 
-    io.to(`world:${worldId}`).emit('world:snapshot', {
+    const players = [...worldPlayers.values()].map(serializePlayerState)
+    const payload = {
       serverTimeMs: Date.now(),
       tick: worldTick,
       worldId,
-      players: [...worldPlayers.values()].map(serializePlayerState),
-    })
+      players,
+    }
+    io.to(`world:${worldId}`).emit('world:snapshot', payload)
+
+    if (onSnapshotStat) {
+      const payloadBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8')
+      const expectedTickTimeMs = runtimeStartedAtMs + Math.floor(worldTick * (1000 / SIMULATION_HZ))
+      const tickLagMs = Date.now() - expectedTickTimeMs
+      onSnapshotStat({
+        worldId,
+        playerCount: players.length,
+        payloadBytes,
+        tickLagMs,
+      })
+    }
   }
 
   function simulatePlayer(player) {

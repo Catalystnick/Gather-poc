@@ -1,5 +1,6 @@
 import { AccessToken } from 'livekit-server-sdk'
 import { canAccessWorld, getWorldById } from '../tenant/tenantService.js'
+import { observeLivekitTokenIssued, observeLivekitTokenRejected } from '../observability/tenantObservability.js'
 
 const ROOM_PREFIX = 'gather-tenant-interior-'
 const ZONE_SEGMENT = '-zone-'
@@ -56,36 +57,43 @@ export function registerLivekitTokenRoute({ app, requireAuth, tokenLimiter }) {
   app.post('/livekit/token', requireAuth, tokenLimiter, async (req, res) => {
     const { identity, name, intent, worldId, zoneKey } = req.body || {}
     if (!identity || typeof identity !== 'string') {
+      observeLivekitTokenRejected('identity_required')
       return res.status(400).json({ error: 'identity required' })
     }
 
     const normalizedWorldId = typeof worldId === 'string' ? worldId.trim() : ''
     if (!normalizedWorldId) {
+      observeLivekitTokenRejected('world_id_required')
       return res.status(400).json({ error: 'worldId required' })
     }
 
     if (!isValidZoneKey(zoneKey)) {
+      observeLivekitTokenRejected('invalid_zone_key')
       return res.status(400).json({ error: 'invalid zoneKey' })
     }
 
     const authedUserId = req.user?.sub
     if (!authedUserId || authedUserId !== identity) {
+      observeLivekitTokenRejected('identity_mismatch')
       return res.status(403).json({ error: 'identity mismatch' })
     }
 
     const tokenIntent = intent === 'prefetch' ? 'prefetch' : 'join'
     if (!livekitUrl || !livekitApiKey || !livekitApiSecret) {
+      observeLivekitTokenRejected('livekit_not_configured')
       return res.status(500).json({ error: 'LiveKit not configured' })
     }
 
     try {
       const world = await getWorldById(normalizedWorldId)
       if (!world || world.world_type !== 'tenant_interior') {
+        observeLivekitTokenRejected('voice_world_denied')
         return res.status(403).json({ error: 'voice_world_denied' })
       }
 
       const canJoinWorldVoice = await canAccessWorld(authedUserId, normalizedWorldId)
       if (!canJoinWorldVoice) {
+        observeLivekitTokenRejected('voice_world_denied')
         return res.status(403).json({ error: 'voice_world_denied' })
       }
 
@@ -98,9 +106,11 @@ export function registerLivekitTokenRoute({ app, requireAuth, tokenLimiter }) {
         roomName,
         tokenIntent,
       })
+      observeLivekitTokenIssued()
       return res.json({ token, url: livekitUrl })
     } catch (error) {
       console.error('[livekit] token error:', error)
+      observeLivekitTokenRejected('token_creation_failed')
       return res.status(500).json({ error: 'Failed to create token' })
     }
   })

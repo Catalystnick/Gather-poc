@@ -62,7 +62,7 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - Phase E: implemented in code (world-scoped disconnect teardown + optional socket auth checkpoints + token refresh re-validation).
 - Phase F: partially implemented (bootstrap + tenant settings + invite/member admin endpoints + in-game logout + tenant bootstrap gate + dashboard route + dashboard org/user list UI implemented; invite/member mutation frontend UI still pending).
 - Note: production-style billing gate is not implemented yet; tenant creation currently does not require completed payment.
-- Phase G: not implemented yet.
+- Phase G: partially implemented (observability counters + internal observability endpoint + canary-oriented env flags implemented; 7-day SLO validation still pending).
 
 ## 3.1 Phase A - Foundations (Schema, RLS, Tenant Service)
 
@@ -380,6 +380,33 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 ### Acceptance
 
 - Stability SLOs achieved for 7 consecutive days.
+
+### Status (2026-04-09)
+
+- Implemented in code:
+  - canary-oriented environment flags:
+    - `ENABLE_INTERNAL_OBSERVABILITY_ROUTES`
+    - `OBSERVABILITY_LOG_INTERVAL_MS`
+    - `OBSERVABILITY_INTERNAL_KEY` (optional key for internal observability endpoint)
+    - files: `server/index.js`, `server/.env.example`
+  - in-memory observability module:
+    - world join success/failure counts + reasons
+    - world change success/failure counts + reasons
+    - LiveKit token issued/rejected counts + rejection reasons
+    - snapshot payload stats (`last/max/avg bytes`) + tick lag (`last/max`)
+    - per-world player counts
+    - file: `server/observability/tenantObservability.js`
+  - socket instrumentation for world join/change outcomes:
+    - file: `server/socket/registerGameSocketHandlers.js`
+  - runtime snapshot instrumentation:
+    - file: `server/world/runtime.js`
+  - LiveKit token rejection reason instrumentation:
+    - file: `server/routes/livekitTokenRoute.js`
+  - internal endpoint for canary monitoring:
+    - `GET /internal/observability`
+    - file: `server/index.js`
+- Pending:
+  - production SLO validation and 7-day stability signoff
 
 ## 4. Code Touch Plan (Expected)
 

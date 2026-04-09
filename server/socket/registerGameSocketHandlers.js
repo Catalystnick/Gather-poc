@@ -1,5 +1,6 @@
 import { normalizeInput } from "../world/movementMath.js";
 import { handleTagSend, handleTeleportRequest, handleTeleportRespond } from "../chat/commandRouter.js";
+import { observeWorldChangeOutcome, observeWorldJoinOutcome } from "../observability/tenantObservability.js";
 
 //TODO: Temp for testing, zone values will come from Tiled map data
 const TEMP_PORTAL_WORLD_BY_ZONE = {
@@ -385,12 +386,29 @@ export function registerGameSocketHandlers({
 }) {
   const socketWorldIndex = new Map();
 
+  function recordJoinSuccess() {
+    observeWorldJoinOutcome({ ok: true });
+  }
+
+  function recordJoinFailure(reason) {
+    observeWorldJoinOutcome({ ok: false, reason });
+  }
+
+  function recordChangeSuccess() {
+    observeWorldChangeOutcome({ ok: true });
+  }
+
+  function recordChangeFailure(reason) {
+    observeWorldChangeOutcome({ ok: false, reason });
+  }
+
   async function joinWorld({ socket, payload, ack }) {
     const tenantContext = await resolveSocketTenantContext({
       socket,
       resolveTenantContext,
     });
     if (!tenantContext) {
+      recordJoinFailure("tenant_context_unavailable");
       if (typeof ack === "function") ack({ error: "tenant_context_unavailable" });
       return;
     }
@@ -402,6 +420,7 @@ export function registerGameSocketHandlers({
       getWorldByKey,
     });
     if (!targetWorld?.id) {
+      recordJoinFailure("world_not_found");
       if (typeof ack === "function") ack({ error: "world_not_found" });
       return;
     }
@@ -412,6 +431,7 @@ export function registerGameSocketHandlers({
       canAccessWorld,
     });
     if (!hasAccess) {
+      recordJoinFailure("world_access_denied");
       if (typeof ack === "function") ack({ error: "world_access_denied" });
       return;
     }
@@ -419,6 +439,7 @@ export function registerGameSocketHandlers({
     const { name, avatar } = payload && typeof payload === "object" ? payload : {};
     const trimmedName = typeof name === "string" ? name.trim() : "";
     if (!trimmedName || trimmedName.length > 24 || !runtime.isValidAvatar(avatar)) {
+      recordJoinFailure("invalid_payload");
       if (typeof ack === "function") ack({ error: "invalid_payload" });
       return;
     }
@@ -456,6 +477,7 @@ export function registerGameSocketHandlers({
         loading: { completed: true },
       });
     }
+    recordJoinSuccess();
   }
 
   async function changeWorld({ socket, payload, ack }) {
@@ -464,12 +486,14 @@ export function registerGameSocketHandlers({
       resolveTenantContext,
     });
     if (!tenantContext) {
+      recordChangeFailure("tenant_context_unavailable");
       if (typeof ack === "function") ack({ error: "tenant_context_unavailable" });
       return;
     }
 
     const currentWorld = socketWorldIndex.get(socket.id);
     if (!currentWorld) {
+      recordChangeFailure("world_not_joined");
       if (typeof ack === "function") ack({ error: "world_not_joined" });
       return;
     }
@@ -483,6 +507,7 @@ export function registerGameSocketHandlers({
     });
     if (!targetWorld?.id) {
       const errorCode = requestedTargetWorldId || requestedTargetWorldKey ? "world_not_found" : "target_world_required";
+      recordChangeFailure(errorCode);
       if (typeof ack === "function") ack({ error: errorCode });
       return;
     }
@@ -498,6 +523,7 @@ export function registerGameSocketHandlers({
           loading: { completed: true },
         });
       }
+      recordChangeSuccess();
       return;
     }
 
@@ -507,6 +533,7 @@ export function registerGameSocketHandlers({
       canAccessWorld,
     });
     if (!hasAccess) {
+      recordChangeFailure("world_access_denied");
       if (typeof ack === "function") ack({ error: "world_access_denied" });
       return;
     }
@@ -514,6 +541,7 @@ export function registerGameSocketHandlers({
     const currentWorldPlayers = runtime.getWorldPlayers(currentWorld);
     const currentPlayer = currentWorldPlayers?.get(socket.userId) ?? null;
     if (!currentPlayer) {
+      recordChangeFailure("player_not_joined");
       if (typeof ack === "function") ack({ error: "player_not_joined" });
       return;
     }
@@ -570,6 +598,7 @@ export function registerGameSocketHandlers({
         loading: { completed: true },
       });
     }
+    recordChangeSuccess();
   }
 
   function registerWorldHandlers(socket) {
