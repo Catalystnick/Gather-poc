@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
+import { signOutIfUnauthorizedStatus } from "../lib/unauthorizedSignOut";
 
 export type TenantAccessConfig = {
   guestZoneEnforced: boolean;
@@ -43,6 +44,7 @@ export type TenantContextState = {
 type TenantApiError = Error & {
   code?: string;
   details?: unknown;
+  status?: number;
 };
 
 type TenantContextValue = {
@@ -82,8 +84,11 @@ async function fetchTenantMe(accessToken: string): Promise<TenantContextState> {
   });
   const payload = await readJson(response);
   if (!response.ok) {
+    await signOutIfUnauthorizedStatus(response.status);
     const message = typeof payload?.message === "string" ? payload.message : "Failed to load tenant context";
-    throw new Error(message);
+    const error = new Error(message) as TenantApiError;
+    error.status = response.status;
+    throw error;
   }
   return payload as TenantContextState;
 }
@@ -110,7 +115,10 @@ async function postTenantOnboarding(accessToken: string, body: TenantOnboardingI
   });
   const payload = await readJson(response);
   if (!response.ok) {
-    throw toTenantApiError(payload, "Tenant onboarding failed");
+    await signOutIfUnauthorizedStatus(response.status);
+    const error = toTenantApiError(payload, "Tenant onboarding failed");
+    error.status = response.status;
+    throw error;
   }
   return payload as TenantContextState;
 }
@@ -134,8 +142,11 @@ async function patchTenantSettings(accessToken: string, tenantId: string, access
   });
   const payload = await readJson(response);
   if (!response.ok) {
+    await signOutIfUnauthorizedStatus(response.status);
     const message = typeof payload?.message === "string" ? payload.message : "Failed to update tenant settings";
-    throw new Error(message);
+    const error = new Error(message) as TenantApiError;
+    error.status = response.status;
+    throw error;
   }
 }
 

@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../contexts/AuthContext";
 import { useTenantContext } from "../../contexts/TenantContext";
 import { clearPendingNextPath } from "../../utils/nextPath";
+import { signOutIfUnauthorizedStatus } from "../../lib/unauthorizedSignOut";
 import {
   authHeaders,
   createTenantInvite,
@@ -472,6 +473,7 @@ export default function DashboardRoute() {
       });
       const payload = await readJson(response);
       if (!response.ok) {
+        await signOutIfUnauthorizedStatus(response.status);
         const message =
           typeof payload?.message === "string"
             ? payload.message

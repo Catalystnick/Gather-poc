@@ -1,4 +1,13 @@
 import type { TenantInvite, TenantMember } from "./dashboardTypes";
+import { signOutIfUnauthorizedStatus } from "../../lib/unauthorizedSignOut";
+
+type DashboardApiError = Error & { status?: number };
+
+function createDashboardApiError(message: string, status: number): DashboardApiError {
+  const error = new Error(message) as DashboardApiError;
+  error.status = status;
+  return error;
+}
 
 export function authHeaders(accessToken: string) {
   return {
@@ -21,11 +30,12 @@ export async function fetchTenantMembers(
   });
   const payload = await readJson(response);
   if (!response.ok) {
+    await signOutIfUnauthorizedStatus(response.status);
     const message =
       typeof payload?.message === "string"
         ? payload.message
         : "Failed to load users";
-    throw new Error(message);
+    throw createDashboardApiError(message, response.status);
   }
   return Array.isArray(payload?.members) ? payload.members : [];
 }
@@ -42,11 +52,12 @@ export async function createTenantInvite(
   });
   const payload = await readJson(response);
   if (!response.ok) {
+    await signOutIfUnauthorizedStatus(response.status);
     const message =
       typeof payload?.message === "string"
         ? payload.message
         : "Failed to create invite";
-    throw new Error(message);
+    throw createDashboardApiError(message, response.status);
   }
   return payload as TenantInvite;
 }
@@ -84,10 +95,11 @@ export async function updateInviteAccessSettings(
 
   const payload = await readJson(response);
   if (!response.ok) {
+    await signOutIfUnauthorizedStatus(response.status);
     const message =
       typeof payload?.message === "string"
         ? payload.message
         : "Failed to update invite access settings";
-    throw new Error(message);
+    throw createDashboardApiError(message, response.status);
   }
 }

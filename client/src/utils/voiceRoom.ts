@@ -2,6 +2,7 @@
 // Extracted to eliminate duplication between the two room slots in useVoice.
 
 import { Room, Track, AudioPresets, LocalAudioTrack, type RemoteAudioTrack } from 'livekit-client'
+import { signOutIfUnauthorizedStatus } from '../lib/unauthorizedSignOut'
 
 // ─── Shared constants ─────────────────────────────────────────────────────────
 
@@ -69,6 +70,7 @@ export async function fetchTokenDetailed(
       body: JSON.stringify({ worldId, zoneKey, identity, name: identity, intent }),
     })
     if (!res.ok) {
+      await signOutIfUnauthorizedStatus(res.status)
       console.warn('[voiceRoom] token HTTP error | room:', roomName, '| status:', res.status)
       return { cached: null, status: res.status }
     }

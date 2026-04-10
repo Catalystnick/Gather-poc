@@ -214,14 +214,27 @@ function parseCheckpointToken(payload) {
 }
 
 async function verifySocketTokenForUser({ socket, token, verifySocketToken }) {
-  if (!token) return false;
-  if (typeof verifySocketToken !== "function") return false;
+  if (!token) return { isValid: false, reason: "token_missing" };
+  if (typeof verifySocketToken !== "function") {
+    return { isValid: false, reason: "token_verifier_missing" };
+  }
   try {
     const payload = await verifySocketToken(token);
-    return payload?.sub === socket.userId;
+    if (payload?.sub === socket.userId) return { isValid: true, reason: null };
+    return { isValid: false, reason: "token_subject_mismatch" };
   } catch (error) {
-    return false;
+    const message = error instanceof Error ? error.message : "";
+    if (message === "User account no longer exists") {
+      return { isValid: false, reason: "user_deleted" };
+    }
+    return { isValid: false, reason: "token_invalid" };
   }
+}
+
+function emitAuthInvalid(socket, reason) {
+  const resolvedReason =
+    typeof reason === "string" && reason.trim() ? reason.trim() : "token_invalid";
+  socket.emit("auth:invalid", { reason: resolvedReason });
 }
 
 function createSocketAuthCheckpoint({ socket, verifySocketToken, authCheckpointMs, authCheckpointTimeoutMs }) {
@@ -244,8 +257,15 @@ function createSocketAuthCheckpoint({ socket, verifySocketToken, authCheckpointM
       }
 
       const token = parseCheckpointToken(payload);
-      const isValid = await verifySocketTokenForUser({ socket, token, verifySocketToken });
-      if (!isValid) socket.disconnect(true);
+      const authResult = await verifySocketTokenForUser({
+        socket,
+        token,
+        verifySocketToken,
+      });
+      if (!authResult.isValid) {
+        emitAuthInvalid(socket, authResult.reason);
+        socket.disconnect(true);
+      }
     });
   }, intervalMs);
 
@@ -619,9 +639,16 @@ export function registerGameSocketHandlers({
   function registerAuthHandlers(socket) {
     socket.on("auth:refresh", async (payload, ack) => {
       const token = parseCheckpointToken(payload);
-      const isValid = await verifySocketTokenForUser({ socket, token, verifySocketToken });
-      if (!isValid) {
-        if (typeof ack === "function") ack({ ok: false, error: "invalid_token" });
+      const authResult = await verifySocketTokenForUser({
+        socket,
+        token,
+        verifySocketToken,
+      });
+      if (!authResult.isValid) {
+        if (typeof ack === "function") {
+          ack({ ok: false, error: "invalid_token", reason: authResult.reason });
+        }
+        emitAuthInvalid(socket, authResult.reason);
         socket.disconnect(true);
         return;
       }

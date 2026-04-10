@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../../contexts/AuthContext'
+import { signOutIfUnauthorizedStatus } from '../../lib/unauthorizedSignOut'
 import { buildPathWithNext } from '../../utils/nextPath'
 
 type Preview = { tenantName: string | null; roleKey: string; expiresAt: string | null }
@@ -22,6 +23,7 @@ async function postJoinInvite(accessToken: string, inviteToken: string): Promise
     body: JSON.stringify({ mode: 'join_invite', inviteToken }),
   })
   if (!res.ok) {
+    await signOutIfUnauthorizedStatus(res.status)
     const payload = await res.json().catch(() => null)
     const message = typeof payload?.message === 'string' ? payload.message : 'Failed to join organization'
     const error = new Error(message) as InviteJoinError

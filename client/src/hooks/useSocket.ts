@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { io, type Socket } from 'socket.io-client'
+import { signOutIfUnauthorizedReason } from '../lib/unauthorizedSignOut'
 import type {
   Direction,
   LocalAuthoritativeState,
@@ -49,6 +50,12 @@ type JoinAckPayload = {
   error?: unknown
 }
 
+type AuthRefreshAckPayload = {
+  ok?: unknown
+  error?: unknown
+  reason?: unknown
+}
+
 type SocketEventHandlers = {
   onConnect: () => void
   onConnectError: (err: Error) => void
@@ -63,6 +70,7 @@ type SocketEventHandlers = {
   ) => void
   onPlayerVoice: (event: { id: string; muted: boolean }) => void
   onPlayerLeft: (event: { id: string }) => void
+  onAuthInvalid: (event: { reason?: unknown }) => void
 }
 
 function facingOrDefault(facing: unknown): Direction {
@@ -188,6 +196,7 @@ function bindSocketEventHandlers(
   socketClient.on('auth:checkpoint', handlers.onAuthCheckpoint)
   socketClient.on('player:voice', handlers.onPlayerVoice)
   socketClient.on('player:left', handlers.onPlayerLeft)
+  socketClient.on('auth:invalid', handlers.onAuthInvalid)
 
   return () => {
     socketClient.off('connect', handlers.onConnect)
@@ -200,6 +209,7 @@ function bindSocketEventHandlers(
     socketClient.off('auth:checkpoint', handlers.onAuthCheckpoint)
     socketClient.off('player:voice', handlers.onPlayerVoice)
     socketClient.off('player:left', handlers.onPlayerLeft)
+    socketClient.off('auth:invalid', handlers.onAuthInvalid)
   }
 }
 
@@ -295,7 +305,9 @@ export function useSocket(player: Player, accessToken: string, userId: string, i
 
   const handleConnectError = useCallback((err: Error) => {
     setStatus('error')
-    setLastError(err?.message ?? String(err))
+    const message = err?.message ?? String(err)
+    setLastError(message)
+    void signOutIfUnauthorizedReason(message)
     setServerSpawn(null)
   }, [])
 
@@ -372,6 +384,12 @@ export function useSocket(player: Player, accessToken: string, userId: string, i
     })
   }, [])
 
+  const handleAuthInvalid = useCallback((event: { reason?: unknown }) => {
+    const reason = typeof event?.reason === 'string' ? event.reason : ''
+    setLastError(reason || 'Authentication invalid')
+    void signOutIfUnauthorizedReason(reason || 'unauthorized')
+  }, [])
+
   useEffect(() => {
     // Keep token hot-swapped for future reconnect attempts.
     tokenRef.current = accessToken
@@ -384,7 +402,20 @@ export function useSocket(player: Player, accessToken: string, userId: string, i
         socketClient.connect()
       }
       if (socketClient.connected) {
-        socketClient.emit('auth:refresh', { token: accessToken })
+        socketClient.emit(
+          'auth:refresh',
+          { token: accessToken },
+          (ack?: AuthRefreshAckPayload) => {
+            if (ack?.ok === true) return
+            const reason =
+              typeof ack?.reason === 'string'
+                ? ack.reason
+                : typeof ack?.error === 'string'
+                  ? ack.error
+                  : ''
+            void signOutIfUnauthorizedReason(reason)
+          },
+        )
       }
     }
   }, [accessToken])
@@ -436,6 +467,7 @@ export function useSocket(player: Player, accessToken: string, userId: string, i
       onAuthCheckpoint: handleAuthCheckpoint,
       onPlayerVoice: handlePlayerVoice,
       onPlayerLeft: handlePlayerLeft,
+      onAuthInvalid: handleAuthInvalid,
     })
 
     return () => {
@@ -451,6 +483,7 @@ export function useSocket(player: Player, accessToken: string, userId: string, i
     handlePlayerJoined,
     handlePlayerLeft,
     handlePlayerVoice,
+    handleAuthInvalid,
     handleRoomState,
     handleWorldChanged,
     handleWorldSnapshot,
