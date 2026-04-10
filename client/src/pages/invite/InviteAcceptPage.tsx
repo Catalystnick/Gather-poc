@@ -6,6 +6,7 @@ import { buildPathWithNext } from '../../utils/nextPath'
 type Preview = { tenantName: string | null; roleKey: string; expiresAt: string | null }
 type PreviewStatus = 'loading' | 'ready' | 'invalid'
 type JoinStatus = 'idle' | 'joining' | 'done' | 'error'
+type InviteJoinError = Error & { code?: string }
 
 async function fetchInvitePreview(inviteToken: string): Promise<Preview | null> {
   const res = await fetch(`/tenant/invites/preview?inviteToken=${encodeURIComponent(inviteToken)}`)
@@ -22,7 +23,10 @@ async function postJoinInvite(accessToken: string, inviteToken: string): Promise
   })
   if (!res.ok) {
     const payload = await res.json().catch(() => null)
-    throw new Error(typeof payload?.message === 'string' ? payload.message : 'Failed to join organization')
+    const message = typeof payload?.message === 'string' ? payload.message : 'Failed to join organization'
+    const error = new Error(message) as InviteJoinError
+    if (typeof payload?.error === 'string') error.code = payload.error
+    throw error
   }
 }
 
@@ -74,6 +78,11 @@ export default function InviteAcceptPage() {
         navigate('/dashboard', { replace: true })
       })
       .catch(err => {
+        const code = (err as InviteJoinError)?.code ?? ''
+        if (code === 'invite_password_required' || code === 'invite_password_invalid') {
+          navigate(`/dashboard?inviteToken=${encodeURIComponent(inviteToken)}`, { replace: true })
+          return
+        }
         setJoinError(err instanceof Error ? err.message : 'Failed to join organization')
         setJoinStatus('error')
       })

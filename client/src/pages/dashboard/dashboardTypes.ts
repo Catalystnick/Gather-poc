@@ -25,7 +25,7 @@ export type TenantInvite = {
   inviteUrl: string | null;
   inviteType: InviteType;
   roleKey: string;
-  emailOptional: string | null;
+  inviteEmail: string | null;
   expiresAt: string;
   delivery: InviteDelivery;
 };

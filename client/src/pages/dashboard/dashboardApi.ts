@@ -33,7 +33,7 @@ export async function fetchTenantMembers(
 export async function createTenantInvite(
   accessToken: string,
   tenantId: string,
-  input: { roleKey: string; emailOptional?: string | null },
+  input: { roleKey: string; inviteEmail: string | null },
 ): Promise<TenantInvite> {
   const response = await fetch(`/tenant/${tenantId}/invites`, {
     method: "POST",
@@ -49,4 +49,45 @@ export async function createTenantInvite(
     throw new Error(message);
   }
   return payload as TenantInvite;
+}
+
+export type InviteAccessSettingsInput = {
+  allowlistDomains: string[];
+  allowlistEmails: string[];
+  requirePasswordForUnlisted?: boolean;
+  inviteJoinPassword?: string;
+  clearInviteJoinPassword?: boolean;
+};
+
+export async function updateInviteAccessSettings(
+  accessToken: string,
+  tenantId: string,
+  input: InviteAccessSettingsInput,
+) {
+  const response = await fetch(`/tenant/${tenantId}/settings`, {
+    method: "PATCH",
+    headers: authHeaders(accessToken),
+    body: JSON.stringify({
+      inviteAccessConfig: {
+        allowlistDomains: input.allowlistDomains,
+        allowlistEmails: input.allowlistEmails,
+        ...(typeof input.requirePasswordForUnlisted === "boolean"
+          ? { requirePasswordForUnlisted: input.requirePasswordForUnlisted }
+          : {}),
+        ...(input.inviteJoinPassword
+          ? { inviteJoinPassword: input.inviteJoinPassword }
+          : {}),
+        ...(input.clearInviteJoinPassword ? { clearInviteJoinPassword: true } : {}),
+      },
+    }),
+  });
+
+  const payload = await readJson(response);
+  if (!response.ok) {
+    const message =
+      typeof payload?.message === "string"
+        ? payload.message
+        : "Failed to update invite access settings";
+    throw new Error(message);
+  }
 }

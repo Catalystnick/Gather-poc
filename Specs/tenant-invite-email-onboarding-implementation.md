@@ -8,12 +8,21 @@
   - `shared`: reusable until expiry/revocation.
 - Data model update shipped in:
   - `supabase/migrations/20260410153000_phase_k_invite_types.sql`.
+- Shared-invite access control policy is implemented:
+  - allowlist domains/emails,
+  - optional password requirement for non-allowlisted shared-invite joins.
+- Invite access policy data model update shipped in:
+  - `supabase/migrations/20260410170000_phase_l_invite_access_controls.sql`.
+- OAuth invite-link continuity and join UX are implemented:
+  - invite token survives Google OAuth redirect chain,
+  - invite accept page performs preview + auth-aware auto-join,
+  - password-required shared invite errors route user into dashboard retry flow.
 
 ## 1. Purpose and Scope
 
 **Decision**
 
-Define a planning-only, implementation-ready blueprint for onboarding employees into tenant organizations via admin-sent invite emails from the dashboard.
+Define a planning-only, implementation-ready blueprint for onboarding employees into tenant organizations via owner/admin-sent invite emails from the dashboard.
 
 **Reasoning**
 
@@ -34,9 +43,13 @@ Treat the current baseline as:
 
 - Invite creation API exists: `POST /tenant/:tenantId/invites`.
 - Invite redemption exists via `POST /tenant/onboarding` with `mode: join_invite`.
-- Dashboard includes invite creation UX for admins.
+- Dashboard includes invite creation UX for owner/admin users with invite-create permission.
 - SMTP email dispatch is integrated with fallback link/token behavior.
 - Invite creation supports both personalized and shared invites.
+- Dashboard includes invite access control UX with permission split:
+  - owner/admin can update allowlist/access policy,
+  - owner only can set/clear invite password.
+- Public invite acceptance page exists (`/invite/accept`) with unauthenticated preview and authenticated auto-join.
 
 **Reasoning**
 
@@ -55,7 +68,7 @@ This narrows work to onboarding and delivery only, without changing unrelated wo
 
 **Decision**
 
-Invite creation remains permission-gated by `tenant.invite.create` (admin-only in v1 behavior).
+Invite creation remains permission-gated by `tenant.invite.create` (owner/admin).
 
 **Reasoning**
 
@@ -63,8 +76,8 @@ Matches existing server permission architecture and avoids role schema changes i
 
 **Alternatives considered**
 
-- Introduce owner role now.
-  - Rejected for v1 to avoid role migration churn.
+- Keep only `admin` and `member`.
+  - Rejected; ownership-sensitive settings (invite password and full tenant settings) need stronger authority boundary.
 
 ### 3.2 Delivery Model
 
@@ -90,8 +103,8 @@ Prevents provider outage/rate-limit from blocking admin onboarding tasks.
 
 Support both invite types in v1:
 
-- `personalized` invite when `emailOptional` is present,
-- `shared` invite when `emailOptional` is omitted.
+- `personalized` invite when `inviteEmail` is present,
+- `shared` invite when `inviteEmail` is omitted.
 
 **Reasoning**
 
@@ -101,6 +114,43 @@ Matches product behavior: targeted one-time invites for known recipients plus re
 
 - Single invite model only.
   - Rejected; cannot satisfy both targeted and broad distribution flows.
+
+### 3.4 Shared Invite Access Policy Model
+
+**Decision**
+
+Shared invites support tenant-level access controls:
+
+- allowlist by domain and/or full email,
+- optional password challenge for non-allowlisted shared-invite users.
+
+**Reasoning**
+
+Matches Gather-style onboarding where known company domains auto-join, while unknown domains require a secret.
+
+**Alternatives considered**
+
+- Enforce password for all shared-invite users.
+  - Rejected; adds friction for expected organizational users.
+- Enforce domain allowlist only with no fallback password.
+  - Rejected; blocks partner/contractor onboarding without manual admin intervention.
+
+### 3.5 Password Storage and Verification
+
+**Decision**
+
+Store invite password as a salted hash and verify in constant-time-safe flow.
+
+**Reasoning**
+
+Prevents plaintext secret storage and reduces risk from timing-based comparisons.
+
+**Alternatives considered**
+
+- Store plaintext invite password.
+  - Rejected for security reasons.
+- Reuse OAuth/session token as invite password surrogate.
+  - Rejected; changes threat model and creates coupling to auth provider behavior.
 
 ---
 
@@ -147,7 +197,7 @@ Add invite-send UI with explicit success/fallback/error states.
   - success + email sent banner,
   - fallback banner with copy-link/token controls,
   - error banner for validation/auth failures.
-- Permission-gated rendering by `tenant.invite.create`.
+- Permission-gated rendering by `tenant.invite.create`, `tenant.invite.access.manage`, and `tenant.invite.password.manage`.
 
 **Reasoning**
 
@@ -157,6 +207,57 @@ Admins need one clear path and immediate fallback when provider delivery fails.
 
 - Hide fallback details from UI.
   - Rejected; forces support/manual backend involvement.
+
+## 4.3 Shared Invite Access Enforcement
+
+**Decision**
+
+Enforce shared invite allowlist/password rules at join time in the service layer.
+
+**Design**
+
+1. User submits `join_invite` onboarding request with `inviteToken` (and optional `invitePassword`).
+2. Backend resolves pending invite (`status='pending'` and `expires_at > now`).
+3. Personalized invite path:
+   - requires authenticated email to match invite email.
+   - invite is redeemed on success.
+4. Shared invite path:
+   - evaluate user email/domain against tenant allowlist.
+   - if user is allowlisted, join proceeds with no password challenge.
+   - if user is not allowlisted and password enforcement is enabled, require and verify `invitePassword`.
+   - shared invite remains reusable and is not redeemed.
+
+**Reasoning**
+
+Keeps authorization authoritative and consistent across all entry points using the same service function.
+
+**Alternatives considered**
+
+- Enforce allowlist/password in dashboard frontend only.
+  - Rejected; bypassable and not portable to other entry points.
+
+## 4.4 Dashboard Invite Access Controls UX
+
+**Decision**
+
+Expose invite access policy controls directly in admin dashboard settings.
+
+**Design**
+
+- Inputs:
+  - allowlist domains (comma/newline list),
+  - allowlist emails (comma/newline list),
+  - toggle: require password for non-allowlisted shared-invite users,
+  - password set/clear controls.
+- Submit:
+  - `PATCH /tenant/:tenantId/settings` with `inviteAccessConfig`.
+- UX guardrails:
+  - cannot enable password-required policy without configured password.
+  - cannot set and clear password in one request.
+
+**Reasoning**
+
+Avoids manual DB edits and keeps policy management in product-admin surface.
 
 ---
 
@@ -178,6 +279,15 @@ Add only the minimum contract needed for frontend onboarding UX.
 - `POST /tenant/onboarding` join behavior:
   - personalized invites require authenticated user email to match invite email,
   - shared invites skip redemption and remain reusable.
+  - request accepts optional `invitePassword` for shared invite password-gated joins.
+- `PATCH /tenant/:tenantId/settings` now accepts `inviteAccessConfig`:
+  - `allowlistDomains: string[]`
+  - `allowlistEmails: string[]`
+  - `requirePasswordForUnlisted: boolean`
+  - `inviteJoinPassword?: string`
+  - `clearInviteJoinPassword?: boolean`
+- `GET /tenant/me` tenant payload includes normalized `inviteAccessConfig`:
+  - `allowlistDomains`, `allowlistEmails`, `requirePasswordForUnlisted`, `hasPassword`.
 
 **Reasoning**
 
@@ -214,6 +324,10 @@ Keep server authoritative and fail closed on auth/permission, but fail open on p
   - join request rejected (`invite_email_mismatch`).
 - Shared invite reuse:
   - invite remains `pending` after successful joins and can be reused until expiry/revocation.
+- Shared invite password policy:
+  - non-allowlisted user with missing password -> `invite_password_required`,
+  - non-allowlisted user with wrong password -> `invite_password_invalid`,
+  - policy enabled but password not configured -> `invite_password_not_configured` (fail closed).
 - Expired invite status sync:
   - expired links are rejected by query-time checks even if row status is still `pending`,
   - optional scheduled maintenance may update old `pending` rows to `expired` for reporting UX.
@@ -246,18 +360,28 @@ Use mixed API + UI + onboarding redemption scenarios.
 
 1. Admin invite with valid email -> invite created + sent.
 2. Admin invite with provider failure -> invite created + fallback returned.
-3. Non-admin invite -> forbidden.
+3. User without invite-create permission -> forbidden.
 4. Personalized invite: matching email joins successfully and invite is redeemed.
 5. Personalized invite: non-matching email is denied (`invite_email_mismatch`).
 6. Shared invite: multiple users can join with the same token while invite is still valid.
 7. Expired/invalid invite -> redemption denied with clear reason.
+8. Shared invite, allowlisted domain/email -> join succeeds without password.
+9. Shared invite, non-allowlisted user + password policy enabled + missing password -> join denied (`invite_password_required`).
+10. Shared invite, non-allowlisted user + wrong password -> join denied (`invite_password_invalid`).
+11. Shared invite, non-allowlisted user + valid password -> join succeeds.
+12. Owner/admin updates allowlist policy and `GET /tenant/me` reflects saved values.
+13. Admin cannot set/clear invite password (forbidden).
+14. Owner can set/clear invite password.
 
 ### Acceptance Criteria
 
 - Admin can invite by email from dashboard.
 - Admin can create reusable shared invites with no recipient email.
+- Owner/admin can manage shared-invite allowlist/access policy from dashboard.
+- Only owner can set/clear shared-invite password.
 - Delivery failure does not block onboarding artifact creation.
 - Invite join behavior is correct for both invite types.
+- Shared-invite allowlist/password behavior is enforced server-side, not client-side.
 
 **Reasoning**
 
@@ -281,11 +405,13 @@ Ship in controlled stages with clear rollback boundaries.
 1. Backend SMTP integration + response contract.
 2. Dashboard invite-send UI + fallback UX.
 3. Canary rollout with invite delivery metrics.
+4. Shared-invite access controls (allowlist/password) in API + dashboard.
 
 ### Rollback Points
 
 - Disable email sending while retaining token invite creation.
 - Keep invite redemption path unchanged.
+- Disable password-required policy while keeping shared invites active, if onboarding friction spikes.
 
 **Reasoning**
 
@@ -303,3 +429,4 @@ Decouples provider risk from core invite workflow.
 - This document now includes implementation-aligned behavior updates.
 - Billing gating is out of scope for this feature doc.
 - Owner role redesign is out of scope for this feature doc.
+- As of 2026-04-10, shared invite access controls and dashboard management UI are implemented in code.

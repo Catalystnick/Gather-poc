@@ -8,7 +8,6 @@ import type {
 import {
   actionsStyle,
   activeModeButtonStyle,
-  cardStyle,
   errorTextStyle,
   inputStyle,
   inviteResultStyle,
@@ -16,6 +15,8 @@ import {
   listStyle,
   modeButtonStyle,
   modeToggleStyle,
+  orgDashboardCardStyle,
+  orgDashboardScrollStyle,
   pageStyle,
   primaryButtonStyle,
   secondaryButtonStyle,
@@ -33,7 +34,11 @@ type TenantDashboardViewProps = {
   dashboardError: string | null;
   isDashboardLoading: boolean;
   isSigningOut: boolean;
+  canAccessAdminDashboard: boolean;
   isCurrentUserAdmin: boolean;
+  canCreateInvites: boolean;
+  canManageInviteAccess: boolean;
+  canManageInvitePassword: boolean;
   tenantMembers: TenantMember[];
   inviteDescription: string;
   inviteType: InviteType;
@@ -43,6 +48,15 @@ type TenantDashboardViewProps = {
   inviteError: string | null;
   inviteStatus: string | null;
   createdInvite: TenantInvite | null;
+  inviteAllowlistDomainsInput: string;
+  inviteAllowlistEmailsInput: string;
+  requirePasswordForUnlisted: boolean;
+  hasInviteJoinPassword: boolean;
+  inviteJoinPasswordInput: string;
+  clearInviteJoinPassword: boolean;
+  isSavingInviteAccess: boolean;
+  inviteAccessError: string | null;
+  inviteAccessStatus: string | null;
   showDevTool: boolean;
   isGrantingAdmin: boolean;
   adminToolStatus: string | null;
@@ -54,6 +68,12 @@ type TenantDashboardViewProps = {
   onInviteRoleKeyChange: (value: InviteRoleKey) => void;
   onCreateInvite: () => void;
   onCopyInviteValue: (value: string, label: string) => void;
+  onInviteAllowlistDomainsInputChange: (value: string) => void;
+  onInviteAllowlistEmailsInputChange: (value: string) => void;
+  onRequirePasswordForUnlistedChange: (value: boolean) => void;
+  onInviteJoinPasswordInputChange: (value: string) => void;
+  onClearInviteJoinPasswordChange: (value: boolean) => void;
+  onSaveInviteAccessSettings: () => void;
   onToggleAdminRole: () => void;
 };
 
@@ -270,6 +290,154 @@ function DevToolSection({
   );
 }
 
+type InviteAccessSettingsSectionProps = {
+  inviteType: InviteType;
+  canManageInvitePassword: boolean;
+  inviteAllowlistDomainsInput: string;
+  inviteAllowlistEmailsInput: string;
+  requirePasswordForUnlisted: boolean;
+  hasInviteJoinPassword: boolean;
+  inviteJoinPasswordInput: string;
+  clearInviteJoinPassword: boolean;
+  isSavingInviteAccess: boolean;
+  inviteAccessError: string | null;
+  inviteAccessStatus: string | null;
+  onInviteAllowlistDomainsInputChange: (value: string) => void;
+  onInviteAllowlistEmailsInputChange: (value: string) => void;
+  onRequirePasswordForUnlistedChange: (value: boolean) => void;
+  onInviteJoinPasswordInputChange: (value: string) => void;
+  onClearInviteJoinPasswordChange: (value: boolean) => void;
+  onSaveInviteAccessSettings: () => void;
+};
+
+function InviteAccessSettingsSection({
+  inviteType,
+  canManageInvitePassword,
+  inviteAllowlistDomainsInput,
+  inviteAllowlistEmailsInput,
+  requirePasswordForUnlisted,
+  hasInviteJoinPassword,
+  inviteJoinPasswordInput,
+  clearInviteJoinPassword,
+  isSavingInviteAccess,
+  inviteAccessError,
+  inviteAccessStatus,
+  onInviteAllowlistDomainsInputChange,
+  onInviteAllowlistEmailsInputChange,
+  onRequirePasswordForUnlistedChange,
+  onInviteJoinPasswordInputChange,
+  onClearInviteJoinPasswordChange,
+  onSaveInviteAccessSettings,
+}: InviteAccessSettingsSectionProps) {
+  const [showInvitePassword, setShowInvitePassword] = useState(false);
+
+  return (
+    <div style={sectionStyle}>
+      <h3 style={sectionTitleStyle}>Invite Access Controls</h3>
+      {inviteType !== "shared" ? (
+        <p style={textStyle}>
+          These controls apply only to Group (Shared) invites. Switch Invite Users
+          mode to Group to edit allowlists and password policy.
+        </p>
+      ) : (
+        <>
+      <p style={textStyle}>
+        Whitelisted emails/domains can join shared invites directly. Others must
+        pass the invite password when enforcement is enabled.
+      </p>
+      <textarea
+        style={{ ...inputStyle, minHeight: 76, resize: "vertical" }}
+        value={inviteAllowlistDomainsInput}
+        onChange={(event) =>
+          onInviteAllowlistDomainsInputChange(event.target.value)
+        }
+        placeholder="Allowed domains (comma or newline separated)\nexample.com\nrevox.io"
+      />
+      <textarea
+        style={{ ...inputStyle, minHeight: 76, resize: "vertical" }}
+        value={inviteAllowlistEmailsInput}
+        onChange={(event) =>
+          onInviteAllowlistEmailsInputChange(event.target.value)
+        }
+        placeholder="Allowed emails (comma or newline separated)\nadmin@example.com"
+      />
+      {canManageInvitePassword ? (
+        <label style={textStyle}>
+          <input
+            type="checkbox"
+            checked={requirePasswordForUnlisted}
+            onChange={(event) =>
+              onRequirePasswordForUnlistedChange(event.target.checked)
+            }
+            style={{ marginRight: 8 }}
+          />
+          Require password for non-whitelisted shared-invite joins
+        </label>
+      ) : (
+        <p style={textStyle}>
+          Password requirement:{" "}
+          {requirePasswordForUnlisted ? "Enabled" : "Disabled"}. Only organization
+          owners can change this setting.
+        </p>
+      )}
+      <p style={textStyle}>
+        Password status: {hasInviteJoinPassword ? "Configured" : "Not configured"}
+      </p>
+      {canManageInvitePassword ? (
+        <>
+          <input
+            style={inputStyle}
+            type={showInvitePassword ? "text" : "password"}
+            value={inviteJoinPasswordInput}
+            onChange={(event) => onInviteJoinPasswordInputChange(event.target.value)}
+            placeholder="Set new invite password (min 8 chars)"
+            autoComplete="new-password"
+            disabled={clearInviteJoinPassword}
+          />
+          <label style={textStyle}>
+            <input
+              type="checkbox"
+              checked={showInvitePassword}
+              onChange={(event) => setShowInvitePassword(event.target.checked)}
+              style={{ marginRight: 8 }}
+            />
+            Show password
+          </label>
+          {hasInviteJoinPassword && (
+            <label style={textStyle}>
+              <input
+                type="checkbox"
+                checked={clearInviteJoinPassword}
+                onChange={(event) =>
+                  onClearInviteJoinPasswordChange(event.target.checked)
+                }
+                style={{ marginRight: 8 }}
+              />
+              Clear existing invite password
+            </label>
+          )}
+        </>
+      ) : (
+        <p style={textStyle}>Only organization owners can set or clear invite passwords.</p>
+      )}
+      {inviteAccessError && <p style={errorTextStyle}>{inviteAccessError}</p>}
+      {inviteAccessStatus && <p style={textStyle}>{inviteAccessStatus}</p>}
+      <div style={actionsStyle}>
+        <button
+          type="button"
+          style={primaryButtonStyle}
+          disabled={isSavingInviteAccess}
+          onClick={onSaveInviteAccessSettings}
+        >
+          {isSavingInviteAccess ? "Saving..." : "Save Invite Access"}
+        </button>
+      </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export function TenantDashboardView({
   tenantName,
   tenantSlug,
@@ -277,7 +445,11 @@ export function TenantDashboardView({
   dashboardError,
   isDashboardLoading,
   isSigningOut,
+  canAccessAdminDashboard,
   isCurrentUserAdmin,
+  canCreateInvites,
+  canManageInviteAccess,
+  canManageInvitePassword,
   tenantMembers,
   inviteDescription,
   inviteType,
@@ -287,6 +459,15 @@ export function TenantDashboardView({
   inviteError,
   inviteStatus,
   createdInvite,
+  inviteAllowlistDomainsInput,
+  inviteAllowlistEmailsInput,
+  requirePasswordForUnlisted,
+  hasInviteJoinPassword,
+  inviteJoinPasswordInput,
+  clearInviteJoinPassword,
+  isSavingInviteAccess,
+  inviteAccessError,
+  inviteAccessStatus,
   showDevTool,
   isGrantingAdmin,
   adminToolStatus,
@@ -298,67 +479,107 @@ export function TenantDashboardView({
   onInviteRoleKeyChange,
   onCreateInvite,
   onCopyInviteValue,
+  onInviteAllowlistDomainsInputChange,
+  onInviteAllowlistEmailsInputChange,
+  onRequirePasswordForUnlistedChange,
+  onInviteJoinPasswordInputChange,
+  onClearInviteJoinPasswordChange,
+  onSaveInviteAccessSettings,
   onToggleAdminRole,
 }: TenantDashboardViewProps) {
   return (
     <div style={pageStyle}>
-      <div style={cardStyle}>
-        <h2 style={titleStyle}>Organization Dashboard</h2>
-        <p style={textStyle}>
-          Tenant: {tenantName} | Role: {currentRoleKey ?? "none"}
-        </p>
-        {dashboardError && <p style={errorTextStyle}>{dashboardError}</p>}
-        {isDashboardLoading && <p style={textStyle}>Loading organizations and users...</p>}
-        <div style={actionsStyle}>
-          <button type="button" style={primaryButtonStyle} onClick={onEnterGame}>
-            Enter Game
-          </button>
-          <button type="button" style={secondaryButtonStyle} onClick={onRefresh}>
-            Refresh
-          </button>
-          <button type="button" style={secondaryButtonStyle} onClick={onSignOut}>
-            {isSigningOut ? "Signing out..." : "Log out"}
-          </button>
-        </div>
-
-        {isCurrentUserAdmin && tenantSlug && (
-          <div style={sectionStyle}>
-            <h3 style={sectionTitleStyle}>Organization</h3>
-            <p style={textStyle}>
-              <strong>{tenantName}</strong> ({tenantSlug}) | role:{" "}
-              {currentRoleKey ?? "unknown"}
-            </p>
+      <div style={orgDashboardScrollStyle}>
+        <div style={orgDashboardCardStyle}>
+          <h2 style={titleStyle}>Organization Dashboard</h2>
+          <p style={textStyle}>
+            Tenant: {tenantName} | Role: {currentRoleKey ?? "none"}
+          </p>
+          {dashboardError && <p style={errorTextStyle}>{dashboardError}</p>}
+          {isDashboardLoading && (
+            <p style={textStyle}>Loading organizations and users...</p>
+          )}
+          <div style={actionsStyle}>
+            <button type="button" style={primaryButtonStyle} onClick={onEnterGame}>
+              Enter Game
+            </button>
+            <button type="button" style={secondaryButtonStyle} onClick={onRefresh}>
+              Refresh
+            </button>
+            <button type="button" style={secondaryButtonStyle} onClick={onSignOut}>
+              {isSigningOut ? "Signing out..." : "Log out"}
+            </button>
           </div>
-        )}
 
-        {isCurrentUserAdmin && <AdminMembersSection tenantMembers={tenantMembers} />}
+          {canAccessAdminDashboard && tenantSlug && (
+            <div style={sectionStyle}>
+              <h3 style={sectionTitleStyle}>Organization</h3>
+              <p style={textStyle}>
+                <strong>{tenantName}</strong> ({tenantSlug}) | role:{" "}
+                {currentRoleKey ?? "unknown"}
+              </p>
+            </div>
+          )}
 
-        {isCurrentUserAdmin && (
-          <AdminInviteSection
-            inviteDescription={inviteDescription}
-            inviteType={inviteType}
-            inviteEmailInput={inviteEmailInput}
-            inviteRoleKey={inviteRoleKey}
-            isCreatingInvite={isCreatingInvite}
-            inviteError={inviteError}
-            inviteStatus={inviteStatus}
-            createdInvite={createdInvite}
-            onInviteTypeChange={onInviteTypeChange}
-            onInviteEmailChange={onInviteEmailChange}
-            onInviteRoleKeyChange={onInviteRoleKeyChange}
-            onCreateInvite={onCreateInvite}
-            onCopyInviteValue={onCopyInviteValue}
-          />
-        )}
+          {isCurrentUserAdmin && (
+            <AdminMembersSection tenantMembers={tenantMembers} />
+          )}
 
-        {showDevTool && (
-          <DevToolSection
-            isGrantingAdmin={isGrantingAdmin}
-            isCurrentUserAdmin={isCurrentUserAdmin}
-            adminToolStatus={adminToolStatus}
-            onToggleAdminRole={onToggleAdminRole}
-          />
-        )}
+          {canCreateInvites && (
+            <AdminInviteSection
+              inviteDescription={inviteDescription}
+              inviteType={inviteType}
+              inviteEmailInput={inviteEmailInput}
+              inviteRoleKey={inviteRoleKey}
+              isCreatingInvite={isCreatingInvite}
+              inviteError={inviteError}
+              inviteStatus={inviteStatus}
+              createdInvite={createdInvite}
+              onInviteTypeChange={onInviteTypeChange}
+              onInviteEmailChange={onInviteEmailChange}
+              onInviteRoleKeyChange={onInviteRoleKeyChange}
+              onCreateInvite={onCreateInvite}
+              onCopyInviteValue={onCopyInviteValue}
+            />
+          )}
+
+          {canManageInviteAccess && (
+            <InviteAccessSettingsSection
+              inviteType={inviteType}
+              canManageInvitePassword={canManageInvitePassword}
+              inviteAllowlistDomainsInput={inviteAllowlistDomainsInput}
+              inviteAllowlistEmailsInput={inviteAllowlistEmailsInput}
+              requirePasswordForUnlisted={requirePasswordForUnlisted}
+              hasInviteJoinPassword={hasInviteJoinPassword}
+              inviteJoinPasswordInput={inviteJoinPasswordInput}
+              clearInviteJoinPassword={clearInviteJoinPassword}
+              isSavingInviteAccess={isSavingInviteAccess}
+              inviteAccessError={inviteAccessError}
+              inviteAccessStatus={inviteAccessStatus}
+              onInviteAllowlistDomainsInputChange={
+                onInviteAllowlistDomainsInputChange
+              }
+              onInviteAllowlistEmailsInputChange={
+                onInviteAllowlistEmailsInputChange
+              }
+              onRequirePasswordForUnlistedChange={
+                onRequirePasswordForUnlistedChange
+              }
+              onInviteJoinPasswordInputChange={onInviteJoinPasswordInputChange}
+              onClearInviteJoinPasswordChange={onClearInviteJoinPasswordChange}
+              onSaveInviteAccessSettings={onSaveInviteAccessSettings}
+            />
+          )}
+
+          {showDevTool && (
+            <DevToolSection
+              isGrantingAdmin={isGrantingAdmin}
+              isCurrentUserAdmin={isCurrentUserAdmin}
+              adminToolStatus={adminToolStatus}
+              onToggleAdminRole={onToggleAdminRole}
+            />
+          )}
+        </div>
       </div>
     </div>
   );

@@ -8,6 +8,7 @@ import {
   createTenantInvite,
   fetchTenantMembers,
   readJson,
+  updateInviteAccessSettings,
 } from "./dashboardApi";
 import {
   DashboardErrorView,
@@ -36,6 +37,9 @@ export default function DashboardRoute() {
     useState<OnboardingMode>("create");
   const [tenantNameInput, setTenantNameInput] = useState("");
   const [inviteTokenInput, setInviteTokenInput] = useState("");
+  const [inviteJoinPasswordInput, setInviteJoinPasswordInput] = useState("");
+  const [requiresInviteJoinPassword, setRequiresInviteJoinPassword] =
+    useState(false);
   const [isSubmittingOnboarding, setIsSubmittingOnboarding] = useState(false);
   const [onboardingError, setOnboardingError] = useState<string | null>(null);
 
@@ -54,19 +58,74 @@ export default function DashboardRoute() {
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteStatus, setInviteStatus] = useState<string | null>(null);
   const [createdInvite, setCreatedInvite] = useState<TenantInvite | null>(null);
+  const [inviteAllowlistDomainsInput, setInviteAllowlistDomainsInput] =
+    useState("");
+  const [inviteAllowlistEmailsInput, setInviteAllowlistEmailsInput] =
+    useState("");
+  const [requirePasswordForUnlisted, setRequirePasswordForUnlisted] =
+    useState(false);
+  const [inviteJoinPolicyPasswordInput, setInviteJoinPolicyPasswordInput] =
+    useState("");
+  const [clearInviteJoinPassword, setClearInviteJoinPassword] = useState(false);
+  const [hasInviteJoinPassword, setHasInviteJoinPassword] = useState(false);
+  const [isSavingInviteAccess, setIsSavingInviteAccess] = useState(false);
+  const [inviteAccessError, setInviteAccessError] = useState<string | null>(
+    null,
+  );
+  const [inviteAccessStatus, setInviteAccessStatus] = useState<string | null>(
+    null,
+  );
 
   const autoJoinAttemptedTokenRef = useRef<string | null>(null);
   const tenantContext = tenantState.context;
   const effectiveInviteToken = searchParams.get("inviteToken")?.trim() ?? "";
 
   const currentRoleKey = tenantContext?.roleKey ?? null;
-  const isCurrentUserAdmin = currentRoleKey === "admin";
+  const currentRequirePasswordForUnlisted =
+    tenantContext?.tenant?.inviteAccessConfig?.requirePasswordForUnlisted ?? false;
+  const permissionKeys = tenantContext?.permissions ?? [];
+  const canManageMembers = permissionKeys.includes("tenant.members.manage");
+  const canCreateInvites = permissionKeys.includes("tenant.invite.create");
+  const canManageInviteAccess = permissionKeys.includes(
+    "tenant.invite.access.manage",
+  );
+  const canManageInvitePassword = permissionKeys.includes(
+    "tenant.invite.password.manage",
+  );
+  const canAccessAdminDashboard =
+    canManageMembers || canCreateInvites || canManageInviteAccess;
+  const isCurrentUserAdmin = canManageMembers;
   const activeTenantId = tenantContext?.tenant?.id ?? null;
 
   const inviteDescription =
     inviteType === "personalized"
       ? "Personalized invite: one-time use and bound to a specific email. You can choose member or admin role."
       : "Group invite: reusable until expiry, no email target, and all joiners are assigned member role.";
+
+  function normalizeTextList(rawValue: string) {
+    const parts = rawValue
+      .split(/[\n,]+/g)
+      .map((entry) => entry.trim().toLowerCase())
+      .filter(Boolean);
+    return [...new Set(parts)];
+  }
+
+  function toJoinInviteError(error: unknown) {
+    return error as Error & { code?: string };
+  }
+
+  function handleJoinInviteError(error: unknown) {
+    const nextError = toJoinInviteError(error);
+    const code = nextError?.code ?? "";
+    const needsPassword =
+      code === "invite_password_required" || code === "invite_password_invalid";
+    setRequiresInviteJoinPassword(needsPassword);
+    setOnboardingError(
+      nextError instanceof Error
+        ? nextError.message
+        : "Failed to complete tenant setup",
+    );
+  }
 
   useEffect(() => {
     if (!effectiveInviteToken) return;
@@ -76,11 +135,22 @@ export default function DashboardRoute() {
     );
   }, [effectiveInviteToken]);
 
+  useEffect(() => {
+    const inviteAccess = tenantContext?.tenant?.inviteAccessConfig;
+    if (!inviteAccess) return;
+    setInviteAllowlistDomainsInput(inviteAccess.allowlistDomains.join("\n"));
+    setInviteAllowlistEmailsInput(inviteAccess.allowlistEmails.join("\n"));
+    setRequirePasswordForUnlisted(!!inviteAccess.requirePasswordForUnlisted);
+    setHasInviteJoinPassword(!!inviteAccess.hasPassword);
+    setClearInviteJoinPassword(false);
+    setInviteJoinPolicyPasswordInput("");
+  }, [tenantContext?.tenant?.inviteAccessConfig]);
+
   const loadDashboardData = useCallback(async () => {
     if (
       !accessToken ||
       !tenantContext?.hasMembership ||
-      !isCurrentUserAdmin ||
+      !canManageMembers ||
       !activeTenantId
     ) {
       return;
@@ -104,7 +174,7 @@ export default function DashboardRoute() {
   }, [
     accessToken,
     activeTenantId,
-    isCurrentUserAdmin,
+    canManageMembers,
     tenantContext?.hasMembership,
   ]);
 
@@ -118,26 +188,28 @@ export default function DashboardRoute() {
     setIsSubmittingOnboarding(true);
     setOnboardingError(null);
     try {
-      await tenantState.joinTenantFromInvite(effectiveInviteToken);
+      await tenantState.joinTenantFromInvite(
+        effectiveInviteToken,
+        inviteJoinPasswordInput,
+      );
       await loadDashboardData();
       const nextSearchParams = new URLSearchParams(searchParams);
       nextSearchParams.delete("inviteToken");
       setSearchParams(nextSearchParams, { replace: true });
       clearPendingNextPath();
       setInviteTokenInput("");
+      setInviteJoinPasswordInput("");
+      setRequiresInviteJoinPassword(false);
       autoJoinAttemptedTokenRef.current = null;
     } catch (error) {
-      setOnboardingError(
-        error instanceof Error
-          ? error.message
-          : "Failed to complete tenant setup",
-      );
+      handleJoinInviteError(error);
       autoJoinAttemptedTokenRef.current = null;
     } finally {
       setIsSubmittingOnboarding(false);
     }
   }, [
     effectiveInviteToken,
+    inviteJoinPasswordInput,
     loadDashboardData,
     searchParams,
     setSearchParams,
@@ -181,7 +253,10 @@ export default function DashboardRoute() {
       if (onboardingMode === "create") {
         await tenantState.createTenantDuringOnboarding(tenantNameInput);
       } else {
-        await tenantState.joinTenantFromInvite(inviteTokenInput);
+        await tenantState.joinTenantFromInvite(
+          inviteTokenInput,
+          inviteJoinPasswordInput,
+        );
         const nextSearchParams = new URLSearchParams(searchParams);
         nextSearchParams.delete("inviteToken");
         setSearchParams(nextSearchParams, { replace: true });
@@ -190,16 +265,15 @@ export default function DashboardRoute() {
       await loadDashboardData();
       setTenantNameInput("");
       setInviteTokenInput("");
+      setInviteJoinPasswordInput("");
+      setRequiresInviteJoinPassword(false);
     } catch (error) {
-      setOnboardingError(
-        error instanceof Error
-          ? error.message
-          : "Failed to complete tenant setup",
-      );
+      handleJoinInviteError(error);
     } finally {
       setIsSubmittingOnboarding(false);
     }
   }, [
+    inviteJoinPasswordInput,
     inviteTokenInput,
     isSubmittingOnboarding,
     loadDashboardData,
@@ -226,6 +300,11 @@ export default function DashboardRoute() {
 
   const handleCreateInvite = useCallback(async () => {
     if (!accessToken || !activeTenantId || isCreatingInvite) return;
+    if (!canCreateInvites) {
+      setInviteError("You do not have permission to create invites.");
+      setInviteStatus(null);
+      return;
+    }
 
     const email = inviteEmailInput.trim();
     if (inviteType === "personalized" && !email) {
@@ -240,7 +319,7 @@ export default function DashboardRoute() {
     try {
       const invite = await createTenantInvite(accessToken, activeTenantId, {
         roleKey: inviteType === "shared" ? "member" : inviteRoleKey,
-        emailOptional: inviteType === "personalized" ? email : null,
+        inviteEmail: inviteType === "personalized" ? email : null,
       });
       setCreatedInvite(invite);
       if (invite.delivery.sent) {
@@ -264,6 +343,7 @@ export default function DashboardRoute() {
   }, [
     accessToken,
     activeTenantId,
+    canCreateInvites,
     inviteEmailInput,
     inviteRoleKey,
     inviteType,
@@ -279,6 +359,105 @@ export default function DashboardRoute() {
       setInviteRoleKey("member");
     }
   }, []);
+
+  const handleSaveInviteAccessSettings = useCallback(async () => {
+    if (!accessToken || !activeTenantId || isSavingInviteAccess) return;
+    if (!canManageInviteAccess) {
+      setInviteAccessError("You do not have permission to manage invite access.");
+      setInviteAccessStatus(null);
+      return;
+    }
+
+    const allowlistDomains = normalizeTextList(inviteAllowlistDomainsInput);
+    const allowlistEmails = normalizeTextList(inviteAllowlistEmailsInput);
+    const inviteJoinPassword = inviteJoinPolicyPasswordInput.trim();
+    const hasPendingPassword = inviteJoinPassword.length > 0;
+    const shouldClearPassword = clearInviteJoinPassword;
+    if (!canManageInvitePassword && (hasPendingPassword || shouldClearPassword)) {
+      setInviteAccessError("Only organization owners can change invite password.");
+      setInviteAccessStatus(null);
+      return;
+    }
+    if (hasPendingPassword && shouldClearPassword) {
+      setInviteAccessError(
+        "Set a new password or clear the current one, but not both at once.",
+      );
+      setInviteAccessStatus(null);
+      return;
+    }
+    const effectiveHasPassword =
+      (hasInviteJoinPassword && !shouldClearPassword) || hasPendingPassword;
+
+    if (
+      canManageInvitePassword &&
+      requirePasswordForUnlisted &&
+      !effectiveHasPassword
+    ) {
+      setInviteAccessError(
+        canManageInvitePassword
+          ? "Set an invite password before enabling password requirement."
+          : "An owner must configure an invite password before this policy can be enabled.",
+      );
+      setInviteAccessStatus(null);
+      return;
+    }
+
+    setIsSavingInviteAccess(true);
+    setInviteAccessError(null);
+    setInviteAccessStatus(null);
+    try {
+      await updateInviteAccessSettings(accessToken, activeTenantId, {
+        allowlistDomains,
+        allowlistEmails,
+        ...(canManageInvitePassword
+          ? { requirePasswordForUnlisted }
+          : { requirePasswordForUnlisted: currentRequirePasswordForUnlisted }),
+        ...(canManageInvitePassword && hasPendingPassword
+          ? { inviteJoinPassword }
+          : {}),
+        ...(canManageInvitePassword && shouldClearPassword
+          ? { clearInviteJoinPassword: true }
+          : {}),
+      });
+
+      await tenantState.refresh();
+      setInviteJoinPolicyPasswordInput("");
+      setClearInviteJoinPassword(false);
+      setInviteAccessStatus("Invite access settings saved.");
+    } catch (error) {
+      setInviteAccessError(
+        error instanceof Error
+          ? error.message
+          : "Failed to save invite access settings",
+      );
+    } finally {
+      setIsSavingInviteAccess(false);
+    }
+  }, [
+    accessToken,
+    activeTenantId,
+    canManageInviteAccess,
+    canManageInvitePassword,
+    clearInviteJoinPassword,
+    currentRequirePasswordForUnlisted,
+    hasInviteJoinPassword,
+    inviteAllowlistDomainsInput,
+    inviteAllowlistEmailsInput,
+    inviteJoinPolicyPasswordInput,
+    isSavingInviteAccess,
+    requirePasswordForUnlisted,
+    tenantState,
+  ]);
+
+  const handleClearInviteJoinPasswordChange = useCallback(
+    (nextValue: boolean) => {
+      setClearInviteJoinPassword(nextValue);
+      if (nextValue) {
+        setInviteJoinPolicyPasswordInput("");
+      }
+    },
+    [],
+  );
 
   // TODO : remove in production
   const handleGrantAdminForDev = useCallback(async () => {
@@ -336,6 +515,9 @@ export default function DashboardRoute() {
         <InviteAutoJoinView
           isSubmitting={isSubmittingOnboarding}
           error={onboardingError}
+          invitePassword={inviteJoinPasswordInput}
+          showPasswordField={requiresInviteJoinPassword}
+          onInvitePasswordChange={setInviteJoinPasswordInput}
           onRetry={() => void handleRetryInviteAutoJoin()}
           onSignOut={() => void handleSignOut()}
         />
@@ -347,11 +529,13 @@ export default function DashboardRoute() {
         mode={onboardingMode}
         tenantNameInput={tenantNameInput}
         inviteTokenInput={inviteTokenInput}
+        invitePasswordInput={inviteJoinPasswordInput}
         isSubmitting={isSubmittingOnboarding}
         error={onboardingError}
         onModeChange={setOnboardingMode}
         onTenantNameChange={setTenantNameInput}
         onInviteTokenChange={setInviteTokenInput}
+        onInvitePasswordChange={setInviteJoinPasswordInput}
         onSubmit={() => void handleOnboardingSubmit()}
         onSignOut={() => void handleSignOut()}
       />
@@ -366,7 +550,11 @@ export default function DashboardRoute() {
       dashboardError={dashboardError}
       isDashboardLoading={isDashboardLoading}
       isSigningOut={isSigningOut}
+      canAccessAdminDashboard={canAccessAdminDashboard}
       isCurrentUserAdmin={isCurrentUserAdmin}
+      canCreateInvites={canCreateInvites}
+      canManageInviteAccess={canManageInviteAccess}
+      canManageInvitePassword={canManageInvitePassword}
       tenantMembers={tenantMembers}
       inviteDescription={inviteDescription}
       inviteType={inviteType}
@@ -376,6 +564,15 @@ export default function DashboardRoute() {
       inviteError={inviteError}
       inviteStatus={inviteStatus}
       createdInvite={createdInvite}
+      inviteAllowlistDomainsInput={inviteAllowlistDomainsInput}
+      inviteAllowlistEmailsInput={inviteAllowlistEmailsInput}
+      requirePasswordForUnlisted={requirePasswordForUnlisted}
+      hasInviteJoinPassword={hasInviteJoinPassword}
+      inviteJoinPasswordInput={inviteJoinPolicyPasswordInput}
+      clearInviteJoinPassword={clearInviteJoinPassword}
+      isSavingInviteAccess={isSavingInviteAccess}
+      inviteAccessError={inviteAccessError}
+      inviteAccessStatus={inviteAccessStatus}
       showDevTool={import.meta.env.DEV}
       isGrantingAdmin={isGrantingAdmin}
       adminToolStatus={adminToolStatus}
@@ -389,6 +586,12 @@ export default function DashboardRoute() {
       onCopyInviteValue={(value, label) =>
         void handleCopyInviteValue(value, label)
       }
+      onInviteAllowlistDomainsInputChange={setInviteAllowlistDomainsInput}
+      onInviteAllowlistEmailsInputChange={setInviteAllowlistEmailsInput}
+      onRequirePasswordForUnlistedChange={setRequirePasswordForUnlisted}
+      onInviteJoinPasswordInputChange={setInviteJoinPolicyPasswordInput}
+      onClearInviteJoinPasswordChange={handleClearInviteJoinPasswordChange}
+      onSaveInviteAccessSettings={() => void handleSaveInviteAccessSettings()}
       onToggleAdminRole={() => void handleGrantAdminForDev()}
     />
   );

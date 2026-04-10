@@ -1,6 +1,13 @@
 import { TenantServiceError } from "./errors.js";
-import { randomBytes } from "node:crypto";
-import { toClientTenantAccessConfig } from "./accessConfigMapper.js";
+import {
+  randomBytes,
+  scryptSync,
+  timingSafeEqual,
+} from "node:crypto";
+import {
+  toClientTenantAccessConfig,
+  toClientTenantInviteAccessConfig,
+} from "./accessConfigMapper.js";
 import {
   buildTenantInviteLink,
   sendTenantInviteEmail,
@@ -59,6 +66,17 @@ const TENANT_ACCESS_CONFIG_FIELDS = {
   memberCanTag: "member_can_tag",
   memberCanTeleport: "member_can_teleport",
 };
+const INVITE_PASSWORD_HASH_PREFIX = "scrypt";
+const ROLE_OWNER_KEY = "owner";
+const ROLE_ADMIN_KEY = "admin";
+const ROLE_MEMBER_KEY = "member";
+const INVITABLE_ROLE_KEYS = new Set([ROLE_ADMIN_KEY, ROLE_MEMBER_KEY]);
+const PERMISSION_TENANT_INVITE_CREATE = "tenant.invite.create";
+const PERMISSION_TENANT_MEMBERS_MANAGE = "tenant.members.manage";
+const PERMISSION_TENANT_SETTINGS_MANAGE = "tenant.settings.manage";
+const PERMISSION_TENANT_INVITE_ACCESS_MANAGE = "tenant.invite.access.manage";
+const PERMISSION_TENANT_INVITE_PASSWORD_MANAGE =
+  "tenant.invite.password.manage";
 
 function getCachedContext(userId) {
   const entry = tenantContextCache.get(userId);
@@ -147,6 +165,252 @@ function normalizeAccessConfigPatch(rawConfig) {
   return patch;
 }
 
+function normalizeInviteAccessEmail(rawEmail) {
+  const email = String(rawEmail ?? "").trim().toLowerCase();
+  if (!email) return null;
+  if (!email.includes("@")) {
+    throw new TenantServiceError("invite allowlist email is invalid", {
+      status: 400,
+      code: "invite_allowlist_email_invalid",
+      details: { value: rawEmail },
+    });
+  }
+  return email;
+}
+
+function normalizeInviteAccessDomain(rawDomain) {
+  const normalized = String(rawDomain ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/^@+/, "");
+  if (!normalized) return null;
+  if (!/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(normalized)) {
+    throw new TenantServiceError("invite allowlist domain is invalid", {
+      status: 400,
+      code: "invite_allowlist_domain_invalid",
+      details: { value: rawDomain },
+    });
+  }
+  return normalized;
+}
+
+function normalizeInviteAccessList(rawList, fieldName, normalizeEntry) {
+  if (!Array.isArray(rawList)) {
+    throw new TenantServiceError(`${fieldName} must be an array`, {
+      status: 400,
+      code: "invite_access_config_invalid",
+      details: { field: fieldName },
+    });
+  }
+
+  const deduped = [];
+  const seen = new Set();
+  for (const entry of rawList) {
+    const normalized = normalizeEntry(entry);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    deduped.push(normalized);
+  }
+  return deduped;
+}
+
+function parseScryptInvitePasswordHash(hash) {
+  if (typeof hash !== "string" || !hash) return null;
+  const [prefix, saltHex, keyHex] = hash.split(":");
+  if (
+    prefix !== INVITE_PASSWORD_HASH_PREFIX ||
+    !saltHex ||
+    !keyHex ||
+    !/^[a-f0-9]+$/i.test(saltHex) ||
+    !/^[a-f0-9]+$/i.test(keyHex)
+  ) {
+    return null;
+  }
+  return {
+    salt: Buffer.from(saltHex, "hex"),
+    key: Buffer.from(keyHex, "hex"),
+  };
+}
+
+function hashInviteJoinPassword(password) {
+  const rawPassword = String(password ?? "");
+  if (rawPassword.length < 8) {
+    throw new TenantServiceError("Invite password must be at least 8 characters", {
+      status: 400,
+      code: "invite_password_too_short",
+    });
+  }
+  if (rawPassword.length > 128) {
+    throw new TenantServiceError("Invite password is too long", {
+      status: 400,
+      code: "invite_password_too_long",
+    });
+  }
+
+  const salt = randomBytes(16);
+  const derivedKey = scryptSync(rawPassword, salt, 64);
+  return `${INVITE_PASSWORD_HASH_PREFIX}:${salt.toString("hex")}:${derivedKey.toString("hex")}`;
+}
+
+function verifyInviteJoinPassword(rawPassword, storedHash) {
+  const parsed = parseScryptInvitePasswordHash(storedHash);
+  if (!parsed) return false;
+
+  const candidate = String(rawPassword ?? "");
+  if (!candidate) return false;
+
+  const derivedKey = scryptSync(candidate, parsed.salt, parsed.key.length);
+  if (derivedKey.length !== parsed.key.length) return false;
+  return timingSafeEqual(derivedKey, parsed.key);
+}
+
+function resolveInviteAccessConfigState(currentConfig, patch) {
+  const currentRequire = !!currentConfig?.invite_require_password_for_unlisted;
+  const currentHash =
+    typeof currentConfig?.invite_password_hash === "string"
+      ? currentConfig.invite_password_hash
+      : null;
+
+  const nextRequire =
+    typeof patch?.invite_require_password_for_unlisted === "boolean"
+      ? patch.invite_require_password_for_unlisted
+      : currentRequire;
+  const nextHash = Object.prototype.hasOwnProperty.call(
+    patch ?? {},
+    "invite_password_hash",
+  )
+    ? patch.invite_password_hash
+    : currentHash;
+
+  return { nextRequire, nextHash };
+}
+
+function normalizeInviteAccessConfigPatch(rawConfig) {
+  if (rawConfig === undefined) return null;
+  if (!rawConfig || typeof rawConfig !== "object" || Array.isArray(rawConfig)) {
+    throw new TenantServiceError("invite_access_config must be an object", {
+      status: 400,
+      code: "invite_access_config_invalid",
+    });
+  }
+
+  const patch = {};
+
+  if ("allowlistDomains" in rawConfig) {
+    patch.invite_allowlist_domains = normalizeInviteAccessList(
+      rawConfig.allowlistDomains,
+      "allowlistDomains",
+      normalizeInviteAccessDomain,
+    );
+  }
+
+  if ("allowlistEmails" in rawConfig) {
+    patch.invite_allowlist_emails = normalizeInviteAccessList(
+      rawConfig.allowlistEmails,
+      "allowlistEmails",
+      normalizeInviteAccessEmail,
+    );
+  }
+
+  if ("requirePasswordForUnlisted" in rawConfig) {
+    if (typeof rawConfig.requirePasswordForUnlisted !== "boolean") {
+      throw new TenantServiceError("requirePasswordForUnlisted must be boolean", {
+        status: 400,
+        code: "invite_access_config_invalid",
+        details: { field: "requirePasswordForUnlisted" },
+      });
+    }
+    patch.invite_require_password_for_unlisted =
+      rawConfig.requirePasswordForUnlisted;
+  }
+
+  const hasPasswordInput = "inviteJoinPassword" in rawConfig;
+  const shouldClearPassword = rawConfig.clearInviteJoinPassword === true;
+  const hasClearPasswordInput = "clearInviteJoinPassword" in rawConfig;
+  if (hasPasswordInput && shouldClearPassword) {
+    throw new TenantServiceError(
+      "inviteJoinPassword and clearInviteJoinPassword cannot be set together",
+      {
+        status: 400,
+        code: "invite_access_config_invalid",
+      },
+    );
+  }
+
+  if (hasPasswordInput) {
+    if (typeof rawConfig.inviteJoinPassword !== "string") {
+      throw new TenantServiceError("inviteJoinPassword must be a string", {
+        status: 400,
+        code: "invite_access_config_invalid",
+        details: { field: "inviteJoinPassword" },
+      });
+    }
+    const nextPassword = rawConfig.inviteJoinPassword.trim();
+    if (!nextPassword) {
+      throw new TenantServiceError("inviteJoinPassword cannot be empty", {
+        status: 400,
+        code: "invite_password_required",
+      });
+    }
+    patch.invite_password_hash = hashInviteJoinPassword(nextPassword);
+  } else if (shouldClearPassword) {
+    patch.invite_password_hash = null;
+  } else if (
+    hasClearPasswordInput &&
+    typeof rawConfig.clearInviteJoinPassword !== "boolean"
+  ) {
+    throw new TenantServiceError("clearInviteJoinPassword must be boolean", {
+      status: 400,
+      code: "invite_access_config_invalid",
+      details: { field: "clearInviteJoinPassword" },
+    });
+  }
+
+  if (!Object.keys(patch).length) {
+    throw new TenantServiceError(
+      "invite_access_config has no supported fields",
+      {
+        status: 400,
+        code: "invite_access_config_empty",
+      },
+    );
+  }
+
+  return patch;
+}
+
+function normalizeStoredInviteStringArray(value, normalizeEntry) {
+  if (!Array.isArray(value)) return [];
+  const normalized = [];
+  for (const entry of value) {
+    try {
+      const next = normalizeEntry(entry);
+      if (typeof next === "string" && next.length > 0) normalized.push(next);
+    } catch {
+      // Ignore malformed persisted entries so they do not block invite joins.
+    }
+  }
+  return normalized;
+}
+
+function extractEmailDomain(email) {
+  const atIndex = email.lastIndexOf("@");
+  if (atIndex <= 0) return "";
+  return email.slice(atIndex + 1).trim().toLowerCase();
+}
+
+function isUserWhitelistedForInvite({
+  normalizedUserEmail,
+  allowlistEmails,
+  allowlistDomains,
+}) {
+  if (!normalizedUserEmail) return false;
+  if (allowlistEmails.includes(normalizedUserEmail)) return true;
+  const domain = extractEmailDomain(normalizedUserEmail);
+  if (!domain) return false;
+  return allowlistDomains.includes(domain);
+}
+
 function requireNonEmptyText(value, fieldName, maxLen = 128) {
   const text = typeof value === "string" ? value.trim() : "";
   if (!text) {
@@ -190,6 +454,20 @@ async function requireRole(roleKey) {
   });
 }
 
+function normalizeInvitableRoleKey(roleKey) {
+  const normalizedRoleKey = requireNonEmptyText(roleKey, "role_key", 64).toLowerCase();
+  if (INVITABLE_ROLE_KEYS.has(normalizedRoleKey)) return normalizedRoleKey;
+  throw new TenantServiceError("role_key is invalid for invites", {
+    status: 400,
+    code: "invite_role_invalid",
+    details: { allowed: [...INVITABLE_ROLE_KEYS] },
+  });
+}
+
+function isOwnerRole(roleKey) {
+  return String(roleKey ?? "").trim().toLowerCase() === ROLE_OWNER_KEY;
+}
+
 async function ensureTenantExists(tenantId) {
   const tenant = await getTenantById(tenantId);
   if (tenant) return tenant;
@@ -224,9 +502,36 @@ async function ensureMemberManagementAccess({ actorUserId, tenantId }) {
   await ensureTenantPermission({
     actorUserId,
     tenantId,
-    permissionKey: "tenant.members.manage",
+    permissionKey: PERMISSION_TENANT_MEMBERS_MANAGE,
     errorCode: "tenant_members_forbidden",
   });
+}
+
+async function getActiveActorMembershipOrThrow({ tenantId, actorUserId }) {
+  const membership = await getActiveMembershipForTenantUser({
+    tenantId,
+    userId: actorUserId,
+  });
+  if (membership?.id) return membership;
+  throw new TenantServiceError("Forbidden", {
+    status: 403,
+    code: "tenant_members_forbidden",
+    details: { tenantId },
+  });
+}
+
+function ensureActorCanManageTargetRole({
+  actorRoleKey,
+  targetRoleKey,
+  nextRoleKey,
+}) {
+  if (isOwnerRole(actorRoleKey)) return;
+  if (isOwnerRole(targetRoleKey) || isOwnerRole(nextRoleKey)) {
+    throw new TenantServiceError("Owner role can only be managed by an owner", {
+      status: 403,
+      code: "owner_role_forbidden",
+    });
+  }
 }
 
 async function getActiveMembershipOrThrow({ tenantId, targetUserId }) {
@@ -266,25 +571,25 @@ function isDevAdminToolEnabled() {
   );
 }
 
-async function assertNotLastAdminDemotion({
+async function assertNotLastOwnerDemotion({
   tenantId,
   membership,
   nextRoleId,
 }) {
-  const adminRoleId = await requireRoleId("admin");
-  const isAdminMembership = membership.role_id === adminRoleId;
-  const remainsAdmin = nextRoleId === adminRoleId;
-  if (!isAdminMembership || remainsAdmin) return;
+  const ownerRoleId = await requireRoleId(ROLE_OWNER_KEY);
+  const isOwnerMembership = membership.role_id === ownerRoleId;
+  const remainsOwner = nextRoleId === ownerRoleId;
+  if (!isOwnerMembership || remainsOwner) return;
 
-  const activeAdminCount = await countActiveMembershipsByRoleId({
+  const activeOwnerCount = await countActiveMembershipsByRoleId({
     tenantId,
-    roleId: adminRoleId,
+    roleId: ownerRoleId,
   });
-  if (activeAdminCount > 1) return;
+  if (activeOwnerCount > 1) return;
 
-  throw new TenantServiceError("Cannot remove the last tenant admin", {
+  throw new TenantServiceError("Cannot remove the last tenant owner", {
     status: 409,
-    code: "last_admin_required",
+    code: "last_owner_required",
     details: { tenantId },
   });
 }
@@ -379,7 +684,7 @@ export async function listTenantMembers({ actorUserId, tenantId }) {
   await ensureTenantPermission({
     actorUserId: normalizedActorUserId,
     tenantId: normalizedTenantId,
-    permissionKey: "tenant.members.manage",
+    permissionKey: PERMISSION_TENANT_MEMBERS_MANAGE,
     errorCode: "tenant_members_forbidden",
   });
 
@@ -418,12 +723,14 @@ export async function updateTenantSettings({
   tenantId,
   accessPolicy,
   tenantAccessConfig,
+  inviteAccessConfig,
 }) {
   const normalizedTenantId = requireTenantId(tenantId);
   const nextAccessPolicy = normalizeAccessPolicy(accessPolicy);
   const accessConfigPatch = normalizeAccessConfigPatch(tenantAccessConfig);
+  const inviteAccessPatch = normalizeInviteAccessConfigPatch(inviteAccessConfig);
 
-  if (!nextAccessPolicy && !accessConfigPatch) {
+  if (!nextAccessPolicy && !accessConfigPatch && !inviteAccessPatch) {
     throw new TenantServiceError("No settings provided", {
       status: 400,
       code: "settings_empty",
@@ -431,12 +738,52 @@ export async function updateTenantSettings({
   }
 
   const tenant = await ensureTenantExists(normalizedTenantId);
-  await ensureTenantPermission({
-    actorUserId,
-    tenantId: normalizedTenantId,
-    permissionKey: "tenant.settings.manage",
-    errorCode: "tenant_settings_forbidden",
-  });
+  const hasTenantSettingsPatch = !!nextAccessPolicy || !!accessConfigPatch;
+  const hasInviteAccessPatch = !!inviteAccessPatch;
+  const hasInvitePasswordHashPatch =
+    hasInviteAccessPatch &&
+    Object.prototype.hasOwnProperty.call(inviteAccessPatch, "invite_password_hash");
+  const hasInvitePasswordPolicyPatch =
+    hasInviteAccessPatch &&
+    Object.prototype.hasOwnProperty.call(
+      inviteAccessPatch,
+      "invite_require_password_for_unlisted",
+    );
+  const hasInviteAllowlistPatch =
+    hasInviteAccessPatch &&
+    (Object.prototype.hasOwnProperty.call(
+      inviteAccessPatch,
+      "invite_allowlist_domains",
+    ) ||
+      Object.prototype.hasOwnProperty.call(
+        inviteAccessPatch,
+        "invite_allowlist_emails",
+      ));
+
+  if (hasTenantSettingsPatch) {
+    await ensureTenantPermission({
+      actorUserId,
+      tenantId: normalizedTenantId,
+      permissionKey: PERMISSION_TENANT_SETTINGS_MANAGE,
+      errorCode: "tenant_settings_forbidden",
+    });
+  }
+  if (hasInviteAllowlistPatch) {
+    await ensureTenantPermission({
+      actorUserId,
+      tenantId: normalizedTenantId,
+      permissionKey: PERMISSION_TENANT_INVITE_ACCESS_MANAGE,
+      errorCode: "tenant_invite_access_forbidden",
+    });
+  }
+  if (hasInvitePasswordHashPatch || hasInvitePasswordPolicyPatch) {
+    await ensureTenantPermission({
+      actorUserId,
+      tenantId: normalizedTenantId,
+      permissionKey: PERMISSION_TENANT_INVITE_PASSWORD_MANAGE,
+      errorCode: "tenant_invite_password_forbidden",
+    });
+  }
 
   if (nextAccessPolicy) {
     await updateTenantAccessPolicy({
@@ -449,11 +796,33 @@ export async function updateTenantSettings({
     tenantId: normalizedTenantId,
     userId: actorUserId,
   });
-  if (accessConfigPatch) {
+  const mergedAccessConfigPatch = {
+    ...(accessConfigPatch ?? {}),
+    ...(inviteAccessPatch ?? {}),
+  };
+
+  if (Object.keys(mergedAccessConfigPatch).length > 0) {
+    const nextInviteAccessState = resolveInviteAccessConfigState(
+      currentAccessConfig,
+      mergedAccessConfigPatch,
+    );
+    if (
+      nextInviteAccessState.nextRequire &&
+      !nextInviteAccessState.nextHash
+    ) {
+      throw new TenantServiceError(
+        "Invite password is required when password enforcement is enabled",
+        {
+          status: 400,
+          code: "invite_password_required_for_policy",
+        },
+      );
+    }
+
     currentAccessConfig = await updateTenantAccessConfig({
       tenantId: normalizedTenantId,
       updatedBy: actorUserId,
-      config: accessConfigPatch,
+      config: mergedAccessConfigPatch,
     });
   }
 
@@ -462,6 +831,7 @@ export async function updateTenantSettings({
     tenantId: normalizedTenantId,
     accessPolicy: nextAccessPolicy ?? tenant.access_policy,
     accessConfig: toClientTenantAccessConfig(currentAccessConfig),
+    inviteAccessConfig: toClientTenantInviteAccessConfig(currentAccessConfig),
   };
 }
 
@@ -509,7 +879,7 @@ export async function previewInvite(rawToken) {
   ]);
   return {
     tenantName: tenant?.name ?? null,
-    roleKey: role?.key ?? invite.role ?? "member",
+    roleKey: role?.key ?? invite.role ?? ROLE_MEMBER_KEY,
     expiresAt: invite.expires_at ?? null,
   };
 }
@@ -518,7 +888,7 @@ export async function createTenantInvite({
   actorUserId,
   tenantId,
   roleKey,
-  emailOptional,
+  inviteEmail,
   expiresInHours,
 }) {
   const normalizedTenantId = requireTenantId(tenantId);
@@ -526,13 +896,15 @@ export async function createTenantInvite({
   await ensureTenantPermission({
     actorUserId,
     tenantId: normalizedTenantId,
-    permissionKey: "tenant.invite.create",
+    permissionKey: PERMISSION_TENANT_INVITE_CREATE,
     errorCode: "tenant_invite_forbidden",
   });
 
-  const inviteEmail = normalizeInviteEmail(emailOptional);
-  const inviteType = inviteEmail ? "personalized" : "shared";
-  const effectiveRoleKey = inviteType === "shared" ? "member" : roleKey ?? "member";
+  const normalizedInviteEmail = normalizeInviteEmail(inviteEmail);
+  const inviteType = normalizedInviteEmail ? "personalized" : "shared";
+  const requestedRoleKey = normalizeInvitableRoleKey(roleKey ?? ROLE_MEMBER_KEY);
+  const effectiveRoleKey =
+    inviteType === "shared" ? ROLE_MEMBER_KEY : requestedRoleKey;
   const role = await requireRole(effectiveRoleKey);
   const validForHours = normalizeInviteExpiryHours(expiresInHours);
   const inviteToken = randomBytes(24).toString("base64url");
@@ -543,7 +915,7 @@ export async function createTenantInvite({
   await createInvite({
     tenantId: normalizedTenantId,
     invitedRoleId: role.id,
-    emailOptional: inviteEmail,
+    inviteEmail: normalizedInviteEmail,
     expiresAt,
     invitedBy: actorUserId,
     rawToken: inviteToken,
@@ -553,7 +925,7 @@ export async function createTenantInvite({
 
   const inviteUrl = buildTenantInviteLink(inviteToken);
   const delivery = await sendTenantInviteEmail({
-    email: inviteEmail,
+    email: normalizedInviteEmail,
     tenantName: tenant.name,
     roleKey: role.key,
     inviteUrl,
@@ -563,7 +935,7 @@ export async function createTenantInvite({
 
   if (delivery.attempted) observeInviteEmailAttempted();
   if (delivery.sent) observeInviteEmailSent();
-  if (inviteEmail && !delivery.sent) {
+  if (normalizedInviteEmail && !delivery.sent) {
     observeInviteEmailFailed(delivery.errorCode ?? "unknown");
   }
 
@@ -573,7 +945,7 @@ export async function createTenantInvite({
     inviteUrl,
     inviteType,
     roleKey: role.key,
-    emailOptional: inviteEmail,
+    inviteEmail: normalizedInviteEmail,
     expiresAt,
     delivery,
   };
@@ -593,13 +965,22 @@ export async function updateTenantMemberRole({
   });
 
   const nextRole = await requireRole(roleKey);
+  const actorMembership = await getActiveActorMembershipOrThrow({
+    tenantId: normalizedTenantId,
+    actorUserId,
+  });
   const membership = await getActiveMembershipOrThrow({
     tenantId: normalizedTenantId,
     targetUserId: normalizedTargetUserId,
   });
+  ensureActorCanManageTargetRole({
+    actorRoleKey: actorMembership.role,
+    targetRoleKey: membership.role,
+    nextRoleKey: nextRole.key,
+  });
 
   if (membership.role_id !== nextRole.id) {
-    await assertNotLastAdminDemotion({
+    await assertNotLastOwnerDemotion({
       tenantId: normalizedTenantId,
       membership,
       nextRoleId: nextRole.id,
@@ -631,12 +1012,21 @@ export async function removeTenantMember({
     tenantId: normalizedTenantId,
   });
 
+  const actorMembership = await getActiveActorMembershipOrThrow({
+    tenantId: normalizedTenantId,
+    actorUserId,
+  });
   const membership = await getActiveMembershipOrThrow({
     tenantId: normalizedTenantId,
     targetUserId: normalizedTargetUserId,
   });
+  ensureActorCanManageTargetRole({
+    actorRoleKey: actorMembership.role,
+    targetRoleKey: membership.role,
+    nextRoleKey: null,
+  });
 
-  await assertNotLastAdminDemotion({
+  await assertNotLastOwnerDemotion({
     tenantId: normalizedTenantId,
     membership,
     nextRoleId: null,
@@ -664,8 +1054,8 @@ export async function grantSelfAdminForDev({ userId }) {
     });
   }
 
-  const adminRoleId = await requireRoleId("admin");
-  const memberRoleId = await requireRoleId("member");
+  const adminRoleId = await requireRoleId(ROLE_ADMIN_KEY);
+  const memberRoleId = await requireRoleId(ROLE_MEMBER_KEY);
   const existingMembership = await getActiveMembershipByUserId(userId);
 
   if (!existingMembership) {
@@ -719,7 +1109,7 @@ export async function createTenantDuringOnboarding({ userId, tenantName }) {
   await createMembership({
     tenantId: tenant.id,
     userId,
-    roleId: await requireRoleId("admin"),
+    roleId: await requireRoleId(ROLE_OWNER_KEY),
     status: "active",
   });
 
@@ -734,7 +1124,12 @@ export async function createTenantDuringOnboarding({ userId, tenantName }) {
   return resolveTenantContext(userId);
 }
 
-export async function joinTenantFromInvite({ userId, userEmail, inviteToken }) {
+export async function joinTenantFromInvite({
+  userId,
+  userEmail,
+  inviteToken,
+  invitePassword,
+}) {
   const token = requireNonEmptyText(inviteToken, "invite_token", 512);
   const invite = await getPendingInviteByToken(token);
 
@@ -746,13 +1141,65 @@ export async function joinTenantFromInvite({ userId, userEmail, inviteToken }) {
   }
 
   const inviteEmail = normalizeUserEmail(invite.email_optional);
+  const normalizedUserEmail = normalizeUserEmail(userEmail);
   if (inviteEmail) {
-    const normalizedUserEmail = normalizeUserEmail(userEmail);
     if (!normalizedUserEmail || normalizedUserEmail !== inviteEmail) {
       throw new TenantServiceError("Invite is restricted to a different email", {
         status: 403,
         code: "invite_email_mismatch",
       });
+    }
+  }
+
+  if (invite.invite_type === "shared") {
+    const inviteAccessConfig = await getTenantAccessConfig(invite.tenant_id);
+    const allowlistEmails = normalizeStoredInviteStringArray(
+      inviteAccessConfig?.invite_allowlist_emails,
+      normalizeInviteAccessEmail,
+    );
+    const allowlistDomains = normalizeStoredInviteStringArray(
+      inviteAccessConfig?.invite_allowlist_domains,
+      normalizeInviteAccessDomain,
+    );
+    const isWhitelisted = isUserWhitelistedForInvite({
+      normalizedUserEmail,
+      allowlistEmails,
+      allowlistDomains,
+    });
+    const requiresPassword =
+      !!inviteAccessConfig?.invite_require_password_for_unlisted &&
+      !isWhitelisted;
+
+    if (requiresPassword) {
+      const storedHash = inviteAccessConfig?.invite_password_hash ?? null;
+      if (!storedHash) {
+        throw new TenantServiceError(
+          "Invite password policy is misconfigured",
+          {
+            status: 403,
+            code: "invite_password_not_configured",
+          },
+        );
+      }
+
+      const normalizedInvitePassword =
+        typeof invitePassword === "string" ? invitePassword : "";
+      if (!normalizedInvitePassword) {
+        throw new TenantServiceError(
+          "Invite password is required for this email domain",
+          {
+            status: 403,
+            code: "invite_password_required",
+          },
+        );
+      }
+
+      if (!verifyInviteJoinPassword(normalizedInvitePassword, storedHash)) {
+        throw new TenantServiceError("Invite password is incorrect", {
+          status: 403,
+          code: "invite_password_invalid",
+        });
+      }
     }
   }
 
@@ -777,7 +1224,7 @@ export async function joinTenantFromInvite({ userId, userEmail, inviteToken }) {
       : null;
     const roleId = invitedRole?.id
       ? invitedRole.id
-      : await requireRoleId("member");
+      : await requireRoleId(ROLE_MEMBER_KEY);
 
     await createMembership({
       tenantId: invite.tenant_id,

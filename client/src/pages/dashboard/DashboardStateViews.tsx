@@ -58,6 +58,9 @@ export function DashboardErrorView({
 type InviteAutoJoinViewProps = {
   isSubmitting: boolean;
   error: string | null;
+  invitePassword: string;
+  showPasswordField: boolean;
+  onInvitePasswordChange: (value: string) => void;
   onRetry: () => void;
   onSignOut: () => void;
 };
@@ -65,6 +68,9 @@ type InviteAutoJoinViewProps = {
 export function InviteAutoJoinView({
   isSubmitting,
   error,
+  invitePassword,
+  showPasswordField,
+  onInvitePasswordChange,
   onRetry,
   onSignOut,
 }: InviteAutoJoinViewProps) {
@@ -75,6 +81,16 @@ export function InviteAutoJoinView({
         <p style={textStyle}>
           Processing invite link and joining your organization...
         </p>
+        {showPasswordField && (
+          <input
+            style={inputStyle}
+            type="password"
+            value={invitePassword}
+            onChange={(event) => onInvitePasswordChange(event.target.value)}
+            placeholder="Invite password"
+            autoComplete="current-password"
+          />
+        )}
         {isSubmitting && <p style={textStyle}>Joining with invite...</p>}
         {error && <p style={errorTextStyle}>{error}</p>}
         <div style={actionsStyle}>
@@ -99,11 +115,13 @@ type OnboardingViewProps = {
   mode: OnboardingMode;
   tenantNameInput: string;
   inviteTokenInput: string;
+  invitePasswordInput: string;
   isSubmitting: boolean;
   error: string | null;
   onModeChange: (nextMode: OnboardingMode) => void;
   onTenantNameChange: (value: string) => void;
   onInviteTokenChange: (value: string) => void;
+  onInvitePasswordChange: (value: string) => void;
   onSubmit: () => void;
   onSignOut: () => void;
 };
@@ -112,11 +130,13 @@ export function OnboardingView({
   mode,
   tenantNameInput,
   inviteTokenInput,
+  invitePasswordInput,
   isSubmitting,
   error,
   onModeChange,
   onTenantNameChange,
   onInviteTokenChange,
+  onInvitePasswordChange,
   onSubmit,
   onSignOut,
 }: OnboardingViewProps) {
@@ -153,13 +173,23 @@ export function OnboardingView({
             placeholder="Organization name"
           />
         ) : (
-          <input
-            style={inputStyle}
-            type="text"
-            value={inviteTokenInput}
-            onChange={(event) => onInviteTokenChange(event.target.value)}
-            placeholder="Invite token"
-          />
+          <>
+            <input
+              style={inputStyle}
+              type="text"
+              value={inviteTokenInput}
+              onChange={(event) => onInviteTokenChange(event.target.value)}
+              placeholder="Invite token"
+            />
+            <input
+              style={inputStyle}
+              type="password"
+              value={invitePasswordInput}
+              onChange={(event) => onInvitePasswordChange(event.target.value)}
+              placeholder="Invite password (if required)"
+              autoComplete="current-password"
+            />
+          </>
         )}
         {error && <p style={errorTextStyle}>{error}</p>}
         <div style={actionsStyle}>

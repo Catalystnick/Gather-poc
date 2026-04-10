@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import { supabaseRestRequest } from "./supabaseRest.js";
-import { toClientTenantAccessConfig } from "./accessConfigMapper.js";
+import {
+  toClientTenantAccessConfig,
+  toClientTenantInviteAccessConfig,
+} from "./accessConfigMapper.js";
 
 function firstRow(rows) {
   return Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
@@ -176,7 +179,7 @@ export async function getTenantAccessConfig(tenantId) {
     path: "tenant_access_configs",
     query: {
       select:
-        "tenant_id,guest_zone_enforced,guest_can_chat,guest_can_tag,guest_can_teleport,member_can_tag,member_can_teleport,updated_by,updated_at",
+        "tenant_id,guest_zone_enforced,guest_can_chat,guest_can_tag,guest_can_teleport,member_can_tag,member_can_teleport,invite_allowlist_domains,invite_allowlist_emails,invite_require_password_for_unlisted,invite_password_hash,updated_by,updated_at",
       tenant_id: `eq.${tenantId}`,
       limit: 1,
     },
@@ -452,7 +455,7 @@ export async function updateMembershipStatus({ membershipId, status }) {
 export async function createInvite({
   tenantId,
   invitedRoleId,
-  emailOptional,
+  inviteEmail,
   expiresAt,
   invitedBy,
   rawToken,
@@ -469,7 +472,7 @@ export async function createInvite({
       role: invitedRoleKey,
       invited_role_id: invitedRoleId,
       invite_type: inviteType,
-      email_optional: emailOptional ?? null,
+      email_optional: inviteEmail ?? null,
       expires_at: expiresAt,
       invited_by: invitedBy,
       status: "pending",
@@ -596,6 +599,7 @@ export async function getContextByUserId(userId) {
           slug: tenant.slug,
           accessPolicy: tenant.access_policy,
           accessConfig: toClientTenantAccessConfig(accessConfig),
+          inviteAccessConfig: toClientTenantInviteAccessConfig(accessConfig),
         }
       : null,
   };

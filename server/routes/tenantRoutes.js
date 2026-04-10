@@ -87,6 +87,7 @@ async function handleTenantOnboarding(req, res) {
         userId: req.user.sub,
         userEmail: req.user.email,
         inviteToken: req.body?.inviteToken,
+        invitePassword: req.body?.invitePassword,
       })
       return res.json(context)
     }
@@ -123,6 +124,7 @@ tenantRouter.patch(
       tenantId: req.params.tenantId,
       accessPolicy: req.body?.accessPolicy,
       tenantAccessConfig: req.body?.tenantAccessConfig,
+      inviteAccessConfig: req.body?.inviteAccessConfig,
     })
     return res.json(settings)
   } catch (error) {
@@ -139,7 +141,7 @@ tenantRouter.post(
         actorUserId: req.user.sub,
         tenantId: req.params.tenantId,
         roleKey: req.body?.roleKey,
-        emailOptional: req.body?.emailOptional,
+        inviteEmail: req.body?.inviteEmail ?? req.body?.emailOptional,
         expiresInHours: req.body?.expiresInHours,
       })
       return res.status(201).json(invite)

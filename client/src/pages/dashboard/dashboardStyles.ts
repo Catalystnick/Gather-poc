@@ -20,6 +20,19 @@ export const cardStyle: React.CSSProperties = {
   padding: 20,
 };
 
+export const orgDashboardScrollStyle: React.CSSProperties = {
+  width: "100%",
+  maxHeight: "calc(100vh - 32px)",
+  overflowX: "auto",
+  overflowY: "auto",
+};
+
+export const orgDashboardCardStyle: React.CSSProperties = {
+  ...cardStyle,
+  minWidth: 720,
+  margin: "0 auto",
+};
+
 export const titleStyle: React.CSSProperties = {
   margin: 0,
   fontSize: 22,

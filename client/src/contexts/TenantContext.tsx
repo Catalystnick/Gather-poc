@@ -12,6 +12,15 @@ export type TenantAccessConfig = {
   updatedAt?: string | null;
 };
 
+export type TenantInviteAccessConfig = {
+  allowlistDomains: string[];
+  allowlistEmails: string[];
+  requirePasswordForUnlisted: boolean;
+  hasPassword: boolean;
+  updatedBy?: string | null;
+  updatedAt?: string | null;
+};
+
 export type TenantContextState = {
   userId: string;
   mainPlazaWorldId: string | null;
@@ -27,7 +36,13 @@ export type TenantContextState = {
     slug: string;
     accessPolicy: "public" | "private";
     accessConfig: TenantAccessConfig | null;
+    inviteAccessConfig: TenantInviteAccessConfig | null;
   } | null;
+};
+
+type TenantApiError = Error & {
+  code?: string;
+  details?: unknown;
 };
 
 type TenantContextValue = {
@@ -36,7 +51,7 @@ type TenantContextValue = {
   error: string | null;
   refresh: (options?: { blocking?: boolean }) => Promise<TenantContextState | null>;
   createTenantDuringOnboarding: (tenantName: string) => Promise<TenantContextState>;
-  joinTenantFromInvite: (inviteToken: string) => Promise<TenantContextState>;
+  joinTenantFromInvite: (inviteToken: string, invitePassword?: string) => Promise<TenantContextState>;
   saveTenantSettings: (
     tenantId: string,
     accessPolicy: "public" | "private",
@@ -73,7 +88,18 @@ async function fetchTenantMe(accessToken: string): Promise<TenantContextState> {
   return payload as TenantContextState;
 }
 
-type TenantOnboardingInput = { mode: "create_tenant"; tenantName: string } | { mode: "join_invite"; inviteToken: string };
+type TenantOnboardingInput =
+  | { mode: "create_tenant"; tenantName: string }
+  | { mode: "join_invite"; inviteToken: string; invitePassword?: string };
+
+function toTenantApiError(payload: any, fallbackMessage: string): TenantApiError {
+  const message =
+    typeof payload?.message === "string" ? payload.message : fallbackMessage;
+  const error = new Error(message) as TenantApiError;
+  if (typeof payload?.error === "string") error.code = payload.error;
+  if (payload?.details !== undefined) error.details = payload.details;
+  return error;
+}
 
 async function postTenantOnboarding(accessToken: string, body: TenantOnboardingInput): Promise<TenantContextState> {
   // Tenant onboarding is the only entry path for users without membership.
@@ -84,8 +110,7 @@ async function postTenantOnboarding(accessToken: string, body: TenantOnboardingI
   });
   const payload = await readJson(response);
   if (!response.ok) {
-    const message = typeof payload?.message === "string" ? payload.message : "Tenant onboarding failed";
-    throw new Error(message);
+    throw toTenantApiError(payload, "Tenant onboarding failed");
   }
   return payload as TenantContextState;
 }
@@ -176,13 +201,14 @@ export function TenantContextProvider({ children }: { children: React.ReactNode 
   );
 
   const joinTenantFromInvite = useCallback(
-    async (inviteToken: string) => {
+    async (inviteToken: string, invitePassword?: string) => {
       const token = inviteToken.trim();
       if (!token) throw new Error("Invite token is required");
       if (!accessToken) throw new Error("Missing access token");
       const nextContext = await postTenantOnboarding(accessToken, {
         mode: "join_invite",
         inviteToken: token,
+        ...(invitePassword ? { invitePassword } : {}),
       });
       setContext(nextContext);
       setError(null);

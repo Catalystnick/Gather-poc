@@ -41,7 +41,7 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - Main plaza has global text chat and no proximity/zone voice.
 - Main plaza can include a map-defined `town_hall`/common-room zone for social gathering; this is a plaza feature, not a tenant interior access policy.
 - Authorization model uses roles + permissions:
-  - seed roles in v1: `admin`, `member`
+  - seed roles in current implementation: `owner`, `admin`, `member`
   - enforce permissions server-side (not client-provided role labels)
 - `world_links` remains optional/deferred in v1 (do not block rollout).
 - If tenant context lookup is unavailable:
@@ -64,6 +64,8 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - Note: production-style billing gate is not implemented yet; tenant creation currently does not require completed payment.
 - Phase G: partially implemented (observability counters + internal observability endpoint + canary-oriented env flags implemented; 7-day SLO validation still pending).
 - Phase H (post-launch cleanup): completed — see section 3.8.
+- Phase L (invite access controls): implemented in code — see section 3.9.
+- Phase M (owner role + permission split): implemented in code — see section 3.10.
 
 ## 3.1 Phase A - Foundations (Schema, RLS, Tenant Service)
 
@@ -329,17 +331,17 @@ These decisions close ambiguities raised in architecture review issue 13.x.
     - `updateTenantSettings(...)`: `server/tenant/tenantService.js`
 - Implemented in client UX:
   - in-game `Log out` button wired to `AuthContext.signOut()` in gameplay route shell:
-    - file: `client/src/pages/GameRoute.tsx`
+    - file: `client/src/pages/game/GameRoute.tsx`
   - gameplay route now redirects users without membership to dashboard onboarding:
-    - file: `client/src/pages/GameRoute.tsx`
+    - file: `client/src/pages/game/GameRoute.tsx`
   - new protected dashboard route now hosts onboarding and non-game tenant admin flows:
-    - file: `client/src/pages/DashboardRoute.tsx`
-  - dashboard admin sections (org info, member list, invite creation) are hidden entirely for non-admin users — no fetch occurs unless role is `admin`:
-    - file: `client/src/pages/DashboardRoute.tsx`
+    - file: `client/src/pages/dashboard/DashboardRoute.tsx`
+  - dashboard admin sections are permission-gated (`tenant.members.manage`, `tenant.invite.create`, `tenant.invite.access.manage`) rather than hard-coded role-name checks:
+    - file: `client/src/pages/dashboard/DashboardRoute.tsx`
   - member list renders the minimal server payload (`membershipId`, `userId`, `email`, `displayName`, `roleKey`) from a single backend query:
-    - file: `client/src/pages/DashboardRoute.tsx`
+    - file: `client/src/pages/dashboard/DashboardRoute.tsx`
   - tenant admin settings panel now allows updating access policy + `tenant_access_configs` toggles from frontend:
-    - file: `client/src/pages/GameRoute.tsx`
+    - file: `client/src/pages/game/GameRoute.tsx`
 - Implemented in code:
   - `POST /tenant/:tenantId/invites` with service-layer permission checks and role-based invite creation:
     - route: `server/routes/tenantRoutes.js`
@@ -349,10 +351,10 @@ These decisions close ambiguities raised in architecture review issue 13.x.
     - service: `listTenantMembers(...)` in `server/tenant/tenantService.js`
     - repository: `listActiveMembershipsForTenant(...)` in `server/tenant/tenantRepository.js`
     - migration: `supabase/migrations/20260410120000_phase_j_tenant_member_profiles_view.sql` + `20260410130000_phase_j1_fix_tenant_member_profiles_view.sql`
-  - `PATCH /tenant/:tenantId/members/:userId/role` with service-layer permission checks and last-admin safety:
+  - `PATCH /tenant/:tenantId/members/:userId/role` with service-layer permission checks, owner-role hierarchy checks, and last-owner safety:
     - route: `server/routes/tenantRoutes.js`
     - service: `updateTenantMemberRole(...)` in `server/tenant/tenantService.js`
-  - `DELETE /tenant/:tenantId/members/:userId` using membership disable flow with last-admin safety:
+  - `DELETE /tenant/:tenantId/members/:userId` using membership disable flow with owner-role hierarchy checks and last-owner safety:
     - route: `server/routes/tenantRoutes.js`
     - service: `removeTenantMember(...)` in `server/tenant/tenantService.js`
 - Pending:
@@ -395,7 +397,7 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - Added invite type support (`shared` vs `personalized`) in `tenant_invites` and backfilled existing rows:
   - migration: `supabase/migrations/20260410153000_phase_k_invite_types.sql`
 - Invite creation now sets:
-  - `personalized` when `emailOptional` is present
+  - `personalized` when `inviteEmail` is present
   - `shared` when no email is provided
 - Invite join flow now enforces email match for personalized invites (`invite_email_mismatch` on mismatch).
 - Personalized invites are redeemed (single-use). Shared invites remain `pending` and reusable until expiry/revocation.
@@ -414,7 +416,7 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - Added `TENANT_CONTEXT_CACHE_MAX = 10_000` cap to in-memory TTL cache in `tenantService.js`. Evicts oldest entry (insertion-order) when limit is reached, preventing unbounded memory growth under sustained load.
 
 **Dashboard data loading:**
-- Admin-gated data (member list, org info) is not fetched at all for non-admin users. `loadDashboardData` bails early if `isCurrentUserAdmin` is false. Sections are not rendered at all — no permission-denied placeholders.
+- Permission-gated data (member list/org admin surfaces) is not fetched for users without management permissions. `loadDashboardData` now bails early unless the user has `tenant.members.manage`.
 - Org information section now reads directly from `tenantContext.tenant` (already in memory) rather than issuing a redundant `/tenant/memberships` fetch.
 - Member list displays `displayName` (from Google OAuth metadata) or `email`, falling back to `userId` only if both are unavailable.
 
@@ -425,6 +427,96 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 | `20260410120000_phase_j_tenant_member_profiles_view.sql` | Creates `tenant_member_profiles` view with LEFT JOINs and role revocation |
 | `20260410130000_phase_j1_fix_tenant_member_profiles_view.sql` | Drops and recreates view with correct column aliases (`role_key` not `role_id`) |
 | `20260410153000_phase_k_invite_types.sql` | Adds `tenant_invites.invite_type` (`shared`/`personalized`), backfills from `email_optional`, and enforces personalized-email consistency |
+| `20260410170000_phase_l_invite_access_controls.sql` | Adds shared-invite allowlist/password policy fields to `tenant_access_configs` with password-required consistency constraint |
+| `20260410193000_phase_m_owner_role_and_invite_permission_split.sql` | Adds `owner` role, splits invite access/password permissions, removes admin password/settings authority, and backfills tenant creators to owner |
+
+## 3.9 Phase L - Shared Invite Access Controls (Allowlist + Password)
+
+### Goals
+
+- Support Gather-style shared invite admission controls:
+  - allowlist by email/domain for automatic join,
+  - optional password requirement for non-allowlisted users.
+- Keep personalized invite behavior unchanged (email-bound + single-use).
+
+### Work items completed (2026-04-10)
+
+- DB model extended in `tenant_access_configs`:
+  - `invite_allowlist_domains text[]`
+  - `invite_allowlist_emails text[]`
+  - `invite_require_password_for_unlisted boolean`
+  - `invite_password_hash text`
+  - constraint requires hash when password enforcement is enabled
+  - migration: `supabase/migrations/20260410170000_phase_l_invite_access_controls.sql`
+- Server-side shared invite join enforcement:
+  - loads tenant invite access config
+  - checks allowlisted email/domain
+  - requires and verifies invite password for non-allowlisted users when configured
+  - error codes:
+    - `invite_password_required`
+    - `invite_password_invalid`
+    - `invite_password_not_configured` (fail-closed policy misconfiguration)
+  - file: `server/tenant/tenantService.js`
+- Invite password handling:
+  - scrypt-based hashing + timing-safe verification
+  - minimum/maximum length checks
+  - never stores plaintext password
+  - file: `server/tenant/tenantService.js`
+- Settings API and tenant context updates:
+  - `PATCH /tenant/:tenantId/settings` accepts `inviteAccessConfig`
+  - `GET /tenant/me` tenant payload includes normalized `inviteAccessConfig`
+  - files: `server/routes/tenantRoutes.js`, `server/tenant/tenantRepository.js`, `server/tenant/accessConfigMapper.js`
+- Dashboard admin UX for invite access controls:
+  - manage allowlist domains/emails
+  - toggle password enforcement for non-allowlisted users
+  - set/clear invite join password
+  - files: `client/src/pages/dashboard/DashboardRoute.tsx`, `client/src/pages/dashboard/TenantDashboardView.tsx`, `client/src/pages/dashboard/dashboardApi.ts`
+- Onboarding and invite acceptance UX:
+  - onboarding join supports optional `invitePassword`
+  - invite accept page redirects authenticated users to `/dashboard?inviteToken=...` when password is required/invalid, enabling retry flow
+  - dashboard auto-join view now supports password prompt only when backend requires it
+  - files: `client/src/contexts/TenantContext.tsx`, `client/src/pages/invite/InviteAcceptPage.tsx`, `client/src/pages/dashboard/DashboardStateViews.tsx`
+
+### Acceptance
+
+- Allowlisted shared-invite users can join without password.
+- Non-allowlisted shared-invite users are blocked unless valid invite password is provided (when enabled).
+- Personalized invites remain email-bound and redeem on successful join.
+- Owner/admin can configure invite allowlists from dashboard; only owner can set/clear invite access passwords.
+
+## 3.10 Phase M - Owner Role + Permission Split
+
+### Goals
+
+- Make tenant creator the authoritative `owner`.
+- Allow admins to manage users and allowlists, but prevent admin invite-password changes.
+
+### Work items completed (2026-04-10)
+
+- RBAC migration added:
+  - introduces `owner` system role,
+  - introduces `tenant.invite.access.manage` and `tenant.invite.password.manage` permissions,
+  - assigns owner full permissions,
+  - removes `tenant.settings.manage` and `tenant.invite.password.manage` from admin role,
+  - backfills active creator memberships (`tenants.created_by`) to owner.
+  - migration: `supabase/migrations/20260410193000_phase_m_owner_role_and_invite_permission_split.sql`
+- Server authorization split:
+  - `updateTenantSettings(...)` now enforces permission by patch type:
+    - `tenant.settings.manage` for core tenant settings,
+    - `tenant.invite.access.manage` for allowlist/access policy changes,
+    - `tenant.invite.password.manage` for password hash set/clear.
+  - file: `server/tenant/tenantService.js`
+- Membership hierarchy controls:
+  - non-owner cannot assign/manage/remove `owner` role,
+  - last owner cannot be demoted/removed.
+  - file: `server/tenant/tenantService.js`
+- Onboarding ownership:
+  - tenant creator is assigned `owner` role at tenant creation.
+  - file: `server/tenant/tenantService.js`
+- Dashboard permission UX:
+  - admin surfaces now use permission checks (not `roleKey === "admin"`),
+  - invite password controls are owner-only in UI.
+  - files: `client/src/pages/dashboard/DashboardRoute.tsx`, `client/src/pages/dashboard/TenantDashboardView.tsx`
 
 ---
 
@@ -497,6 +589,8 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - `supabase/migrations/20260410120000_phase_j_tenant_member_profiles_view.sql`
 - `supabase/migrations/20260410130000_phase_j1_fix_tenant_member_profiles_view.sql`
 - `supabase/migrations/20260410153000_phase_k_invite_types.sql`
+- `supabase/migrations/20260410170000_phase_l_invite_access_controls.sql`
+- `supabase/migrations/20260410193000_phase_m_owner_role_and_invite_permission_split.sql`
 - `server/tests/tenantRlsPolicies.test.js`
 - `server/tests/worldRuntimePartitioning.test.js`
 
@@ -513,12 +607,15 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - `client/src/utils/nextPath.ts`
 - `client/src/components/auth/ProtectedRoute.tsx`
 - `client/src/components/scene/World.tsx`
-- `client/src/pages/AuthCallbackPage.tsx`
-- `client/src/pages/DashboardRoute.tsx`
-- `client/src/pages/InviteAcceptPage.tsx`
-- `client/src/pages/LoginPage.tsx`
-- `client/src/pages/SignupPage.tsx`
-- `client/src/pages/VerifyPendingPage.tsx`
+- `client/src/pages/auth/AuthCallbackPage.tsx`
+- `client/src/pages/auth/LoginPage.tsx`
+- `client/src/pages/auth/SignupPage.tsx`
+- `client/src/pages/auth/VerifyPendingPage.tsx`
+- `client/src/pages/dashboard/DashboardRoute.tsx`
+- `client/src/pages/dashboard/DashboardStateViews.tsx`
+- `client/src/pages/dashboard/TenantDashboardView.tsx`
+- `client/src/pages/dashboard/dashboardApi.ts`
+- `client/src/pages/invite/InviteAcceptPage.tsx`
 
 ## 5. Test Plan by Phase
 
@@ -545,6 +642,10 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - Public interior visitor behavior:
   - config-driven behavior applied (zone confinement toggle + chat/tag toggles)
   - teleport denied for non-members
+- Shared invite access controls:
+  - allowlisted domains/emails auto-join with shared invites
+  - non-allowlisted users require invite password when policy enabled
+  - invalid/missing password is rejected with clear join error codes
 - Main plaza behavior:
   - global text chat works
   - `town_hall`/common-room zone behavior is plaza-scoped and independent from tenant interior access config

@@ -7,7 +7,7 @@ Design a multi-tenant system for the current Gather codebase where:
 - each user belongs to one home tenant,
 - all tenant building/workspace exteriors exist in one shared **main plaza** map,
 - each tenant has a dedicated **interior world instance** entered from its building exterior,
-- tenants use a role-based permission model (seeded with `admin` and `member` in v1),
+- tenants use a role-based permission model (seeded with `owner`, `admin`, and `member`),
 - users can walk around the main plaza and enter interiors with a loading transition between instances,
 - realtime presence/chat/tag/teleport/voice are isolated by the currently joined instance (`main_plaza` vs `tenant_interior`),
 - main plaza has global text chat and no proximity/zone voice,
@@ -125,6 +125,10 @@ flowchart TB
 - **UX boundary = gameplay vs administration**:
   - gameplay (`/game`) keeps only in-game policy toggles for authorized admins.
   - organization onboarding, invite issuance, member/role management are dashboard concerns (`/dashboard`).
+- **Shared invite admission policy = tenant-configured**:
+  - shared-invite users are auto-allowed when their email or domain is on the tenant invite allowlist.
+  - when `requirePasswordForUnlisted=true`, non-allowlisted shared-invite users must provide invite password during join.
+  - personalized invites remain email-bound one-time invites and bypass shared-invite password policy.
 - **Commercial onboarding model (recommended for production)**:
   - auth first, then workspace creation gated by successful billing/provisioning.
   - current implementation follows the same flow shape but does not yet enforce a billing gate before tenant creation.
@@ -199,6 +203,10 @@ erDiagram
     boolean guest_can_teleport
     boolean member_can_tag
     boolean member_can_teleport
+    text[] invite_allowlist_domains
+    text[] invite_allowlist_emails
+    boolean invite_require_password_for_unlisted
+    text invite_password_hash
     uuid updated_by
     timestamptz updated_at
   }
@@ -277,7 +285,7 @@ erDiagram
 - One active membership per user in v1 (`UNIQUE(user_id)` where status=`active`).
 - Exactly one shared main plaza row in `worlds` (`world_type='main_plaza'`).
 - One interior world per tenant in v1 (`UNIQUE(tenant_id)` where `world_type='tenant_interior'`).
-- Seed roles in v1: `admin`, `member`.
+- Seed roles in current implementation: `owner`, `admin`, `member`.
 - Permissions are attached to roles via `role_permissions`; server checks permissions, not raw role strings.
 - `tenant_invites.invite_type` constrained to `shared|personalized`.
 - `tenant_invites` personalized invites require a non-empty `email_optional` value.
@@ -293,8 +301,8 @@ In this document, `tenant` means a tenant organization/workspace owner.
 | Table                    |    Required in v1 | Purpose                                                         |
 | ------------------------ | ----------------: | --------------------------------------------------------------- |
 | `tenants`                |               yes | Tenant organization root entity.                                |
-| `roles`                  |               yes | Role catalog (`admin`/`member` seeded; extensible).             |
-| `permissions`            |               yes | Permission catalog (`tenant.invite`, `tenant.members.manage`).  |
+| `roles`                  |               yes | Role catalog (`owner`/`admin`/`member` seeded; extensible).     |
+| `permissions`            |               yes | Permission catalog (`tenant.invite.create`, `tenant.members.manage`, `tenant.settings.manage`, `tenant.invite.access.manage`, `tenant.invite.password.manage`). |
 | `role_permissions`       |               yes | Role-to-permission mapping table.                               |
 | `tenant_memberships`     |               yes | User membership + assigned role (`role_id`) per tenant organization. |
 | `tenant_access_configs`  |               yes | Per-tenant behavior toggles for guest/member capabilities inside interiors. |
@@ -525,22 +533,26 @@ sequenceDiagram
   participant U as Invited User
 
   A->>API: POST /tenant/{tenantId}/invites
-  API->>T: verify admin rights
+  API->>T: verify role/permission rights
   T-->>API: allowed
   API->>DB: create invite token + invite_type
   API-->>A: invite link/token + inviteType
 
-  U->>API: POST /tenant/onboarding (invite token)
+  U->>API: POST /tenant/onboarding (invite token, optional invitePassword)
   API->>DB: validate invite
   alt personalized invite
     API->>DB: enforce invite email match + redeem invite
   else shared invite
+    API->>DB: evaluate allowlist + optional password gate
+    alt non-allowlisted and password required
+      API->>DB: verify invite password hash
+    end
     API->>DB: no redeem; keep invite reusable
   end
   API-->>U: membership active + home interior world
 
   A->>API: PATCH /tenant/{tenantId}/members/{userId}/role
-  API->>T: verify admin rights
+  API->>T: verify role/permission rights
   T-->>API: allowed
   API->>DB: update membership.role_id
   API-->>A: updated
@@ -739,13 +751,17 @@ Route behavior:
 
 - `GET /tenant/me`
   - returns tenant, role key, permission set, `mainPlazaWorldId`, `homeInteriorWorldId`, and current defaults.
+- `GET /tenant/invites/preview?inviteToken=...`
+  - public endpoint used by invite acceptance page to validate token and render invite summary before auth.
 - `POST /tenant/onboarding`
-  - `{ mode: "create_tenant", tenantName }` or `{ mode: "join_invite", inviteToken }`.
-- `POST /tenant/:tenantId/invites` (admin — requires `tenant.invite.create` permission; supports both `personalized` invites when `emailOptional` is provided and `shared` reusable invites when omitted; response includes `inviteType` and `delivery` metadata)
-- `GET /tenant/:tenantId/members` (admin — requires `tenant.members.manage` permission; returns `membershipId`, `userId`, `email`, `displayName`, `roleKey` resolved via `tenant_member_profiles` view in a single query)
-- `PATCH /tenant/:tenantId/members/:userId/role` (admin — requires `tenant.members.manage` permission)
-- `DELETE /tenant/:tenantId/members/:userId` (admin — requires `tenant.members.manage` permission)
-- `PATCH /tenant/:tenantId/settings` (admin — requires `tenant.settings.manage` permission; includes `access_policy` and `tenant_access_configs` fields)
+  - `{ mode: "create_tenant", tenantName }` or `{ mode: "join_invite", inviteToken, invitePassword? }`.
+- `POST /tenant/:tenantId/invites` (owner/admin — requires `tenant.invite.create`; supports both `personalized` invites when `inviteEmail` is provided and `shared` reusable invites when omitted; response includes `inviteType` and `delivery` metadata)
+- `GET /tenant/:tenantId/members` (owner/admin — requires `tenant.members.manage`; returns `membershipId`, `userId`, `email`, `displayName`, `roleKey` resolved via `tenant_member_profiles` view in a single query)
+- `PATCH /tenant/:tenantId/members/:userId/role` (owner/admin — requires `tenant.members.manage`; non-owner cannot assign/manage `owner` role)
+- `DELETE /tenant/:tenantId/members/:userId` (owner/admin — requires `tenant.members.manage`; non-owner cannot remove `owner`)
+- `PATCH /tenant/:tenantId/settings`:
+  - owner-only for `access_policy`, `tenant_access_configs`, and invite password changes (`tenant.settings.manage` + `tenant.invite.password.manage`)
+  - owner/admin for invite allowlist/access policy fields (`tenant.invite.access.manage`)
 - `GET /internal/observability` (internal rollout/canary endpoint; optionally guarded by `x-observability-key`)
 
 **Removed endpoints:**
@@ -794,6 +810,7 @@ Detailed execution steps are documented in [`tenant-implementation-plan.md`](./t
 - Phase 4 (admin tooling/hardening): partially implemented.
   - done: tenant settings API, invite/member admin APIs, dashboard onboarding/admin surface, OAuth invite redirect reliability fixes, service-layer-only authorization, and single-query member profile resolution.
   - done: invite type model (`shared`/`personalized`) with personalized email enforcement and shared invite reusability.
+  - done: shared-invite access controls (allowlist domains/emails + optional password requirement for non-allowlisted users), dashboard management UI, onboarding/password error handling, and invite accept page redirect integration.
   - pending: frontend member mutation UI polish and production SLO signoff.
 - Phase 5 (horizontal scaling): not implemented in this repo scope; tracked in [performance-and-scaling.md](performance-and-scaling.md).
 
@@ -810,7 +827,12 @@ Detailed execution steps are documented in [`tenant-implementation-plan.md`](./t
 - Public tenant interior entry succeeds.
 - Private tenant interior entry denies non-members.
 - Config-driven guest/member behavior is enforced server-side (for example guest zone confinement, chat/tag toggles).
-- Admin can invite/promote/remove members in own tenant.
+- Owner/admin can invite and manage members in own tenant (owner role itself is owner-managed).
+- Only owner can set/clear invite access password.
+- Shared invite join behavior is enforced server-side:
+  - personalized invites require matching email and are redeemed on use.
+  - shared invites stay reusable until expiry/revocation.
+  - when enabled, non-allowlisted shared-invite joins require invite password.
 - Member cannot call admin endpoints.
 
 ### Realtime safety
