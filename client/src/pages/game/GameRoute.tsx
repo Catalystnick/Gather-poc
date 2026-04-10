@@ -1,15 +1,15 @@
 import { useEffect, useState } from "react";
 import { Leva } from "leva";
 import { Navigate, useNavigate, useParams } from "react-router-dom";
-import { useAuth } from "../contexts/AuthContext";
-import { useTenantContext, type TenantAccessConfig } from "../contexts/TenantContext";
-import AvatarSelect from "../components/ui/AvatarSelect";
-import World from "../components/scene/World";
+import { useAuth } from "../../contexts/AuthContext";
+import { useTenantContext, type TenantAccessConfig } from "../../contexts/TenantContext";
+import AvatarSelect from "../../components/ui/AvatarSelect";
+import World from "../../components/scene/World";
 import {
   ensureNotificationPermissionOnUserGesture,
   maybeRequestNotificationPermission,
-} from "../chat/notificationService";
-import type { Player } from "../types";
+} from "../../chat/notificationService";
+import type { Player } from "../../types";
 
 const STORAGE_KEY = "gather_poc_avatar";
 

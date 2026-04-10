@@ -1,5 +1,14 @@
 # Tenant Invite Email Onboarding Implementation Plan
 
+## Implementation Status (2026-04-10)
+
+- Core invite email onboarding flow is implemented in production code.
+- Invite model now supports two explicit types:
+  - `personalized`: email-bound and consumed on successful join.
+  - `shared`: reusable until expiry/revocation.
+- Data model update shipped in:
+  - `supabase/migrations/20260410153000_phase_k_invite_types.sql`.
+
 ## 1. Purpose and Scope
 
 **Decision**
@@ -25,8 +34,9 @@ Treat the current baseline as:
 
 - Invite creation API exists: `POST /tenant/:tenantId/invites`.
 - Invite redemption exists via `POST /tenant/onboarding` with `mode: join_invite`.
-- Dashboard exists but does not provide a full “send invite email” experience.
-- No email provider integration is currently active in tenant invite flow.
+- Dashboard includes invite creation UX for admins.
+- SMTP email dispatch is integrated with fallback link/token behavior.
+- Invite creation supports both personalized and shared invites.
 
 **Reasoning**
 
@@ -35,7 +45,7 @@ This narrows work to onboarding and delivery only, without changing unrelated wo
 **Alternatives considered**
 
 - Assume email send exists through another path.
-  - Rejected; no integrated provider-backed invite send path is present.
+  - Rejected; provider-backed send path is integrated in the tenant invite service.
 
 ---
 
@@ -74,6 +84,24 @@ Prevents provider outage/rate-limit from blocking admin onboarding tasks.
 - Hard-fail invite creation when email send fails.
   - Rejected due to poor reliability and UX.
 
+### 3.3 Invite Type Model
+
+**Decision**
+
+Support both invite types in v1:
+
+- `personalized` invite when `emailOptional` is present,
+- `shared` invite when `emailOptional` is omitted.
+
+**Reasoning**
+
+Matches product behavior: targeted one-time invites for known recipients plus reusable links for broad onboarding.
+
+**Alternatives considered**
+
+- Single invite model only.
+  - Rejected; cannot satisfy both targeted and broad distribution flows.
+
 ---
 
 ## 4. Detailed Implementation Design
@@ -89,10 +117,12 @@ Implement invite persistence and email send attempt as one server operation with
 1. Admin submits invite from dashboard (email + role key).
 2. Frontend calls `POST /tenant/:tenantId/invites`.
 3. Backend validates permission and role.
-4. Backend creates invite token, stores hash in `tenant_invites`.
-5. If email is provided, backend attempts SMTP send.
-6. Response returns both:
+4. Backend creates invite token, stores hash in `tenant_invites`, and sets `invite_type`.
+5. Backend treats invites as valid only when `status='pending'` and `expires_at > now` (query-time expiry enforcement).
+6. If email is provided, backend attempts SMTP send.
+7. Response returns both:
    - invite link/token fallback,
+   - invite metadata (`inviteType`, role, expiry),
    - delivery metadata (`attempted`, `sent`, provider, optional error code).
 
 **Reasoning**
@@ -139,11 +169,15 @@ Add only the minimum contract needed for frontend onboarding UX.
 **Changes**
 
 - `POST /tenant/:tenantId/invites` response adds:
+  - `inviteType` (`shared` or `personalized`)
   - `delivery.attempted`
   - `delivery.sent`
   - `delivery.provider`
   - `delivery.errorCode` (optional)
 - Existing invite token/link response fields remain available.
+- `POST /tenant/onboarding` join behavior:
+  - personalized invites require authenticated user email to match invite email,
+  - shared invites skip redemption and remain reusable.
 
 **Reasoning**
 
@@ -167,6 +201,7 @@ Keep server authoritative and fail closed on auth/permission, but fail open on p
 - Enforce `tenant.invite.create` server-side.
 - Do not trust client role labels.
 - Keep raw invite tokens out of DB (hash only persisted).
+- Enforce invite email matching for personalized invites.
 
 **Failure Modes**
 
@@ -175,6 +210,13 @@ Keep server authoritative and fail closed on auth/permission, but fail open on p
   - UI receives fallback metadata.
 - Invalid email:
   - request rejected with clear 4xx error.
+- Personalized invite email mismatch:
+  - join request rejected (`invite_email_mismatch`).
+- Shared invite reuse:
+  - invite remains `pending` after successful joins and can be reused until expiry/revocation.
+- Expired invite status sync:
+  - expired links are rejected by query-time checks even if row status is still `pending`,
+  - optional scheduled maintenance may update old `pending` rows to `expired` for reporting UX.
 
 **Observability to Add**
 
@@ -205,14 +247,17 @@ Use mixed API + UI + onboarding redemption scenarios.
 1. Admin invite with valid email -> invite created + sent.
 2. Admin invite with provider failure -> invite created + fallback returned.
 3. Non-admin invite -> forbidden.
-4. New user receives link, signs up, redeems invite -> active membership.
-5. Expired/invalid invite -> redemption denied with clear reason.
+4. Personalized invite: matching email joins successfully and invite is redeemed.
+5. Personalized invite: non-matching email is denied (`invite_email_mismatch`).
+6. Shared invite: multiple users can join with the same token while invite is still valid.
+7. Expired/invalid invite -> redemption denied with clear reason.
 
 ### Acceptance Criteria
 
 - Admin can invite by email from dashboard.
+- Admin can create reusable shared invites with no recipient email.
 - Delivery failure does not block onboarding artifact creation.
-- Invite redemption flow remains stable.
+- Invite join behavior is correct for both invite types.
 
 **Reasoning**
 
@@ -255,6 +300,6 @@ Decouples provider risk from core invite workflow.
 
 ## Implementation Notes
 
-- Planning only; no implementation in this document.
+- This document now includes implementation-aligned behavior updates.
 - Billing gating is out of scope for this feature doc.
 - Owner role redesign is out of scope for this feature doc.

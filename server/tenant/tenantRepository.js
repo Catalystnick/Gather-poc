@@ -456,6 +456,7 @@ export async function createInvite({
   expiresAt,
   invitedBy,
   rawToken,
+  inviteType,
 }) {
   const invitedRoleKey = await resolveRoleKey(invitedRoleId);
   const rows = await supabaseRestRequest({
@@ -467,6 +468,7 @@ export async function createInvite({
       token_hash: inviteTokenHash(rawToken),
       role: invitedRoleKey,
       invited_role_id: invitedRoleId,
+      invite_type: inviteType,
       email_optional: emailOptional ?? null,
       expires_at: expiresAt,
       invited_by: invitedBy,
@@ -505,7 +507,7 @@ export async function getPendingInviteByToken(rawToken) {
   const rows = await supabaseRestRequest({
     path: "tenant_invites",
     query: {
-      select: "id,tenant_id,invited_role_id",
+      select: "id,tenant_id,invited_role_id,invite_type,email_optional",
       token_hash: `eq.${tokenHash}`,
       status: "eq.pending",
       expires_at: `gt.${nowIso}`,
@@ -521,7 +523,7 @@ export async function getPendingInviteForPreview(rawToken) {
   const rows = await supabaseRestRequest({
     path: "tenant_invites",
     query: {
-      select: "id,tenant_id,invited_role_id,role,expires_at",
+      select: "id,tenant_id,invited_role_id,invite_type,role,expires_at",
       token_hash: `eq.${tokenHash}`,
       status: "eq.pending",
       expires_at: `gt.${nowIso}`,
@@ -537,6 +539,7 @@ export async function redeemInvite({ inviteId, userId }) {
     method: "PATCH",
     query: {
       id: `eq.${inviteId}`,
+      status: "eq.pending",
     },
     prefer: "return=representation",
     body: {

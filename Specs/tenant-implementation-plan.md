@@ -336,7 +336,7 @@ These decisions close ambiguities raised in architecture review issue 13.x.
     - file: `client/src/pages/DashboardRoute.tsx`
   - dashboard admin sections (org info, member list, invite creation) are hidden entirely for non-admin users — no fetch occurs unless role is `admin`:
     - file: `client/src/pages/DashboardRoute.tsx`
-  - member list shows email and display name resolved server-side (not raw user IDs):
+  - member list renders the minimal server payload (`membershipId`, `userId`, `email`, `displayName`, `roleKey`) from a single backend query:
     - file: `client/src/pages/DashboardRoute.tsx`
   - tenant admin settings panel now allows updating access policy + `tenant_access_configs` toggles from frontend:
     - file: `client/src/pages/GameRoute.tsx`
@@ -344,7 +344,7 @@ These decisions close ambiguities raised in architecture review issue 13.x.
   - `POST /tenant/:tenantId/invites` with service-layer permission checks and role-based invite creation:
     - route: `server/routes/tenantRoutes.js`
     - service: `createTenantInvite(...)` in `server/tenant/tenantService.js`
-  - `GET /tenant/:tenantId/members` with service-layer permission checks; returns member email + display name via `tenant_member_profiles` view (single DB query):
+  - `GET /tenant/:tenantId/members` with service-layer permission checks; returns only dashboard-needed fields (`membershipId`, `userId`, `email`, `displayName`, `roleKey`) via `tenant_member_profiles` view (single DB query):
     - route: `server/routes/tenantRoutes.js`
     - service: `listTenantMembers(...)` in `server/tenant/tenantService.js`
     - repository: `listActiveMembershipsForTenant(...)` in `server/tenant/tenantRepository.js`
@@ -386,9 +386,29 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 
 **Member profile resolution — N+1 eliminated:**
 - Introduced `tenant_member_profiles` Postgres view (`public` schema) joining `tenant_memberships → auth.users → roles` with `LEFT JOIN` to handle deleted users gracefully.
-- `GET /tenant/:tenantId/members` now resolves email, display name, and role in a single PostgREST query instead of N parallel Auth Admin API calls.
+- `GET /tenant/:tenantId/members` now resolves `membershipId`, `userId`, `email`, `displayName`, and `roleKey` in one PostgREST query instead of N parallel Auth Admin API calls.
+- Repository now selects only `id,user_id,role_key,email,display_name` from `tenant_member_profiles` for this endpoint.
 - View access revoked from `public`, `anon`, and `authenticated` roles — accessible only via service-role key.
 - Migrations: `20260410120000_phase_j_tenant_member_profiles_view.sql`, `20260410130000_phase_j1_fix_tenant_member_profiles_view.sql`.
+
+**Invite model hardening (shared vs personalized):**
+- Added invite type support (`shared` vs `personalized`) in `tenant_invites` and backfilled existing rows:
+  - migration: `supabase/migrations/20260410153000_phase_k_invite_types.sql`
+- Invite creation now sets:
+  - `personalized` when `emailOptional` is present
+  - `shared` when no email is provided
+- Invite join flow now enforces email match for personalized invites (`invite_email_mismatch` on mismatch).
+- Personalized invites are redeemed (single-use). Shared invites remain `pending` and reusable until expiry/revocation.
+- Invite expiry is enforced at read-time (`status = pending` and `expires_at > now`) when resolving invite tokens; backend does not need to synchronously rewrite status to reject expired links.
+- Optional cleanup/reporting improvement: a scheduled DB job can mark stale `pending` rows as `expired` for admin visibility, without changing authorization correctness.
+- Onboarding route now passes authenticated email into service join logic:
+  - `joinTenantFromInvite({ userId, userEmail, inviteToken })`
+
+**Tenant context pattern cleanup:**
+- Replaced ad-hoc tenant context hook usage with a standard provider pattern:
+  - `TenantContextProvider` in `client/src/contexts/TenantContext.tsx`
+  - App-level wiring in `client/src/App.tsx`
+  - consumers (`DashboardRoute`, `GameRoute`) now call `useTenantContext()` without passing tokens.
 
 **Tenant context cache hardening:**
 - Added `TENANT_CONTEXT_CACHE_MAX = 10_000` cap to in-memory TTL cache in `tenantService.js`. Evicts oldest entry (insertion-order) when limit is reached, preventing unbounded memory growth under sustained load.
@@ -404,6 +424,7 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 |---|---|
 | `20260410120000_phase_j_tenant_member_profiles_view.sql` | Creates `tenant_member_profiles` view with LEFT JOINs and role revocation |
 | `20260410130000_phase_j1_fix_tenant_member_profiles_view.sql` | Drops and recreates view with correct column aliases (`role_key` not `role_id`) |
+| `20260410153000_phase_k_invite_types.sql` | Adds `tenant_invites.invite_type` (`shared`/`personalized`), backfills from `email_optional`, and enforces personalized-email consistency |
 
 ---
 
@@ -475,6 +496,7 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - `supabase/migrations/20260408113000_phase_i_tenant_access_configs.sql`
 - `supabase/migrations/20260410120000_phase_j_tenant_member_profiles_view.sql`
 - `supabase/migrations/20260410130000_phase_j1_fix_tenant_member_profiles_view.sql`
+- `supabase/migrations/20260410153000_phase_k_invite_types.sql`
 - `server/tests/tenantRlsPolicies.test.js`
 - `server/tests/worldRuntimePartitioning.test.js`
 
@@ -485,7 +507,8 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - `client/src/hooks/useSocket.ts`
 - `client/src/hooks/useChat.ts`
 - `client/src/hooks/useVoice.ts`
-- `client/src/hooks/useTenantContext.ts`
+- `client/src/contexts/TenantContext.tsx`
+- `client/src/App.tsx`
 - `client/src/utils/voiceRoom.ts`
 - `client/src/utils/nextPath.ts`
 - `client/src/components/auth/ProtectedRoute.tsx`

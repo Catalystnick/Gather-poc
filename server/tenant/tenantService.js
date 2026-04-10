@@ -477,6 +477,11 @@ function normalizeInviteEmail(value) {
   return email;
 }
 
+function normalizeUserEmail(value) {
+  if (typeof value !== "string") return "";
+  return value.trim().toLowerCase();
+}
+
 function normalizeInviteExpiryHours(value) {
   if (value === undefined || value === null || value === "") return 168;
   if (!Number.isInteger(value)) {
@@ -525,8 +530,10 @@ export async function createTenantInvite({
     errorCode: "tenant_invite_forbidden",
   });
 
-  const role = await requireRole(roleKey ?? "member");
   const inviteEmail = normalizeInviteEmail(emailOptional);
+  const inviteType = inviteEmail ? "personalized" : "shared";
+  const effectiveRoleKey = inviteType === "shared" ? "member" : roleKey ?? "member";
+  const role = await requireRole(effectiveRoleKey);
   const validForHours = normalizeInviteExpiryHours(expiresInHours);
   const inviteToken = randomBytes(24).toString("base64url");
   const expiresAt = new Date(
@@ -540,6 +547,7 @@ export async function createTenantInvite({
     expiresAt,
     invitedBy: actorUserId,
     rawToken: inviteToken,
+    inviteType,
   });
   observeInviteCreated();
 
@@ -563,6 +571,7 @@ export async function createTenantInvite({
     tenantId: normalizedTenantId,
     inviteToken,
     inviteUrl,
+    inviteType,
     roleKey: role.key,
     emailOptional: inviteEmail,
     expiresAt,
@@ -725,7 +734,7 @@ export async function createTenantDuringOnboarding({ userId, tenantName }) {
   return resolveTenantContext(userId);
 }
 
-export async function joinTenantFromInvite({ userId, inviteToken }) {
+export async function joinTenantFromInvite({ userId, userEmail, inviteToken }) {
   const token = requireNonEmptyText(inviteToken, "invite_token", 512);
   const invite = await getPendingInviteByToken(token);
 
@@ -734,6 +743,17 @@ export async function joinTenantFromInvite({ userId, inviteToken }) {
       status: 400,
       code: "invite_invalid_or_expired",
     });
+  }
+
+  const inviteEmail = normalizeUserEmail(invite.email_optional);
+  if (inviteEmail) {
+    const normalizedUserEmail = normalizeUserEmail(userEmail);
+    if (!normalizedUserEmail || normalizedUserEmail !== inviteEmail) {
+      throw new TenantServiceError("Invite is restricted to a different email", {
+        status: 403,
+        code: "invite_email_mismatch",
+      });
+    }
   }
 
   const existingMembership = await getActiveMembershipByUserId(userId);
@@ -767,7 +787,9 @@ export async function joinTenantFromInvite({ userId, inviteToken }) {
     });
   }
 
-  await redeemInvite({ inviteId: invite.id, userId });
+  if (invite.invite_type === "personalized") {
+    await redeemInvite({ inviteId: invite.id, userId });
+  }
   // Invite redemption can change membership context.
   clearCachedContext(userId);
   return resolveTenantContext(userId);

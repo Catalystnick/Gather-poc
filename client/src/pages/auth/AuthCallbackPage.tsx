@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { useAuth } from '../contexts/AuthContext'
-import { buildPathWithNext, clearPendingNextPath, readNextPathFromSearch, readPendingNextPath } from '../utils/nextPath'
+import { useAuth } from '../../contexts/AuthContext'
+import { buildPathWithNext, clearPendingNextPath, readNextPathFromSearch, readPendingNextPath } from '../../utils/nextPath'
 
 // Landing page for OAuth redirects.
 // Supabase returns here with ?code= (PKCE flow).

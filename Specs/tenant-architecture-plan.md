@@ -253,6 +253,7 @@ erDiagram
     uuid tenant_id FK
     text token_hash
     uuid invited_role_id FK
+    text invite_type "shared|personalized"
     text email_optional
     timestamptz expires_at
     text status "pending|redeemed|expired|revoked"
@@ -278,6 +279,10 @@ erDiagram
 - One interior world per tenant in v1 (`UNIQUE(tenant_id)` where `world_type='tenant_interior'`).
 - Seed roles in v1: `admin`, `member`.
 - Permissions are attached to roles via `role_permissions`; server checks permissions, not raw role strings.
+- `tenant_invites.invite_type` constrained to `shared|personalized`.
+- `tenant_invites` personalized invites require a non-empty `email_optional` value.
+- Invite validity check is runtime-derived: usable invite = `status='pending'` and `expires_at > now`.
+- `status='expired'` is optional lifecycle backfill for reporting/admin lists; it is not required for enforcement correctness.
 
 ## 4.2 Required Database Tables and Relationships
 
@@ -308,7 +313,7 @@ In this document, `tenant` means a tenant organization/workspace owner.
 - `role_permissions`: Join table that maps each role to its granted permissions.
 - `tenant_access_configs`: Per-tenant behavior toggles for guest/member interactions (movement/chat/tag/teleport).
 - `worlds`: Main plaza + tenant interior world registry and world metadata.
-- `tenant_invites`: Invite lifecycle records for onboarding users into tenant organizations.
+- `tenant_invites`: Invite lifecycle records for onboarding users into tenant organizations, with explicit invite type (`shared` reusable vs `personalized` email-bound).
 - `world_links`: Optional world-to-world transition graph for controlled navigation.
 - `auth.users`: External Supabase identity source referenced by memberships.
 
@@ -344,7 +349,7 @@ In this document, `tenant` means a tenant organization/workspace owner.
   - `tenant_access_configs(tenant_id)`
   - `role_permissions(role_id, permission_id)`
   - `worlds(world_type, tenant_id)`
-  - `tenant_invites(tenant_id, status, expires_at)`
+  - `tenant_invites(tenant_id, invite_type, status, expires_at)`
 
 ## 4.3 Tenant Database Best Practices (Shared DB / Shared Schema)
 
@@ -522,11 +527,16 @@ sequenceDiagram
   A->>API: POST /tenant/{tenantId}/invites
   API->>T: verify admin rights
   T-->>API: allowed
-  API->>DB: create invite token
-  API-->>A: invite link/token
+  API->>DB: create invite token + invite_type
+  API-->>A: invite link/token + inviteType
 
   U->>API: POST /tenant/onboarding (invite token)
-  API->>DB: validate + redeem invite
+  API->>DB: validate invite
+  alt personalized invite
+    API->>DB: enforce invite email match + redeem invite
+  else shared invite
+    API->>DB: no redeem; keep invite reusable
+  end
   API-->>U: membership active + home interior world
 
   A->>API: PATCH /tenant/{tenantId}/members/{userId}/role
@@ -731,8 +741,8 @@ Route behavior:
   - returns tenant, role key, permission set, `mainPlazaWorldId`, `homeInteriorWorldId`, and current defaults.
 - `POST /tenant/onboarding`
   - `{ mode: "create_tenant", tenantName }` or `{ mode: "join_invite", inviteToken }`.
-- `POST /tenant/:tenantId/invites` (admin — requires `tenant.invite.create` permission)
-- `GET /tenant/:tenantId/members` (admin — requires `tenant.members.manage` permission; returns email + display name resolved via `tenant_member_profiles` view in a single query)
+- `POST /tenant/:tenantId/invites` (admin — requires `tenant.invite.create` permission; supports both `personalized` invites when `emailOptional` is provided and `shared` reusable invites when omitted; response includes `inviteType` and `delivery` metadata)
+- `GET /tenant/:tenantId/members` (admin — requires `tenant.members.manage` permission; returns `membershipId`, `userId`, `email`, `displayName`, `roleKey` resolved via `tenant_member_profiles` view in a single query)
 - `PATCH /tenant/:tenantId/members/:userId/role` (admin — requires `tenant.members.manage` permission)
 - `DELETE /tenant/:tenantId/members/:userId` (admin — requires `tenant.members.manage` permission)
 - `PATCH /tenant/:tenantId/settings` (admin — requires `tenant.settings.manage` permission; includes `access_policy` and `tenant_access_configs` fields)
@@ -776,14 +786,15 @@ Detailed execution steps are documented in [`tenant-implementation-plan.md`](./t
 4. Admin tooling and hardening.
 5. Horizontal scaling rollout — see [performance-and-scaling.md](performance-and-scaling.md).
 
-## 10.3 Progress Snapshot (as of 2026-04-08)
+## 10.3 Progress Snapshot (as of 2026-04-10)
 
 - Phase 1 (schema/bootstrap foundations): implemented in code.
 - Phase 2 (instance-scoped socket runtime): implemented in code.
 - Phase 3 (interaction scoping + voice namespacing): implemented in code.
 - Phase 4 (admin tooling/hardening): partially implemented.
-  - done: tenant settings update API (`PATCH /tenant/:tenantId/settings`) with route-level permission middleware and service-level validation.
-  - pending: invite/member admin APIs and frontend admin settings UI.
+  - done: tenant settings API, invite/member admin APIs, dashboard onboarding/admin surface, OAuth invite redirect reliability fixes, service-layer-only authorization, and single-query member profile resolution.
+  - done: invite type model (`shared`/`personalized`) with personalized email enforcement and shared invite reusability.
+  - pending: frontend member mutation UI polish and production SLO signoff.
 - Phase 5 (horizontal scaling): not implemented in this repo scope; tracked in [performance-and-scaling.md](performance-and-scaling.md).
 
 ---

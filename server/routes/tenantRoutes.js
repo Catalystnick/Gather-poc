@@ -85,6 +85,7 @@ async function handleTenantOnboarding(req, res) {
     if (mode === 'join_invite') {
       const context = await joinTenantFromInvite({
         userId: req.user.sub,
+        userEmail: req.user.email,
         inviteToken: req.body?.inviteToken,
       })
       return res.json(context)

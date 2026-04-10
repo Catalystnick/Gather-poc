@@ -4,13 +4,13 @@ import { AuthProvider } from './contexts/AuthContext'
 import { TenantContextProvider } from './contexts/TenantContext'
 import ProtectedRoute from './components/auth/ProtectedRoute'
 
-const LoginPage         = lazy(() => import('./pages/LoginPage'))
-const SignupPage        = lazy(() => import('./pages/SignupPage'))
-const VerifyPendingPage = lazy(() => import('./pages/VerifyPendingPage'))
-const AuthCallbackPage  = lazy(() => import('./pages/AuthCallbackPage'))
-const InviteAcceptPage  = lazy(() => import('./pages/InviteAcceptPage'))
-const GameRoute         = lazy(() => import('./pages/GameRoute'))
-const DashboardRoute    = lazy(() => import('./pages/DashboardRoute'))
+const LoginPage         = lazy(() => import('./pages/auth/LoginPage'))
+const SignupPage        = lazy(() => import('./pages/auth/SignupPage'))
+const VerifyPendingPage = lazy(() => import('./pages/auth/VerifyPendingPage'))
+const AuthCallbackPage  = lazy(() => import('./pages/auth/AuthCallbackPage'))
+const InviteAcceptPage  = lazy(() => import('./pages/invite/InviteAcceptPage'))
+const GameRoute         = lazy(() => import('./pages/game/GameRoute'))
+const DashboardRoute    = lazy(() => import('./pages/dashboard/DashboardRoute'))
 
 // Lightweight fallback — shown only during the initial chunk fetch.
 // Auth pages are tiny; the game chunk (Three.js + LiveKit + WASM) is large

@@ -1,57 +1,49 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { useAuth } from '../contexts/AuthContext'
-import { buildPathWithNext, clearPendingNextPath, readNextPathFromSearch, readPendingNextPath } from '../utils/nextPath'
+import { useAuth } from '../../contexts/AuthContext'
+import { buildPathWithNext, clearPendingNextPath, readNextPathFromSearch, readPendingNextPath } from '../../utils/nextPath'
 
-/** Account creation page with email verification handoff. */
-export default function SignupPage() {
-  const { signUpWithEmail, signInWithGoogle, isAuthenticated, isLoading: authLoading } = useAuth()
+/** Email/password + Google sign-in entry page. */
+export default function LoginPage() {
+  const { signInWithPassword, signInWithGoogle, isAuthenticated, isLoading: authLoading } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
   const nextPath = readNextPathFromSearch(location.search, readPendingNextPath('/game'))
 
-  const [email, setEmail]             = useState('')
-  const [password, setPassword]       = useState('')
-  const [confirm, setConfirm]         = useState('')
-  const [error, setError]             = useState<string | null>(null)
+  const [email, setEmail]           = useState('')
+  const [password, setPassword]     = useState('')
+  const [error, setError]           = useState<string | null>(null)
   const [isSubmitting, setSubmitting] = useState(false)
+  const [unverified, setUnverified] = useState(false)
 
+  // Redirect if already authenticated (e.g. returning with an active session)
   useEffect(() => {
     if (!isAuthenticated) return
     clearPendingNextPath()
     navigate(nextPath, { replace: true })
   }, [isAuthenticated, navigate, nextPath])
 
-  const handleEmailSignup = useCallback(async (event: React.FormEvent) => {
+  const handleEmailLogin = useCallback(async (event: React.FormEvent) => {
     event.preventDefault()
     setError(null)
-
-    // Client-side check — avoids a round-trip for a trivial mismatch
-    if (password !== confirm) {
-      setError('Passwords do not match')
-      return
-    }
-    if (password.length < 8) {
-      setError('Password must be at least 8 characters')
-      return
-    }
-
+    setUnverified(false)
     setSubmitting(true)
-    const signUpError = await signUpWithEmail(email, password, nextPath)
+    const signInError = await signInWithPassword(email, password)
     setSubmitting(false)
-
-    if (signUpError) {
-      setError(signUpError.message)
-    } else {
-      // session is null until email is verified — go to holding page
-      navigate(buildPathWithNext('/verify-pending', nextPath), { state: { email } })
+    if (signInError) {
+      if (signInError.message.toLowerCase().includes('email not confirmed')) {
+        setUnverified(true)
+      } else {
+        setError(signInError.message)
+      }
     }
-  }, [confirm, email, navigate, nextPath, password, signUpWithEmail])
+  }, [email, password, signInWithPassword])
 
   const handleGoogle = useCallback(async () => {
     setError(null)
     setSubmitting(true)
     await signInWithGoogle(nextPath)
+    // Page will redirect — no need to setSubmitting(false)
   }, [nextPath, signInWithGoogle])
 
   if (authLoading) {
@@ -65,7 +57,7 @@ export default function SignupPage() {
   return (
     <div style={styles.page}>
       <div style={styles.card}>
-        <h1 style={styles.title}>Create account</h1>
+        <h1 style={styles.title}>Gather</h1>
 
         <button onClick={handleGoogle} disabled={isSubmitting} style={styles.googleBtn}>
           Continue with Google
@@ -73,7 +65,7 @@ export default function SignupPage() {
 
         <div style={styles.divider}><span>or</span></div>
 
-        <form onSubmit={handleEmailSignup} style={styles.form}>
+        <form onSubmit={handleEmailLogin} style={styles.form}>
           <input
             style={styles.input}
             type="email"
@@ -86,29 +78,26 @@ export default function SignupPage() {
           <input
             style={styles.input}
             type="password"
-            placeholder="Password (min 8 characters)"
+            placeholder="Password"
             value={password}
             onChange={event => setPassword(event.target.value)}
             required
-            autoComplete="new-password"
-          />
-          <input
-            style={styles.input}
-            type="password"
-            placeholder="Confirm password"
-            value={confirm}
-            onChange={event => setConfirm(event.target.value)}
-            required
-            autoComplete="new-password"
+            autoComplete="current-password"
           />
           {error && <p style={styles.error}>{error}</p>}
+          {unverified && (
+            <p style={styles.warning}>
+              Email not verified.{' '}
+              <Link to={buildPathWithNext('/verify-pending', nextPath)} style={styles.link}>Resend verification</Link>
+            </p>
+          )}
           <button type="submit" disabled={isSubmitting} style={styles.submitBtn}>
-            {isSubmitting ? 'Creating account…' : 'Sign up'}
+            {isSubmitting ? 'Signing in…' : 'Sign in'}
           </button>
         </form>
 
         <p style={styles.footer}>
-          Already have an account? <Link to={buildPathWithNext('/login', nextPath)} style={styles.link}>Sign in</Link>
+          No account? <Link to={buildPathWithNext('/signup', nextPath)} style={styles.link}>Sign up</Link>
         </p>
       </div>
     </div>
@@ -125,6 +114,7 @@ const styles: Record<string, React.CSSProperties> = {
   input:     { padding: '0.65rem 0.75rem', borderRadius: 8, border: '1px solid #333', background: '#222', color: '#fff', fontFamily: 'sans-serif', fontSize: '0.9rem', outline: 'none' },
   submitBtn: { padding: '0.65rem', borderRadius: 8, border: 'none', background: '#4f6ef7', color: '#fff', cursor: 'pointer', fontFamily: 'sans-serif', fontSize: '0.9rem', marginTop: '0.25rem' },
   error:     { margin: 0, color: '#f87171', fontFamily: 'sans-serif', fontSize: '0.82rem' },
+  warning:   { margin: 0, color: '#fbbf24', fontFamily: 'sans-serif', fontSize: '0.82rem' },
   footer:    { textAlign: 'center', color: '#888', fontFamily: 'sans-serif', fontSize: '0.82rem', margin: 0 },
   link:      { color: '#4f6ef7', textDecoration: 'none' },
 }

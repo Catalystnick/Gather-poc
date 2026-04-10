@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { useAuth } from '../contexts/AuthContext'
-import { buildPathWithNext, clearPendingNextPath, readNextPathFromSearch, readPendingNextPath } from '../utils/nextPath'
+import { useAuth } from '../../contexts/AuthContext'
+import { buildPathWithNext, clearPendingNextPath, readNextPathFromSearch, readPendingNextPath } from '../../utils/nextPath'
 
 const RESEND_COOLDOWN = 60 // seconds
 

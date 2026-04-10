@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { useAuth } from '../contexts/AuthContext'
-import { buildPathWithNext } from '../utils/nextPath'
+import { useAuth } from '../../contexts/AuthContext'
+import { buildPathWithNext } from '../../utils/nextPath'
 
 type Preview = { tenantName: string | null; roleKey: string; expiresAt: string | null }
 type PreviewStatus = 'loading' | 'ready' | 'invalid'
