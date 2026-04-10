@@ -4,9 +4,9 @@ import { useAuth } from '../contexts/AuthContext'
 import { buildPathWithNext, clearPendingNextPath, readNextPathFromSearch, readPendingNextPath } from '../utils/nextPath'
 
 // Landing page for OAuth redirects.
-// Supabase returns here with #access_token= in the hash (implicit flow).
-// The SDK reads the hash on init and fires SIGNED_IN via onAuthStateChange.
-// This page just waits for that event then forwards to /game.
+// Supabase returns here with ?code= (PKCE flow).
+// The SDK exchanges the code on init and fires SIGNED_IN via onAuthStateChange.
+// This page waits for that session hydration and then forwards to the next path.
 /** Temporary callback page that waits for auth session hydration after OAuth redirect. */
 export default function AuthCallbackPage() {
   const { isAuthenticated, isLoading } = useAuth()

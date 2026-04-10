@@ -58,7 +58,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // other Supabase methods inside can cause a dead-lock.
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       console.log('[auth] event:', event, '| user:', session?.user?.email ?? null, '| provider:', session?.user?.app_metadata?.provider ?? null)
-      console.log('[auth] access_token:', session?.access_token ?? null)
       if (event === 'TOKEN_REFRESHED') console.log('[auth] token refreshed, expires_at:', session?.expires_at)
       if (event === 'SIGNED_OUT') console.log('[auth] session cleared from storage')
       setSession(session)
@@ -111,12 +110,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   /** Start Google OAuth login via Supabase redirect flow. */
   const signInWithGoogle = useCallback(async (nextPath?: string) => {
     savePendingNextPath(nextPath)
-    const redirectTo = getAuthRedirectUrl()
+    const baseRedirectUrl = getAuthRedirectUrl()
+    const safeNext = typeof nextPath === 'string' && nextPath.startsWith('/') && !nextPath.startsWith('//') ? nextPath : ''
+    const redirectTo = safeNext
+      ? `${baseRedirectUrl}?next=${encodeURIComponent(safeNext)}`
+      : baseRedirectUrl
     console.log('[auth] signInWithGoogle → redirectTo:', redirectTo)
-    await supabase.auth.signInWithOAuth({
+    const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: { redirectTo },
     })
+    if (error) {
+      console.warn('[auth] signInWithGoogle error:', error.message)
+    }
   }, [])
 
   /** Sign out the current user session. */

@@ -30,6 +30,7 @@ export default function App() {
       <AuthProvider>
         <Suspense fallback={<PageLoader />}>
           <Routes>
+            <Route path="/"               element={<Navigate to="/dashboard" replace />} />
             <Route path="/login"          element={<LoginPage />} />
             <Route path="/signup"         element={<SignupPage />} />
             <Route path="/verify-pending" element={<VerifyPendingPage />} />
