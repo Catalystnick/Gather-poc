@@ -1,14 +1,12 @@
 import express from 'express'
 import rateLimit from 'express-rate-limit'
 import { requireAuth } from '../middleware/requireAuth.js'
-import { requireTenantPermission } from '../middleware/requireTenantPermission.js'
 import { TenantServiceError } from '../tenant/errors.js'
 import {
   createTenantDuringOnboarding,
   createTenantInvite,
   grantSelfAdminForDev,
   joinTenantFromInvite,
-  listJoinedTenants,
   listTenantMembers,
   previewInvite,
   removeTenantMember,
@@ -53,14 +51,6 @@ tenantRouter.get('/me', requireAuth, async (req, res) => {
   }
 })
 
-tenantRouter.get('/memberships', requireAuth, async (req, res) => {
-  try {
-    const memberships = await listJoinedTenants(req.user.sub)
-    return res.json({ memberships })
-  } catch (error) {
-    return sendTenantError(res, error)
-  }
-})
 
 // Public — no auth required. Returns just enough for the invite acceptance UI.
 // Must be defined before /:tenantId routes to avoid param capture.
@@ -109,16 +99,12 @@ async function handleTenantOnboarding(req, res) {
   }
 }
 
-// Preferred path name.
 tenantRouter.post('/onboarding', requireAuth, handleTenantOnboarding)
-// Backward-compatible alias.
-tenantRouter.post('/bootstrap', requireAuth, handleTenantOnboarding)
 
 tenantRouter.post('/dev/grant-admin-self', requireAuth, async (req, res) => {
   try {
     const context = await grantSelfAdminForDev({
       userId: req.user.sub,
-      tenantName: req.body?.tenantName,
     })
     return res.json(context)
   } catch (error) {
@@ -129,7 +115,6 @@ tenantRouter.post('/dev/grant-admin-self', requireAuth, async (req, res) => {
 tenantRouter.patch(
   '/:tenantId/settings',
   requireAuth,
-  requireTenantPermission('tenant.settings.manage'),
   async (req, res) => {
   try {
     const settings = await updateTenantSettings({
@@ -147,7 +132,6 @@ tenantRouter.patch(
 tenantRouter.post(
   '/:tenantId/invites',
   requireAuth,
-  requireTenantPermission('tenant.invite.create'),
   async (req, res) => {
     try {
       const invite = await createTenantInvite({
@@ -167,7 +151,6 @@ tenantRouter.post(
 tenantRouter.patch(
   '/:tenantId/members/:userId/role',
   requireAuth,
-  requireTenantPermission('tenant.members.manage'),
   async (req, res) => {
     try {
       const membership = await updateTenantMemberRole({
@@ -186,7 +169,6 @@ tenantRouter.patch(
 tenantRouter.delete(
   '/:tenantId/members/:userId',
   requireAuth,
-  requireTenantPermission('tenant.members.manage'),
   async (req, res) => {
     try {
       const membership = await removeTenantMember({
@@ -204,7 +186,6 @@ tenantRouter.delete(
 tenantRouter.get(
   '/:tenantId/members',
   requireAuth,
-  requireTenantPermission('tenant.members.manage'),
   async (req, res) => {
     try {
       const members = await listTenantMembers({

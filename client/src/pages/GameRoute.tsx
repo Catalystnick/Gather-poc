@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Leva } from "leva";
 import { Navigate, useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
-import { useTenantContext, type TenantAccessConfig } from "../hooks/useTenantContext";
+import { useTenantContext, type TenantAccessConfig } from "../contexts/TenantContext";
 import AvatarSelect from "../components/ui/AvatarSelect";
 import World from "../components/scene/World";
 import {
@@ -28,11 +28,10 @@ function loadSaved(): Player | null {
 
 /** Gameplay route keeps in-game admin controls limited to tenant policy settings. */
 export default function GameRoute() {
-  const { signOut, session } = useAuth();
+  const { signOut } = useAuth();
   const navigate = useNavigate();
   const { worldKey } = useParams<{ worldKey?: string }>();
-  const accessToken = session?.access_token ?? "";
-  const tenantContextState = useTenantContext(accessToken);
+  const tenantState = useTenantContext();
   const [player, setPlayer] = useState<Player | null>(null);
   const [activeWorldKey, setActiveWorldKey] = useState<string | null>(null);
   const [isSigningOut, setIsSigningOut] = useState(false);
@@ -63,7 +62,7 @@ export default function GameRoute() {
   }, [activeWorldKey, navigate, worldKey]);
 
   useEffect(() => {
-    const tenant = tenantContextState.context?.tenant;
+    const tenant = tenantState.context?.tenant;
     if (!tenant) return;
     setTenantAccessPolicy(tenant.accessPolicy);
     setTenantAccessConfig({
@@ -76,10 +75,10 @@ export default function GameRoute() {
       updatedBy: tenant.accessConfig?.updatedBy ?? null,
       updatedAt: tenant.accessConfig?.updatedAt ?? null,
     });
-  }, [tenantContextState.context?.tenant]);
+  }, [tenantState.context?.tenant]);
 
-  const currentRoleKey = tenantContextState.context?.roleKey ?? null;
-  const canManageTenantSettings = !!tenantContextState.context?.permissions?.includes("tenant.settings.manage");
+  const currentRoleKey = tenantState.context?.roleKey ?? null;
+  const canManageTenantSettings = !!tenantState.context?.permissions?.includes("tenant.settings.manage");
 
   function handleJoin(nextPlayer: Player) {
     maybeRequestNotificationPermission();
@@ -99,13 +98,13 @@ export default function GameRoute() {
   }
 
   async function handleSaveSettings() {
-    const tenantId = tenantContextState.context?.tenant?.id;
+    const tenantId = tenantState.context?.tenant?.id;
     if (!tenantId || isSavingSettings) return;
     setIsSavingSettings(true);
     setSettingsError(null);
     setSettingsSuccess(null);
     try {
-      await tenantContextState.saveTenantSettings(tenantId, tenantAccessPolicy, tenantAccessConfig);
+      await tenantState.saveTenantSettings(tenantId, tenantAccessPolicy, tenantAccessConfig);
       setSettingsSuccess("Tenant settings saved.");
     } catch (error) {
       setSettingsError(error instanceof Error ? error.message : "Failed to save tenant settings");
@@ -114,7 +113,7 @@ export default function GameRoute() {
     }
   }
 
-  if (tenantContextState.isLoading) {
+  if (tenantState.isLoading) {
     return (
       <div style={centeredPageStyle}>
         <div style={cardStyle}>Loading tenant context...</div>
@@ -122,14 +121,14 @@ export default function GameRoute() {
     );
   }
 
-  if (tenantContextState.error) {
+  if (tenantState.error) {
     return (
       <div style={centeredPageStyle}>
         <div style={cardStyle}>
           <h2 style={cardTitleStyle}>Tenant Context Error</h2>
-          <p style={cardTextStyle}>{tenantContextState.error}</p>
+          <p style={cardTextStyle}>{tenantState.error}</p>
           <div style={actionsRowStyle}>
-            <button type="button" style={primaryButtonStyle} onClick={() => void tenantContextState.refresh()}>
+            <button type="button" style={primaryButtonStyle} onClick={() => void tenantState.refresh()}>
               Retry
             </button>
             <button type="button" style={secondaryButtonStyle} onClick={() => navigate("/dashboard")}>
@@ -144,7 +143,7 @@ export default function GameRoute() {
     );
   }
 
-  if (tenantContextState.context && !tenantContextState.context.hasMembership) {
+  if (tenantState.context && !tenantState.context.hasMembership) {
     return <Navigate to="/dashboard" replace />;
   }
 

@@ -25,7 +25,8 @@
       "Bash(wc -l /d/ThreejsStuff/Gather-poc/client/src/utils/*.tsx)",
       "Bash(npm install:*)",
       "Bash(xargs grep:*)",
-      "Bash(xargs ls:*)"
+      "Bash(xargs ls:*)",
+      "Bash(npx supabase:*)"
     ]
   }
 }

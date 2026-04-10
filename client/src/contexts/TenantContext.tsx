@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { useAuth } from "../contexts/AuthContext";
 
 export type TenantAccessConfig = {
   guestZoneEnforced: boolean;
@@ -28,6 +29,22 @@ export type TenantContextState = {
     accessConfig: TenantAccessConfig | null;
   } | null;
 };
+
+type TenantContextValue = {
+  context: TenantContextState | null;
+  isLoading: boolean;
+  error: string | null;
+  refresh: (options?: { blocking?: boolean }) => Promise<TenantContextState | null>;
+  createTenantDuringOnboarding: (tenantName: string) => Promise<TenantContextState>;
+  joinTenantFromInvite: (inviteToken: string) => Promise<TenantContextState>;
+  saveTenantSettings: (
+    tenantId: string,
+    accessPolicy: "public" | "private",
+    tenantAccessConfig: TenantAccessConfig,
+  ) => Promise<void>;
+};
+
+const TenantContext = createContext<TenantContextValue | null>(null);
 
 async function readJson(response: Response) {
   // Best-effort JSON parsing keeps API error handling resilient to empty/non-JSON bodies.
@@ -97,7 +114,9 @@ async function patchTenantSettings(accessToken: string, tenantId: string, access
   }
 }
 
-export function useTenantContext(accessToken: string) {
+export function TenantContextProvider({ children }: { children: React.ReactNode }) {
+  const { session } = useAuth();
+  const accessToken = session?.access_token ?? "";
   const [context, setContext] = useState<TenantContextState | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -182,7 +201,7 @@ export function useTenantContext(accessToken: string) {
     [accessToken, refresh],
   );
 
-  return {
+  const value = useMemo<TenantContextValue>(() => ({
     context,
     isLoading,
     error,
@@ -190,5 +209,23 @@ export function useTenantContext(accessToken: string) {
     createTenantDuringOnboarding,
     joinTenantFromInvite,
     saveTenantSettings,
-  };
+  }), [
+    context,
+    isLoading,
+    error,
+    refresh,
+    createTenantDuringOnboarding,
+    joinTenantFromInvite,
+    saveTenantSettings,
+  ]);
+
+  return <TenantContext.Provider value={value}>{children}</TenantContext.Provider>;
+}
+
+export function useTenantContext(): TenantContextValue {
+  const context = useContext(TenantContext);
+  if (!context) {
+    throw new Error("useTenantContext must be used inside <TenantContextProvider>");
+  }
+  return context;
 }

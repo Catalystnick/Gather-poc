@@ -96,36 +96,41 @@ export async function listActiveMembershipsByUserId(userId) {
 
   if (!Array.isArray(membershipRows) || !membershipRows.length) return [];
 
-  const tenantIds = [...new Set(membershipRows.map((row) => row.tenant_id).filter(Boolean))];
-  const roleIds = [...new Set(membershipRows.map((row) => row.role_id).filter(Boolean))];
+  const tenantIds = [
+    ...new Set(membershipRows.map((row) => row.tenant_id).filter(Boolean)),
+  ];
+  const roleIds = [
+    ...new Set(membershipRows.map((row) => row.role_id).filter(Boolean)),
+  ];
 
   const tenantRows = tenantIds.length
     ? await supabaseRestRequest({
-      path: "tenants",
-      query: {
-        select: "id,name,slug,access_policy",
-        id: `in.(${tenantIds.join(",")})`,
-      },
-    })
+        path: "tenants",
+        query: {
+          select: "id,name,slug,access_policy",
+          id: `in.(${tenantIds.join(",")})`,
+        },
+      })
     : [];
 
   const roleRows = roleIds.length
     ? await supabaseRestRequest({
-      path: "roles",
-      query: {
-        select: "id,key,name",
-        id: `in.(${roleIds.join(",")})`,
-      },
-    })
+        path: "roles",
+        query: {
+          select: "id,key,name",
+          id: `in.(${roleIds.join(",")})`,
+        },
+      })
     : [];
 
   const tenantById = new Map(
-    (Array.isArray(tenantRows) ? tenantRows : [])
-      .map((tenant) => [tenant.id, tenant]),
+    (Array.isArray(tenantRows) ? tenantRows : []).map((tenant) => [
+      tenant.id,
+      tenant,
+    ]),
   );
   const roleById = new Map(
-    (Array.isArray(roleRows) ? roleRows : [])
-      .map((role) => [role.id, role]),
+    (Array.isArray(roleRows) ? roleRows : []).map((role) => [role.id, role]),
   );
 
   return membershipRows.map((membership) => ({
@@ -170,7 +175,8 @@ export async function getTenantAccessConfig(tenantId) {
   const rows = await supabaseRestRequest({
     path: "tenant_access_configs",
     query: {
-      select: "tenant_id,guest_zone_enforced,guest_can_chat,guest_can_tag,guest_can_teleport,member_can_tag,member_can_teleport,updated_by,updated_at",
+      select:
+        "tenant_id,guest_zone_enforced,guest_can_chat,guest_can_tag,guest_can_teleport,member_can_tag,member_can_teleport,updated_by,updated_at",
       tenant_id: `eq.${tenantId}`,
       limit: 1,
     },
@@ -178,7 +184,11 @@ export async function getTenantAccessConfig(tenantId) {
   return firstRow(rows);
 }
 
-export async function createTenantAccessConfig({ tenantId, updatedBy, config }) {
+export async function createTenantAccessConfig({
+  tenantId,
+  updatedBy,
+  config,
+}) {
   const rows = await supabaseRestRequest({
     path: "tenant_access_configs",
     method: "POST",
@@ -192,7 +202,11 @@ export async function createTenantAccessConfig({ tenantId, updatedBy, config }) 
   return firstRow(rows);
 }
 
-export async function updateTenantAccessConfig({ tenantId, updatedBy, config }) {
+export async function updateTenantAccessConfig({
+  tenantId,
+  updatedBy,
+  config,
+}) {
   const rows = await supabaseRestRequest({
     path: "tenant_access_configs",
     method: "PATCH",
@@ -277,7 +291,9 @@ export async function listPermissionKeysByRoleId(roleId) {
     },
   });
 
-  const permissionIds = (Array.isArray(rolePermissionRows) ? rolePermissionRows : [])
+  const permissionIds = (
+    Array.isArray(rolePermissionRows) ? rolePermissionRows : []
+  )
     .map((row) => row.permission_id)
     .filter(Boolean);
   if (!permissionIds.length) return [];
@@ -295,7 +311,11 @@ export async function listPermissionKeysByRoleId(roleId) {
     .filter((key) => typeof key === "string");
 }
 
-export async function createTenant({ name, createdBy, accessPolicy = "public" }) {
+export async function createTenant({
+  name,
+  createdBy,
+  accessPolicy = "public",
+}) {
   const baseSlug = normalizeSlug(name);
   let candidate = baseSlug;
   let suffix = 1;
@@ -321,7 +341,12 @@ export async function createTenant({ name, createdBy, accessPolicy = "public" })
   return firstRow(rows);
 }
 
-export async function createMembership({ tenantId, userId, roleId, status = "active" }) {
+export async function createMembership({
+  tenantId,
+  userId,
+  roleId,
+  status = "active",
+}) {
   const roleKey = await resolveRoleKey(roleId);
   const rows = await supabaseRestRequest({
     path: "tenant_memberships",
@@ -366,41 +391,17 @@ export async function getActiveMembershipForTenantUser({ tenantId, userId }) {
 }
 
 export async function listActiveMembershipsForTenant(tenantId) {
-  const membershipRows = await supabaseRestRequest({
-    path: "tenant_memberships",
+  const rows = await supabaseRestRequest({
+    path: "tenant_member_profiles",
     query: {
-      select: "id,tenant_id,user_id,role,role_id,status,created_at,updated_at",
+      // Only fetch member fields needed by the dashboard members list.
+      select: "id,user_id,role_key,email,display_name",
       tenant_id: `eq.${tenantId}`,
       status: "eq.active",
       order: "created_at.asc",
     },
   });
-
-  if (!Array.isArray(membershipRows) || !membershipRows.length) return [];
-
-  const roleIds = [...new Set(membershipRows.map((membership) => membership.role_id).filter(Boolean))];
-  const roleRows = roleIds.length
-    ? await supabaseRestRequest({
-      path: "roles",
-      query: {
-        select: "id,key,name",
-        id: `in.(${roleIds.join(",")})`,
-      },
-    })
-    : [];
-  const roleById = new Map(
-    (Array.isArray(roleRows) ? roleRows : [])
-      .map((role) => [role.id, role]),
-  );
-
-  return membershipRows.map((membership) => {
-    const role = roleById.get(membership.role_id) ?? null;
-    return {
-      ...membership,
-      role_key: role?.key ?? membership.role ?? null,
-      role_name: role?.name ?? null,
-    };
-  });
+  return Array.isArray(rows) ? rows : [];
 }
 
 export async function countActiveMembershipsByRoleId({ tenantId, roleId }) {
@@ -475,7 +476,11 @@ export async function createInvite({
   return firstRow(rows);
 }
 
-export async function createInteriorWorld({ tenantId, tenantSlug, tenantName }) {
+export async function createInteriorWorld({
+  tenantId,
+  tenantSlug,
+  tenantName,
+}) {
   const stablePart = tenantSlug || String(tenantId).slice(0, 8);
   const worldKey = `tenant_${stablePart}_interior`;
   const rows = await supabaseRestRequest({
@@ -545,7 +550,10 @@ export async function redeemInvite({ inviteId, userId }) {
 
 export async function getContextByUserId(userId) {
   // Main plaza world is required for all authenticated users, with or without membership.
-  const [mainPlazaWorld, membership] = await Promise.all([createMainPlazaWorldIfMissing(), getActiveMembershipByUserId(userId)]);
+  const [mainPlazaWorld, membership] = await Promise.all([
+    createMainPlazaWorldIfMissing(),
+    getActiveMembershipByUserId(userId),
+  ]);
 
   if (!membership) {
     return {
@@ -566,9 +574,7 @@ export async function getContextByUserId(userId) {
     membership.role_id ? getRoleById(membership.role_id) : null,
     getTenantAccessConfig(membership.tenant_id),
   ]);
-  const permissions = role?.id
-    ? await listPermissionKeysByRoleId(role.id)
-    : [];
+  const permissions = role?.id ? await listPermissionKeysByRoleId(role.id) : [];
   const roleKey = role?.key ?? null;
 
   return {

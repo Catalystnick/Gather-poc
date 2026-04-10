@@ -1,28 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
-import { useTenantContext } from "../hooks/useTenantContext";
-import { clearPendingNextPath, readPendingNextPath } from "../utils/nextPath";
+import { useTenantContext } from "../contexts/TenantContext";
+import { clearPendingNextPath } from "../utils/nextPath";
 
-type JoinedTenant = {
-  tenantId: string;
-  tenantName: string;
-  tenantSlug: string;
-  accessPolicy: "public" | "private";
-  roleKey: string | null;
-  roleName: string | null;
-  joinedAt: string | null;
-  updatedAt: string | null;
-};
 
 type TenantMember = {
   membershipId: string;
   userId: string;
+  email: string | null;
+  displayName: string | null;
   roleKey: string | null;
-  roleName: string | null;
-  status: string;
-  createdAt: string | null;
-  updatedAt: string | null;
 };
 
 type InviteDelivery = {
@@ -53,18 +41,6 @@ async function readJson(response: Response) {
   return response.json().catch(() => null);
 }
 
-async function fetchJoinedTenants(accessToken: string): Promise<JoinedTenant[]> {
-  const response = await fetch("/tenant/memberships", {
-    method: "GET",
-    headers: authHeaders(accessToken),
-  });
-  const payload = await readJson(response);
-  if (!response.ok) {
-    const message = typeof payload?.message === "string" ? payload.message : "Failed to load organizations";
-    throw new Error(message);
-  }
-  return Array.isArray(payload?.memberships) ? payload.memberships : [];
-}
 
 async function fetchTenantMembers(accessToken: string, tenantId: string): Promise<TenantMember[]> {
   const response = await fetch(`/tenant/${tenantId}/members`, {
@@ -97,15 +73,6 @@ async function createTenantInvite(
   return payload as TenantInvite;
 }
 
-function readInviteTokenFromPendingNextPath() {
-  const pendingPath = readPendingNextPath("");
-  if (!pendingPath) return "";
-  if (!pendingPath.startsWith("/dashboard")) return "";
-  const queryStart = pendingPath.indexOf("?");
-  if (queryStart < 0) return "";
-  const params = new URLSearchParams(pendingPath.slice(queryStart + 1));
-  return params.get("inviteToken")?.trim() ?? "";
-}
 
 /** Tenant dashboard handles onboarding and non-game tenant administration flows. */
 export default function DashboardRoute() {
@@ -113,7 +80,7 @@ export default function DashboardRoute() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const accessToken = session?.access_token ?? "";
-  const tenantContextState = useTenantContext(accessToken);
+  const tenantState = useTenantContext();
   const [onboardingMode, setOnboardingMode] = useState<"create" | "invite">("create");
   const [tenantNameInput, setTenantNameInput] = useState("");
   const [inviteTokenInput, setInviteTokenInput] = useState("");
@@ -122,7 +89,6 @@ export default function DashboardRoute() {
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [isGrantingAdmin, setIsGrantingAdmin] = useState(false);
   const [adminToolStatus, setAdminToolStatus] = useState<string | null>(null);
-  const [joinedTenants, setJoinedTenants] = useState<JoinedTenant[]>([]);
   const [tenantMembers, setTenantMembers] = useState<TenantMember[]>([]);
   const [isDashboardLoading, setIsDashboardLoading] = useState(false);
   const [dashboardError, setDashboardError] = useState<string | null>(null);
@@ -133,17 +99,13 @@ export default function DashboardRoute() {
   const [inviteStatus, setInviteStatus] = useState<string | null>(null);
   const [createdInvite, setCreatedInvite] = useState<TenantInvite | null>(null);
   const autoJoinAttemptedTokenRef = useRef<string | null>(null);
-  const tenantContext = tenantContextState.context;
-  const joinTenantFromInvite = tenantContextState.joinTenantFromInvite;
+  const tenantContext = tenantState.context;
+  const joinTenantFromInvite = tenantState.joinTenantFromInvite;
 
   const currentRoleKey = tenantContext?.roleKey ?? null;
   const isCurrentUserAdmin = currentRoleKey === "admin";
-  const canManageMembers = !!tenantContext?.permissions?.includes("tenant.members.manage");
-  const canCreateInvites = !!tenantContext?.permissions?.includes("tenant.invite.create");
   const activeTenantId = tenantContext?.tenant?.id ?? null;
-  const inviteTokenFromUrl = searchParams.get("inviteToken")?.trim() ?? "";
-  const inviteTokenFromPendingPath = inviteTokenFromUrl ? "" : readInviteTokenFromPendingNextPath();
-  const effectiveInviteToken = inviteTokenFromUrl || inviteTokenFromPendingPath;
+  const effectiveInviteToken = searchParams.get("inviteToken")?.trim() ?? "";
 
   useEffect(() => {
     if (!effectiveInviteToken) return;
@@ -152,16 +114,10 @@ export default function DashboardRoute() {
   }, [effectiveInviteToken]);
 
   const loadDashboardData = useCallback(async () => {
-    if (!accessToken || !tenantContext?.hasMembership) return;
+    if (!accessToken || !tenantContext?.hasMembership || !isCurrentUserAdmin || !activeTenantId) return;
     setIsDashboardLoading(true);
     setDashboardError(null);
     try {
-      const memberships = await fetchJoinedTenants(accessToken);
-      setJoinedTenants(memberships);
-      if (!canManageMembers || !activeTenantId) {
-        setTenantMembers([]);
-        return;
-      }
       const members = await fetchTenantMembers(accessToken, activeTenantId);
       setTenantMembers(members);
     } catch (error) {
@@ -170,7 +126,7 @@ export default function DashboardRoute() {
     } finally {
       setIsDashboardLoading(false);
     }
-  }, [accessToken, activeTenantId, canManageMembers, tenantContext?.hasMembership]);
+  }, [accessToken, activeTenantId, isCurrentUserAdmin, tenantContext?.hasMembership]);
 
   useEffect(() => {
     void loadDashboardData();
@@ -233,9 +189,9 @@ export default function DashboardRoute() {
     setOnboardingError(null);
     try {
       if (onboardingMode === "create") {
-        await tenantContextState.createTenantDuringOnboarding(tenantNameInput);
+        await tenantState.createTenantDuringOnboarding(tenantNameInput);
       } else {
-        await tenantContextState.joinTenantFromInvite(inviteTokenInput);
+        await tenantState.joinTenantFromInvite(inviteTokenInput);
         const nextSearchParams = new URLSearchParams(searchParams);
         nextSearchParams.delete("inviteToken");
         setSearchParams(nextSearchParams, { replace: true });
@@ -297,7 +253,6 @@ export default function DashboardRoute() {
       const response = await fetch("/tenant/dev/grant-admin-self", {
         method: "POST",
         headers: authHeaders(accessToken),
-        body: JSON.stringify({}),
       });
       const payload = await readJson(response);
       if (!response.ok) {
@@ -305,8 +260,7 @@ export default function DashboardRoute() {
         setAdminToolStatus(message);
         return;
       }
-      await tenantContextState.refresh();
-      await loadDashboardData();
+      await tenantState.refresh();
       const roleKey = typeof payload?.roleKey === "string" ? payload.roleKey : null;
       setAdminToolStatus(roleKey === "admin" || roleKey === "member" ? `Role updated: ${roleKey}` : "Role updated.");
     } catch {
@@ -316,7 +270,7 @@ export default function DashboardRoute() {
     }
   }
 
-  if (tenantContextState.isLoading) {
+  if (tenantState.isLoading) {
     return (
       <div style={pageStyle}>
         <div style={cardStyle}>Loading tenant dashboard...</div>
@@ -324,14 +278,14 @@ export default function DashboardRoute() {
     );
   }
 
-  if (tenantContextState.error) {
+  if (tenantState.error) {
     return (
       <div style={pageStyle}>
         <div style={cardStyle}>
           <h2 style={titleStyle}>Dashboard Error</h2>
-          <p style={textStyle}>{tenantContextState.error}</p>
+          <p style={textStyle}>{tenantState.error}</p>
           <div style={actionsStyle}>
-            <button type="button" style={primaryButtonStyle} onClick={() => void tenantContextState.refresh()}>
+            <button type="button" style={primaryButtonStyle} onClick={() => void tenantState.refresh()}>
               Retry
             </button>
             <button type="button" style={secondaryButtonStyle} onClick={() => void handleSignOut()}>
@@ -343,7 +297,7 @@ export default function DashboardRoute() {
     );
   }
 
-  if (tenantContextState.context && !tenantContextState.context.hasMembership) {
+  if (tenantState.context && !tenantState.context.hasMembership) {
     return (
       <div style={pageStyle}>
         <div style={cardStyle}>
@@ -380,7 +334,7 @@ export default function DashboardRoute() {
     <div style={pageStyle}>
       <div style={cardStyle}>
         <h2 style={titleStyle}>Organization Dashboard</h2>
-        <p style={textStyle}>Tenant: {tenantContextState.context?.tenant?.name ?? "Unknown"} | Role: {currentRoleKey ?? "none"}</p>
+        <p style={textStyle}>Tenant: {tenantState.context?.tenant?.name ?? "Unknown"} | Role: {currentRoleKey ?? "none"}</p>
         {dashboardError && <p style={errorTextStyle}>{dashboardError}</p>}
         {isDashboardLoading && <p style={textStyle}>Loading organizations and users...</p>}
         <div style={actionsStyle}>
@@ -395,103 +349,95 @@ export default function DashboardRoute() {
           </button>
         </div>
 
+        {isCurrentUserAdmin && tenantContext?.tenant && (
         <div style={sectionStyle}>
-          <h3 style={sectionTitleStyle}>Organizations Joined</h3>
-          {joinedTenants.length === 0 ? (
-            <p style={textStyle}>No organizations found.</p>
-          ) : (
-            <ul style={listStyle}>
-              {joinedTenants.map((tenant) => (
-                <li key={tenant.tenantId} style={listItemStyle}>
-                  <strong>{tenant.tenantName}</strong> ({tenant.tenantSlug}) | role: {tenant.roleKey ?? "unknown"}
-                </li>
-              ))}
-            </ul>
-          )}
+          <h3 style={sectionTitleStyle}>Organization</h3>
+          <p style={textStyle}>
+            <strong>{tenantContext.tenant.name}</strong> ({tenantContext.tenant.slug}) | role: {currentRoleKey ?? "unknown"}
+          </p>
         </div>
+        )}
 
+        {isCurrentUserAdmin && (
         <div style={sectionStyle}>
           <h3 style={sectionTitleStyle}>Users In Current Organization</h3>
-          {!canManageMembers ? (
-            <p style={textStyle}>You do not have permission to view this list.</p>
-          ) : tenantMembers.length === 0 ? (
+          {tenantMembers.length === 0 ? (
             <p style={textStyle}>No active users found.</p>
           ) : (
             <ul style={listStyle}>
               {tenantMembers.map((member) => (
                 <li key={member.membershipId} style={listItemStyle}>
-                  <strong>{member.userId}</strong> | role: {member.roleKey ?? "unknown"} | status: {member.status}
+                  <strong>{member.displayName ?? member.email ?? member.userId}</strong>
+                  {member.email && member.displayName && <span style={{ color: "#888" }}> — {member.email}</span>}
+                  {" "}| role: {member.roleKey ?? "unknown"}
                 </li>
               ))}
             </ul>
           )}
         </div>
+        )}
 
+        {isCurrentUserAdmin && (
         <div style={sectionStyle}>
           <h3 style={sectionTitleStyle}>Invite Users</h3>
-          {!canCreateInvites ? (
-            <p style={textStyle}>You do not have permission to create invites.</p>
-          ) : (
-            <>
-              <p style={textStyle}>Send by email, or create an invite token/link for manual sharing.</p>
-              <input
-                style={inputStyle}
-                type="email"
-                placeholder="employee@company.com (optional)"
-                value={inviteEmailInput}
-                onChange={(event) => setInviteEmailInput(event.target.value)}
-              />
-              <select
-                style={inputStyle}
-                value={inviteRoleKey}
-                onChange={(event) => setInviteRoleKey(event.target.value === "admin" ? "admin" : "member")}
-              >
-                <option value="member">Member</option>
-                <option value="admin">Admin</option>
-              </select>
+          <p style={textStyle}>Send by email, or create an invite token/link for manual sharing.</p>
+          <input
+            style={inputStyle}
+            type="email"
+            placeholder="employee@company.com (optional)"
+            value={inviteEmailInput}
+            onChange={(event) => setInviteEmailInput(event.target.value)}
+          />
+          <select
+            style={inputStyle}
+            value={inviteRoleKey}
+            onChange={(event) => setInviteRoleKey(event.target.value === "admin" ? "admin" : "member")}
+          >
+            <option value="member">Member</option>
+            <option value="admin">Admin</option>
+          </select>
+          <div style={actionsStyle}>
+            <button
+              type="button"
+              style={primaryButtonStyle}
+              disabled={isCreatingInvite}
+              onClick={() => void handleCreateInvite()}
+            >
+              {isCreatingInvite ? "Creating..." : "Create Invite"}
+            </button>
+          </div>
+          {inviteError && <p style={errorTextStyle}>{inviteError}</p>}
+          {inviteStatus && <p style={textStyle}>{inviteStatus}</p>}
+          {createdInvite && (
+            <div style={inviteResultStyle}>
+              <p style={textStyle}>Role: {createdInvite.roleKey} | Expires: {new Date(createdInvite.expiresAt).toLocaleString()}</p>
+              {!createdInvite.delivery.sent && createdInvite.delivery.errorCode && (
+                <p style={textStyle}>Delivery: {createdInvite.delivery.errorCode}</p>
+              )}
+              <p style={tokenTextStyle}>Token: {createdInvite.inviteToken}</p>
+              {createdInvite.inviteUrl && <p style={tokenTextStyle}>Link: {createdInvite.inviteUrl}</p>}
               <div style={actionsStyle}>
                 <button
                   type="button"
-                  style={primaryButtonStyle}
-                  disabled={isCreatingInvite}
-                  onClick={() => void handleCreateInvite()}
+                  style={secondaryButtonStyle}
+                  onClick={() => void handleCopyInviteValue(createdInvite.inviteToken, "Token")}
                 >
-                  {isCreatingInvite ? "Creating..." : "Create Invite"}
+                  Copy Token
                 </button>
+                {createdInvite.inviteUrl && (
+                  <button
+                    type="button"
+                    style={secondaryButtonStyle}
+                    onClick={() => void handleCopyInviteValue(createdInvite.inviteUrl ?? "", "Link")}
+                  >
+                    Copy Link
+                  </button>
+                )}
               </div>
-              {inviteError && <p style={errorTextStyle}>{inviteError}</p>}
-              {inviteStatus && <p style={textStyle}>{inviteStatus}</p>}
-              {createdInvite && (
-                <div style={inviteResultStyle}>
-                  <p style={textStyle}>Role: {createdInvite.roleKey} | Expires: {new Date(createdInvite.expiresAt).toLocaleString()}</p>
-                  {!createdInvite.delivery.sent && createdInvite.delivery.errorCode && (
-                    <p style={textStyle}>Delivery: {createdInvite.delivery.errorCode}</p>
-                  )}
-                  <p style={tokenTextStyle}>Token: {createdInvite.inviteToken}</p>
-                  {createdInvite.inviteUrl && <p style={tokenTextStyle}>Link: {createdInvite.inviteUrl}</p>}
-                  <div style={actionsStyle}>
-                    <button
-                      type="button"
-                      style={secondaryButtonStyle}
-                      onClick={() => void handleCopyInviteValue(createdInvite.inviteToken, "Token")}
-                    >
-                      Copy Token
-                    </button>
-                    {createdInvite.inviteUrl && (
-                      <button
-                        type="button"
-                        style={secondaryButtonStyle}
-                        onClick={() => void handleCopyInviteValue(createdInvite.inviteUrl ?? "", "Link")}
-                      >
-                        Copy Link
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )}
-            </>
+            </div>
           )}
         </div>
+        )}
 
         {import.meta.env.DEV && (
           <div style={sectionStyle}>

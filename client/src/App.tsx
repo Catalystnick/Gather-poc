@@ -1,6 +1,7 @@
 import { lazy, Suspense } from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AuthProvider } from './contexts/AuthContext'
+import { TenantContextProvider } from './contexts/TenantContext'
 import ProtectedRoute from './components/auth/ProtectedRoute'
 
 const LoginPage         = lazy(() => import('./pages/LoginPage'))
@@ -28,21 +29,23 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <Suspense fallback={<PageLoader />}>
-          <Routes>
-            <Route path="/"               element={<Navigate to="/dashboard" replace />} />
-            <Route path="/login"          element={<LoginPage />} />
-            <Route path="/signup"         element={<SignupPage />} />
-            <Route path="/verify-pending" element={<VerifyPendingPage />} />
-            <Route path="/auth/callback"  element={<AuthCallbackPage />} />
-            <Route path="/invite/accept"  element={<InviteAcceptPage />} />
-            <Route element={<ProtectedRoute />}>
-              <Route path="/dashboard"      element={<DashboardRoute />} />
-              <Route path="/game/:worldKey?" element={<GameRoute />} />
-            </Route>
-            <Route path="*"               element={<Navigate to="/dashboard" replace />} />
-          </Routes>
-        </Suspense>
+        <TenantContextProvider>
+          <Suspense fallback={<PageLoader />}>
+            <Routes>
+              <Route path="/"               element={<Navigate to="/dashboard" replace />} />
+              <Route path="/login"          element={<LoginPage />} />
+              <Route path="/signup"         element={<SignupPage />} />
+              <Route path="/verify-pending" element={<VerifyPendingPage />} />
+              <Route path="/auth/callback"  element={<AuthCallbackPage />} />
+              <Route path="/invite/accept"  element={<InviteAcceptPage />} />
+              <Route element={<ProtectedRoute />}>
+                <Route path="/dashboard"      element={<DashboardRoute />} />
+                <Route path="/game/:worldKey?" element={<GameRoute />} />
+              </Route>
+              <Route path="*"               element={<Navigate to="/dashboard" replace />} />
+            </Routes>
+          </Suspense>
+        </TenantContextProvider>
       </AuthProvider>
     </BrowserRouter>
   )

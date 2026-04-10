@@ -9,26 +9,6 @@ if (!supabaseUrl || !supabaseAnonKey) {
   );
 }
 
-// Log callback shape without leaking raw tokens from URL hash/query.
-const currentPath = `${window.location.origin}${window.location.pathname}`;
-const queryParams = new URLSearchParams(window.location.search);
-const hashParams = new URLSearchParams(
-  window.location.hash.startsWith("#")
-    ? window.location.hash.slice(1)
-    : window.location.hash,
-);
-console.log("hashparams", hashParams);
-const hasCode = queryParams.has("code");
-const hasHashSessionParams =
-  hashParams.has("access_token") || hashParams.has("refresh_token");
-console.log(
-  "[supabase] init | path:",
-  currentPath,
-  "| hasCode:",
-  hasCode,
-  "| hasHashSessionParams:",
-  hasHashSessionParams,
-);
 
 // Single client instance — ES module cache guarantees this is never re-created.
 // detectSessionInUrl: true (default) — SDK auto-exchanges the ?code= param on the

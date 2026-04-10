@@ -53,16 +53,17 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 
 ## 3. Delivery Phases
 
-### Implementation Status (as of 2026-04-08)
+### Implementation Status (as of 2026-04-10)
 
 - Phase A: implemented in code.
 - Phase B: implemented in code (world-scoped runtime + `world:join`/`world:change` + temporary portal mapping).
 - Phase C: implemented in code (tenant/world-scoped teleport store + teleport policy guards + instance-scoped cleanup).
 - Phase D: implemented in code (world-scoped LiveKit room naming + token world access validation).
 - Phase E: implemented in code (world-scoped disconnect teardown + optional socket auth checkpoints + token refresh re-validation).
-- Phase F: partially implemented (bootstrap + tenant settings + invite/member admin endpoints + in-game logout + tenant bootstrap gate + dashboard route + dashboard org/user list UI + invite creation UI/email dispatch implemented; member role/remove mutation frontend UI still pending).
+- Phase F: partially implemented (bootstrap + tenant settings + invite/member admin endpoints + in-game logout + tenant bootstrap gate + dashboard route + admin-gated org/member list UI + invite creation UI/email dispatch implemented; member role/remove mutation frontend UI still pending).
 - Note: production-style billing gate is not implemented yet; tenant creation currently does not require completed payment.
 - Phase G: partially implemented (observability counters + internal observability endpoint + canary-oriented env flags implemented; 7-day SLO validation still pending).
+- Phase H (post-launch cleanup): completed — see section 3.8.
 
 ## 3.1 Phase A - Foundations (Schema, RLS, Tenant Service)
 
@@ -111,7 +112,6 @@ These decisions close ambiguities raised in architecture review issue 13.x.
   - tenant repository/context now resolves role key + permission set + tenant access config: `server/tenant/tenantRepository.js`
   - `GET /tenant/me`: `server/routes/tenantRoutes.js`
   - `PATCH /tenant/:tenantId/settings` (access policy + access config update, permission-gated): `server/routes/tenantRoutes.js`
-  - route-level permission guard middleware pattern added (`requireTenantPermission('tenant.settings.manage')`): `server/middleware/requireTenantPermission.js`
   - socket calls tenant service on join path: `server/socket/registerGameSocketHandlers.js`
   - staged feature flags: `ENABLE_TENANT_ROUTES`, `ENABLE_TENANT_SOCKET_CONTEXT`
   - RLS non-service-role integration test added: `server/tests/tenantRlsPolicies.test.js` (env-gated)
@@ -301,8 +301,7 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 ### Work items
 
 - Implement/finish:
-  - `POST /tenant/onboarding` (`/tenant/bootstrap` remains alias)
-  - `GET /tenant/memberships`
+  - `POST /tenant/onboarding`
   - `POST /tenant/:tenantId/invites`
   - `GET /tenant/:tenantId/members`
   - `PATCH /tenant/:tenantId/members/:userId/role`
@@ -325,9 +324,7 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 ### Status (2026-04-08)
 
 - Implemented in code:
-  - `PATCH /tenant/:tenantId/settings` endpoint: `server/routes/tenantRoutes.js`
-  - route-level permission middleware for settings update:
-    - `requireTenantPermission('tenant.settings.manage')`: `server/middleware/requireTenantPermission.js`
+  - `PATCH /tenant/:tenantId/settings` endpoint with service-layer permission enforcement: `server/routes/tenantRoutes.js`
   - service-level validation + permission checks + config persistence:
     - `updateTenantSettings(...)`: `server/tenant/tenantService.js`
 - Implemented in client UX:
@@ -337,23 +334,22 @@ These decisions close ambiguities raised in architecture review issue 13.x.
     - file: `client/src/pages/GameRoute.tsx`
   - new protected dashboard route now hosts onboarding and non-game tenant admin flows:
     - file: `client/src/pages/DashboardRoute.tsx`
-  - dashboard now shows organizations joined and current-tenant users list (permission-gated):
+  - dashboard admin sections (org info, member list, invite creation) are hidden entirely for non-admin users — no fetch occurs unless role is `admin`:
+    - file: `client/src/pages/DashboardRoute.tsx`
+  - member list shows email and display name resolved server-side (not raw user IDs):
     - file: `client/src/pages/DashboardRoute.tsx`
   - tenant admin settings panel now allows updating access policy + `tenant_access_configs` toggles from frontend:
     - file: `client/src/pages/GameRoute.tsx`
 - Implemented in code:
-  - `GET /tenant/memberships` for current user's joined organizations:
-    - route: `server/routes/tenantRoutes.js`
-    - service: `listJoinedTenants(...)` in `server/tenant/tenantService.js`
-    - repository: `listActiveMembershipsByUserId(...)` in `server/tenant/tenantRepository.js`
-  - `POST /tenant/:tenantId/invites` with server-side permission checks and role-based invite creation:
+  - `POST /tenant/:tenantId/invites` with service-layer permission checks and role-based invite creation:
     - route: `server/routes/tenantRoutes.js`
     - service: `createTenantInvite(...)` in `server/tenant/tenantService.js`
-  - `GET /tenant/:tenantId/members` with server-side permission checks:
+  - `GET /tenant/:tenantId/members` with service-layer permission checks; returns member email + display name via `tenant_member_profiles` view (single DB query):
     - route: `server/routes/tenantRoutes.js`
     - service: `listTenantMembers(...)` in `server/tenant/tenantService.js`
     - repository: `listActiveMembershipsForTenant(...)` in `server/tenant/tenantRepository.js`
-  - `PATCH /tenant/:tenantId/members/:userId/role` with server-side permission checks and last-admin safety:
+    - migration: `supabase/migrations/20260410120000_phase_j_tenant_member_profiles_view.sql` + `20260410130000_phase_j1_fix_tenant_member_profiles_view.sql`
+  - `PATCH /tenant/:tenantId/members/:userId/role` with service-layer permission checks and last-admin safety:
     - route: `server/routes/tenantRoutes.js`
     - service: `updateTenantMemberRole(...)` in `server/tenant/tenantService.js`
   - `DELETE /tenant/:tenantId/members/:userId` using membership disable flow with last-admin safety:
@@ -361,6 +357,55 @@ These decisions close ambiguities raised in architecture review issue 13.x.
     - service: `removeTenantMember(...)` in `server/tenant/tenantService.js`
 - Pending:
   - frontend member mutation UI (change role, remove member actions)
+
+## 3.8 Phase H - Post-Launch Code Quality and Architecture Hardening
+
+### Goals
+
+- Remove dead code and redundant logic identified in post-implementation review.
+- Enforce correct architectural boundaries (auth vs authorization, middleware vs service layer).
+- Eliminate N+1 query patterns in member resolution.
+- Harden security posture of auth and invite flows.
+
+### Work items completed (2026-04-10)
+
+**Auth flow:**
+- Fixed OAuth invite token loss for first-time Google sign-in users: `signInWithGoogle` now embeds `?next=<encoded-path>` in `redirectTo` URL, mirroring the email signup pattern. Token survives the OAuth redirect chain via URL rather than relying solely on `localStorage`.
+- Enforced PKCE flow explicitly (`flowType: 'pkce'`) in Supabase client config: `client/src/lib/supabase.ts`.
+- Removed implicit OAuth hash-parsing dead code (`hashParams`, `hasHashSessionParams`): `client/src/lib/supabase.ts`.
+- Removed raw `access_token` logging from `onAuthStateChange`.
+
+**Authorization architecture:**
+- Removed `requireTenantPermission` middleware from all routes. Authorization is now exclusively service-layer via `ensureTenantPermission(...)`. Rationale: middleware was coupled to Express `req.params` (unusable from socket handlers), duplicated DB permission checks, and violated the principle that the service layer owns business rules.
+- Removed `isTenantAdmin` export from `tenantService.js` (functionality is a subset of `hasTenantPermission`; no callers existed).
+
+**Dead endpoint removal:**
+- Removed `POST /tenant/bootstrap` alias — use `POST /tenant/onboarding`.
+- Removed `GET /tenant/memberships` — current tenant data is fully served by `GET /tenant/me`; dashboard org section now reads from already-loaded `tenantContext`.
+- Removed `listJoinedTenants` service function and `listActiveMembershipsByUserId` repository import (no longer referenced).
+
+**Member profile resolution — N+1 eliminated:**
+- Introduced `tenant_member_profiles` Postgres view (`public` schema) joining `tenant_memberships → auth.users → roles` with `LEFT JOIN` to handle deleted users gracefully.
+- `GET /tenant/:tenantId/members` now resolves email, display name, and role in a single PostgREST query instead of N parallel Auth Admin API calls.
+- View access revoked from `public`, `anon`, and `authenticated` roles — accessible only via service-role key.
+- Migrations: `20260410120000_phase_j_tenant_member_profiles_view.sql`, `20260410130000_phase_j1_fix_tenant_member_profiles_view.sql`.
+
+**Tenant context cache hardening:**
+- Added `TENANT_CONTEXT_CACHE_MAX = 10_000` cap to in-memory TTL cache in `tenantService.js`. Evicts oldest entry (insertion-order) when limit is reached, preventing unbounded memory growth under sustained load.
+
+**Dashboard data loading:**
+- Admin-gated data (member list, org info) is not fetched at all for non-admin users. `loadDashboardData` bails early if `isCurrentUserAdmin` is false. Sections are not rendered at all — no permission-denied placeholders.
+- Org information section now reads directly from `tenantContext.tenant` (already in memory) rather than issuing a redundant `/tenant/memberships` fetch.
+- Member list displays `displayName` (from Google OAuth metadata) or `email`, falling back to `userId` only if both are unavailable.
+
+### Migrations introduced
+
+| File | Purpose |
+|---|---|
+| `20260410120000_phase_j_tenant_member_profiles_view.sql` | Creates `tenant_member_profiles` view with LEFT JOINs and role revocation |
+| `20260410130000_phase_j1_fix_tenant_member_profiles_view.sql` | Drops and recreates view with correct column aliases (`role_key` not `role_id`) |
+
+---
 
 ## 3.7 Phase G - Hardening, Rollout, and Cleanup
 
@@ -408,13 +453,13 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - Pending:
   - production SLO validation and 7-day stability signoff
 
-## 4. Code Touch Plan (Expected)
+## 4. Code Touch Plan (Actual)
 
 ### Server
 
 - `server/index.js`
 - `server/middleware/requireAuth.js`
-- `server/middleware/requireTenantPermission.js`
+- ~~`server/middleware/requireTenantPermission.js`~~ — removed; authorization is service-layer only
 - `server/chat/commandRouter.js`
 - `server/chat/teleportRequestsStore.js`
 - `server/tenant/tenantService.js`
@@ -424,19 +469,33 @@ These decisions close ambiguities raised in architecture review issue 13.x.
 - `server/routes/livekitTokenRoute.js`
 - `server/socket/registerGameSocketHandlers.js`
 - `server/world/runtime.js`
-- `supabase/migrations/*`
+- `supabase/migrations/20260407075655_phase_a_tenant_schema.sql`
+- `supabase/migrations/20260408070129_phase_h_rbac_roles_permissions.sql`
+- `supabase/migrations/20260408093000_phase_h_rbac_roles_permissions.sql`
+- `supabase/migrations/20260408113000_phase_i_tenant_access_configs.sql`
+- `supabase/migrations/20260410120000_phase_j_tenant_member_profiles_view.sql`
+- `supabase/migrations/20260410130000_phase_j1_fix_tenant_member_profiles_view.sql`
 - `server/tests/tenantRlsPolicies.test.js`
 - `server/tests/worldRuntimePartitioning.test.js`
 
 ### Client
 
+- `client/src/lib/supabase.ts`
+- `client/src/contexts/AuthContext.tsx`
 - `client/src/hooks/useSocket.ts`
 - `client/src/hooks/useChat.ts`
 - `client/src/hooks/useVoice.ts`
+- `client/src/hooks/useTenantContext.ts`
 - `client/src/utils/voiceRoom.ts`
+- `client/src/utils/nextPath.ts`
+- `client/src/components/auth/ProtectedRoute.tsx`
 - `client/src/components/scene/World.tsx`
-- `client/src/contexts/*` (tenant context additions)
+- `client/src/pages/AuthCallbackPage.tsx`
 - `client/src/pages/DashboardRoute.tsx`
+- `client/src/pages/InviteAcceptPage.tsx`
+- `client/src/pages/LoginPage.tsx`
+- `client/src/pages/SignupPage.tsx`
+- `client/src/pages/VerifyPendingPage.tsx`
 
 ## 5. Test Plan by Phase
 

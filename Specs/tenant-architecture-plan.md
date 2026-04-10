@@ -73,6 +73,7 @@ flowchart TB
   subgraph Data["Supabase Postgres"]
     Org[(tenants)]
     Member[(tenant_memberships)]
+    MemberProfiles[(tenant_member_profiles\nview)]
     Roles[(roles)]
     Perms[(permissions)]
     RolePerms[(role_permissions)]
@@ -100,6 +101,7 @@ flowchart TB
 
   TenantSvc --> Org
   TenantSvc --> Member
+  TenantSvc --> MemberProfiles
   TenantSvc --> Roles
   TenantSvc --> Perms
   TenantSvc --> RolePerms
@@ -154,9 +156,29 @@ erDiagram
 
   %% External identity source (Supabase Auth)
   AUTH_USERS ||--o{ TENANT_MEMBERSHIPS : user_id
+  AUTH_USERS ||--o{ TENANT_MEMBER_PROFILES : user_id
+
+  %% Read-only view: joins memberships + auth.users + roles for single-query admin reads
+  TENANT_MEMBERSHIPS ||--o{ TENANT_MEMBER_PROFILES : membership_row
+  ROLES ||--o{ TENANT_MEMBER_PROFILES : role_name
 
   AUTH_USERS {
     uuid id PK
+    text email
+    jsonb raw_user_meta_data
+  }
+
+  TENANT_MEMBER_PROFILES {
+    uuid id "membership id"
+    uuid tenant_id
+    uuid user_id
+    text status
+    text role_key "from memberships.role"
+    text role_name "from roles.name"
+    text email "from auth.users"
+    text display_name "from raw_user_meta_data"
+    timestamptz created_at
+    timestamptz updated_at
   }
 
   TENANTS {
@@ -274,6 +296,7 @@ In this document, `tenant` means a tenant organization/workspace owner.
 | `worlds`                 |               yes | Stores one shared main plaza world and tenant-organization interior worlds. |
 | `tenant_invites`         |               yes | Invite workflow for joining a tenant organization.              |
 | `world_links`            |    optional in v1 | Optional curated world-to-world travel graph.                   |
+| `tenant_member_profiles` |               yes | Public-schema view joining `tenant_memberships` + `auth.users` + `roles`. Enables single-query admin member list with email and display name. Service-role access only. |
 | `auth.users` (Supabase)  | external required | Identity source referenced by memberships/invites.              |
 
 ### 4.2.1 Table Purpose Summary
@@ -382,13 +405,19 @@ In this document, `tenant` means a tenant organization/workspace owner.
 
 ### 5.3 Server Enforcement Points
 
-- HTTP middleware: verify token, resolve tenant context.
-- REST admin endpoints: tenant ownership + permission checks.
+- `requireAuth` HTTP middleware: verifies JWT, sets `req.user`. Authentication only — no authorization.
+- Service layer (`tenantService.js`): owns all authorization checks via `ensureTenantPermission`. Permission checks are not duplicated in middleware — the service is the single enforcement boundary, making it safe to call from any entry point (REST, socket, internal).
 - Socket `world:join(main_plaza)` for initial entry.
 - Socket `world:change(tenant_interior)`: interior access policy check.
 - Socket movement/chat/tag/teleport handlers: enforce `tenant_access_configs` toggles for guests/members in the active interior instance.
 - Backend-managed capability changes: only tenant members/admins with appropriate server-validated permission may update access config or grant/revoke visitor elevation.
 - Event handlers: enforce same-instance semantics for interactions.
+
+**Authorization pattern (canonical):**
+- `requireAuth` middleware → authentication only (JWT verify).
+- Route handler → passes inputs to service.
+- Service function → calls `ensureTenantPermission(...)` before any mutation.
+- No route-level permission middleware (`requireTenantPermission` removed — it duplicated service checks and was coupled to Express `req.params`, making it unusable from socket handlers).
 
 ---
 
@@ -593,13 +622,13 @@ Notes:
 
 Add service (new module):
 
-- `resolveTenantContext(userId)`
+- `resolveTenantContext(userId)` — cached (TTL 60s, max 10k entries)
 - `resolveMainPlazaWorld()`
 - `resolveTenantInteriorWorld(tenantId)`
 - `canAccessWorld(userId, worldId)`
-- `isTenantAdmin(userId, tenantId)`
+- `hasTenantPermission(userId, tenantId, permissionKey)` — used internally by service functions
 
-This removes tenant/role logic from socket handlers and keeps handlers focused on realtime behavior.
+This removes tenant/role logic from socket handlers and keeps handlers focused on realtime behavior. All authorization is service-layer only — no permission middleware.
 
 ## 7.3 Event contract updates
 
@@ -700,16 +729,18 @@ Route behavior:
 
 - `GET /tenant/me`
   - returns tenant, role key, permission set, `mainPlazaWorldId`, `homeInteriorWorldId`, and current defaults.
-- `POST /tenant/onboarding` (preferred)
+- `POST /tenant/onboarding`
   - `{ mode: "create_tenant", tenantName }` or `{ mode: "join_invite", inviteToken }`.
-- `POST /tenant/bootstrap` (backward-compatible alias)
-- `GET /tenant/memberships` (dashboard: list organizations joined by current user)
-- `POST /tenant/:tenantId/invites` (admin)
-- `PATCH /tenant/:tenantId/members/:userId/role` (admin)
-- `DELETE /tenant/:tenantId/members/:userId` (admin)
-- `GET /tenant/:tenantId/members` (admin/member manager dashboard list)
-- `PATCH /tenant/:tenantId/settings` (admin, includes `access_policy` and `tenant_access_configs` fields; intended for frontend admin policy UI).
+- `POST /tenant/:tenantId/invites` (admin — requires `tenant.invite.create` permission)
+- `GET /tenant/:tenantId/members` (admin — requires `tenant.members.manage` permission; returns email + display name resolved via `tenant_member_profiles` view in a single query)
+- `PATCH /tenant/:tenantId/members/:userId/role` (admin — requires `tenant.members.manage` permission)
+- `DELETE /tenant/:tenantId/members/:userId` (admin — requires `tenant.members.manage` permission)
+- `PATCH /tenant/:tenantId/settings` (admin — requires `tenant.settings.manage` permission; includes `access_policy` and `tenant_access_configs` fields)
 - `GET /internal/observability` (internal rollout/canary endpoint; optionally guarded by `x-observability-key`)
+
+**Removed endpoints:**
+- `POST /tenant/bootstrap` — alias removed; use `/tenant/onboarding`.
+- `GET /tenant/memberships` — removed; current tenant data is served by `GET /tenant/me`.
 
 ## 9.2 Socket
 
